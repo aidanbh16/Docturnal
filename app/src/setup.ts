@@ -136,7 +136,9 @@ ${body}
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       'x-frame-options': 'DENY',
-      'referrer-policy': 'no-referrer',
+      // Not no-referrer: with no-referrer, browsers send "Origin: null" and no Referer on a
+      // form submit. same-origin keeps both for our own form and sends nothing to other sites.
+      'referrer-policy': 'same-origin',
       ...headers,
     },
   });
@@ -281,14 +283,44 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
   return errorPage(400, 'Open this page from the settings link in a Docturnal pull request.');
 }
 
+// Strips the query and fragment, so the log never shows a token that was in a URL.
+function withoutQuery(url: string | null): string {
+  if (url === null) return '(none)';
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return '(not a URL)';
+  }
+}
+
+// Checks that a POST came from our own page. The expected origin is always the origin of the
+// incoming request URL. A browser sends "Origin: null" for a form submit under some referrer
+// policies; then the Referer must match, and without a Referer the request is allowed here
+// and must still pass the session and CSRF checks that follow.
+function sameOriginPost(request: Request, installationId: number, options: SetupOptions): boolean {
+  const expected = new URL(request.url).origin;
+  const origin = request.headers.get('origin');
+  const referer = request.headers.get('referer');
+  // Temporary: shows what the browser sent while the Save problem is confirmed fixed. It
+  // logs no cookies or tokens. Remove it after the next real test install.
+  options.log(`setup ${installationId}: origin check: Origin ${origin ?? '(none)'}, Referer ${withoutQuery(referer)}, expected ${expected}`);
+  if (origin !== null && origin !== 'null') return origin === expected;
+  if (referer === null) return true;
+  try {
+    return new URL(referer).origin === expected;
+  } catch {
+    return false;
+  }
+}
+
 async function handlePost(request: Request, env: SetupEnv, options: SetupOptions): Promise<Response> {
   const now = options.now();
   const session = await readSession(request, env, now);
   if (!session) {
     return errorPage(403, 'Your session expired. Open the settings link in a Docturnal pull request to sign in again.');
   }
-  const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) return errorPage(403, 'This form was sent from another site.');
+  if (!sameOriginPost(request, session.installationId, options)) return errorPage(403, 'This form was sent from another site.');
 
   let form: FormData;
   try {

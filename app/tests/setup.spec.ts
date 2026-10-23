@@ -38,11 +38,12 @@ function setup({ settings }: { settings?: Record<string, unknown> } = {}) {
   async function get(path: string, cookie?: string) {
     return handle(new Request(`${ORIGIN}${path}`, { headers: cookie ? { cookie } : {} }), env);
   }
-  async function post(fields: Record<string, string>, cookie?: string, origin = ORIGIN) {
+  // origin null sends no Origin header; extra adds headers such as Referer.
+  async function post(fields: Record<string, string>, cookie?: string, origin: string | null = ORIGIN, extra: Record<string, string> = {}) {
     return handle(
       new Request(`${ORIGIN}/setup`, {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', origin, ...(cookie ? { cookie } : {}) },
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...(origin === null ? {} : { origin }), ...(cookie ? { cookie } : {}), ...extra },
         body: new URLSearchParams(fields).toString(),
       }),
       env
@@ -265,6 +266,47 @@ describe('saving settings', () => {
 
     // And signing in for installation 1 as Mallory is refused outright.
     expect((await t.get('/setup?code=other-code&installation_id=1')).status).toBe(403);
+  });
+
+  // A form submit from a page served with Referrer-Policy: no-referrer arrives with
+  // "Origin: null" and no Referer. That is what rejected Save during the real test install.
+  it('accepts Save sent with "Origin: null" and no Referer when the session and CSRF token are valid', async () => {
+    const t = setup();
+    const { cookie, csrf } = await t.signIn();
+    const response = await t.post({ ...SAVE, csrf }, cookie, 'null');
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
+    expect(t.logs).toContain(`setup 1: origin check: Origin null, Referer (none), expected ${ORIGIN}`);
+  });
+
+  it('checks the Referer when the Origin is null, and still requires the session and CSRF token', async () => {
+    const t = setup();
+    const { cookie, csrf } = await t.signIn();
+    expect((await t.post({ ...SAVE, csrf }, cookie, 'null', { referer: `${ORIGIN}/setup` })).status).toBe(200);
+    expect((await t.post({ ...SAVE, csrf }, cookie, 'null', { referer: 'https://evil.example/setup' })).status).toBe(403);
+    expect((await t.post({ ...SAVE, csrf }, cookie, 'null', { referer: 'not a url' })).status).toBe(403);
+    expect((await t.post({ ...SAVE, csrf: 'wrong' }, cookie, 'null')).status).toBe(403);
+    expect((await t.post({ ...SAVE, csrf }, undefined, 'null')).status).toBe(403);
+    // Without an Origin header, the same Referer rules apply.
+    expect((await t.post({ ...SAVE, csrf }, cookie, null, { referer: 'https://evil.example/' })).status).toBe(403);
+    expect((await t.post({ ...SAVE, csrf }, cookie, null)).status).toBe(200);
+    // A real origin must match the request URL's origin exactly.
+    expect((await t.post({ ...SAVE, csrf }, cookie, 'https://docturnal.example.evil.test')).status).toBe(403);
+  });
+
+  it('serves pages with a referrer policy that keeps the Origin on a same-site form submit', async () => {
+    const t = setup();
+    const { cookie } = await t.signIn();
+    expect((await t.get('/setup', cookie)).headers.get('referrer-policy')).toBe('same-origin');
+  });
+
+  it('logs the Origin and Referer without the query string, cookies, or tokens', async () => {
+    const t = setup();
+    const { cookie, csrf } = await t.signIn();
+    await t.post({ ...SAVE, csrf }, cookie, ORIGIN, { referer: `${ORIGIN}/setup?code=secret-code` });
+    const line = t.logs.find((l) => l.includes('origin check'))!;
+    expect(line).toBe(`setup 1: origin check: Origin ${ORIGIN}, Referer ${ORIGIN}/setup, expected ${ORIGIN}`);
+    expect(t.logs.join(' ')).not.toMatch(new RegExp(`secret-code|${csrf}|${cookie.split('=')[1].slice(0, 20)}`));
   });
 
   it('rejects an unknown time zone, an hour outside 0 to 23, or an unknown comment level', async () => {

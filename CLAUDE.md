@@ -114,7 +114,7 @@ Comments explain intent and non-obvious behavior. They do not restate the code. 
 
 - **The model never rewrites source files.** It proposes `{line, text}` comment pairs. Our code inserts them and then verifies the result.
 - Insertion rules:
-  - `line` refers to a line in the original file. Out-of-range, duplicate, or ill-formed pairs are dropped.
+  - `line` refers to a line in the original file, counted from 1. Out-of-range, duplicate, or ill-formed pairs are dropped. One model response is read as counting from 0 only on clear evidence: a line 0, or at least two pairs that all fail placement as given and all fit after adding 1.
   - Insert whole new lines only. Never edit, move, or delete an existing line.
   - Match the indentation of the target line, and use the file's comment syntax and line endings.
   - Reject text that could end a comment early or inject code, such as `*/` or newlines in single-line comments.
@@ -141,7 +141,7 @@ Comments explain intent and non-obvious behavior. They do not restate the code. 
 - Layers are re-planned only when the set of summarized files changes. If the docs model cannot load (out of memory or a load error), the doc is written with the comment model and marked "written with the fallback model" in `last-run.md`.
 - A night with no changes makes no model calls, no commit, and no push, and leaves the state timestamp alone. A pre-check step (`src/precheck.js`, Node built-ins only) runs first: it sets up the branch, loads the state, and hashes the in-scope files with the same code as `main.js`. It outputs `changed=true` when a file is new, changed, or deleted, the comment level changed, or a generated doc is missing. Otherwise it logs "No changes since the last run", and every later step, including model selection and the Ollama install, is skipped.
 - The first run, with no state file, processes the whole repo, within runner time limits.
-- Write `.docturnal/last-run.md` as the pull request body. It lists comments added per file and whether a parser checked each file, docs updated or removed, comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
+- Write `.docturnal/last-run.md` as the pull request body. It lists comments added per file and whether a parser checked each file, a count per file of comments proposed, dropped by placement rules, the length limit, or the density limit, rejected by the safety check, and added (never comment text or code), docs updated or removed, comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
 
 ## Names
 

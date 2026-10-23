@@ -24,7 +24,7 @@ const LEVEL_GUIDANCE = {
 
 const SYSTEM_PROMPT = `You review source code and propose comments for it. You never rewrite code.
 
-Each code line is prefixed with its line number and "| ". For every comment, give:
+Each code line is prefixed with its line number and "| ". Line numbers start at 1. For every comment, give:
 - line: the number of the code line the comment describes. The comment is placed directly above that line.
 - text: the comment text only, without comment markers such as //, #, /*, or *.
 - kind: "line" for a single-line comment, or "block" for a multiline comment.
@@ -229,10 +229,22 @@ function placementProblem(target, lines, analysis, protectedUntil) {
 }
 
 // Where existing comments sit: a run of comment lines documents the line after it,
-// and a trailing comment documents its own line.
+// and a trailing comment documents its own line. A file header, a comment run before the
+// first code line and followed by a blank line, documents the file instead, so it does not
+// count toward the level or the gap between comments.
 function existingCommentPositions(info) {
   const positions = [];
-  for (let i = 0; i < info.length; i++) {
+  let start = 0;
+  while (start < info.length && info[start].blank) start++;
+  if (start < info.length && info[start].commentOnly) {
+    let end = start;
+    while (end + 1 < info.length && info[end + 1].commentOnly) end++;
+    if (end + 1 < info.length && info[end + 1].blank) start = end + 1;
+    else start = 0;
+  } else {
+    start = 0;
+  }
+  for (let i = start; i < info.length; i++) {
     if (info[i].commentOnly) {
       let end = i;
       while (end + 1 < info.length && info[end + 1].commentOnly) end++;
@@ -262,23 +274,70 @@ function render(lines, insertions, eol, bom) {
   return { text: bom + out.join(''), inserted };
 }
 
-function result(text, added, rejections) {
-  return { text, added, rejected: rejections.length, rejections };
+// What happens to each proposal, by category. The PR body and the log count these.
+const CATEGORY = {
+  placement: /^(line out of range|shebang|blank line|inside a string|existing comment|import|closing bracket|previous line is a comment|duplicate line)/,
+  length: /^(longer than|block comment longer than)/,
+  density: /^(level limit reached|within \d+ lines of another comment)/,
+  off: /^comment level is off/,
+};
+
+function categoryOf(reason) {
+  for (const [category, re] of Object.entries(CATEGORY)) if (re.test(reason)) return category;
+  // Everything else protects the code or the text: verification, directives, AI mentions, and so on.
+  return 'safety';
+}
+
+function emptyStats(proposed) {
+  return { proposed, added: 0, lineShift: 0, dropped: { placement: {}, length: {}, density: {}, safety: {}, off: {} } };
+}
+
+function result(text, added, rejections, stats) {
+  for (const r of rejections) {
+    const bucket = stats.dropped[r.category];
+    bucket[r.reason] = (bucket[r.reason] || 0) + 1;
+  }
+  stats.added = added;
+  return { text, added, rejected: rejections.length, rejections, stats };
+}
+
+function hasLine(proposal) {
+  return proposal !== null && typeof proposal === 'object' && Number.isInteger(proposal.line);
+}
+
+// Small models sometimes count lines from 0. Within one model response, line numbers are
+// read as zero-based only on clear evidence: one of them is 0, or there are at least two,
+// none can take a comment as given, and all can after adding 1. Anything else keeps the
+// numbers as given, so a comment never moves onto a line it was not written for.
+// Returns the shift to add: 0 or 1.
+function lineShiftFor(group, isPlaceable) {
+  const numbered = group.filter(hasLine);
+  if (!numbered.length) return 0;
+  if (numbered.some((p) => p.line === 0)) return 1;
+  if (numbered.length < 2) return 0;
+  const noneFit = numbered.every((p) => !isPlaceable(p.line));
+  const allFitShifted = numbered.every((p) => isPlaceable(p.line + 1));
+  return noneFit && allFitShifted ? 1 : 0;
 }
 
 // Filters, limits, inserts, and verifies proposals for one file.
-// proposals: [{ line, text, kind }]. Returns { text, added, rejected, rejections }.
-function applyProposals({ text, language, level, proposals }) {
+// proposals: [{ line, text, kind }], or groups: one array of proposals per model response.
+// Returns { text, added, rejected, rejections, stats }, where stats counts the proposals
+// and what happened to them, and never holds comment text.
+function applyProposals({ text, language, level, proposals, groups = [proposals] }) {
   const rules = LEVELS[level];
+  const all = groups.flat();
+  const stats = emptyStats(all.length);
   const rejections = [];
-  const reject = (proposal, reason) => rejections.push({ line: proposal && proposal.line, reason });
+  const reject = (proposal, reason) =>
+    rejections.push({ line: hasLine(proposal) ? proposal.line : undefined, reason, category: categoryOf(reason) });
   const rejectAll = (reason) => {
-    proposals.forEach((p) => reject(p, reason));
-    return result(text, 0, rejections);
+    all.forEach((p) => reject(p, reason));
+    return result(text, 0, rejections, stats);
   };
 
   if (!rules) return rejectAll('comment level is off');
-  if (!proposals.length) return result(text, 0, rejections);
+  if (!all.length) return result(text, 0, rejections, stats);
 
   const { bom, body } = stripBom(text);
   const lines = splitLines(body);
@@ -293,10 +352,19 @@ function applyProposals({ text, language, level, proposals }) {
     analysis.info[i].commentOnly = false;
     analysis.info[i].hasComment = false;
   }
+  const isPlaceable = (line) => line >= 1 && line <= lines.length &&
+    !placementProblem(resolveTarget(line, lines, analysis, language), lines, analysis, protectedUntil);
+  const aligned = [];
+  for (const group of groups) {
+    const shift = lineShiftFor(group, isPlaceable);
+    if (shift) stats.lineShift += group.filter(hasLine).length;
+    aligned.push(...group.map((p) => (shift && hasLine(p) ? { ...p, line: p.line + shift } : p)));
+  }
+
   const candidates = [];
   const seenTargets = new Set();
-  for (const proposal of proposals) {
-    if (!proposal || !Number.isInteger(proposal.line) || proposal.line < 1 || proposal.line > lines.length) {
+  for (const proposal of aligned) {
+    if (!hasLine(proposal) || proposal.line < 1 || proposal.line > lines.length) {
       reject(proposal, 'line out of range');
       continue;
     }
@@ -328,15 +396,25 @@ function applyProposals({ text, language, level, proposals }) {
       continue;
     }
     seenTargets.add(target);
-    candidates.push({ proposal, target, kind, paragraphs: kind === 'block' ? cleaned.paragraphs : [cleaned.joined] });
+    candidates.push({
+      proposal,
+      target,
+      kind,
+      declaration: analysis.info[target - 1].isDeclaration,
+      paragraphs: kind === 'block' ? cleaned.paragraphs : [cleaned.joined],
+    });
   }
 
   // Existing comments count toward the level's limits, so re-runs do not pile up comments.
+  // Every file may have at least one comment, so a short file with a function can get one.
   const codeLines = analysis.info.filter((li) => !li.blank && !li.commentOnly).length;
   const allowed = Math.max(1, Math.round(codeLines / rules.linesPerComment));
   const taken = existingCommentPositions(analysis.info);
   let budget = allowed - taken.length;
-  candidates.sort((a, b) => (a.kind === b.kind ? a.target - b.target : a.kind === 'block' ? -1 : 1));
+  // Block comments first, then comments on functions and classes, then the rest, each in
+  // file order, so a limited budget goes to declarations.
+  const rank = (c) => (c.kind === 'block' ? 0 : c.declaration ? 1 : 2);
+  candidates.sort((a, b) => rank(a) - rank(b) || a.target - b.target);
   const accepted = [];
   for (const candidate of candidates) {
     if (budget <= 0) {
@@ -351,7 +429,7 @@ function applyProposals({ text, language, level, proposals }) {
     accepted.push(candidate);
     budget--;
   }
-  if (!accepted.length) return result(text, 0, rejections);
+  if (!accepted.length) return result(text, 0, rejections, stats);
 
   const eol = dominantEol(lines);
   const insertionFor = (c) => ({
@@ -361,7 +439,7 @@ function applyProposals({ text, language, level, proposals }) {
   const renderSet = (set) => render(lines, set.map(insertionFor), eol, bom);
 
   const full = renderSet(accepted);
-  if (verifyCandidates(language, text, [full])[0]) return result(full.text, accepted.length, rejections);
+  if (verifyCandidates(language, text, [full])[0]) return result(full.text, accepted.length, rejections, stats);
 
   // The full set failed, so test each comment alone and keep only those that pass.
   const singles = accepted.map((c) => renderSet([c]));
@@ -370,13 +448,13 @@ function applyProposals({ text, language, level, proposals }) {
     if (!passed[i]) reject(c.proposal, 'verification failed');
     return passed[i];
   });
-  if (!kept.length) return result(text, 0, rejections);
+  if (!kept.length) return result(text, 0, rejections, stats);
   const combined = renderSet(kept);
   if (!verifyCandidates(language, text, [combined])[0]) {
     kept.forEach((c) => reject(c.proposal, 'verification failed in combination'));
-    return result(text, 0, rejections);
+    return result(text, 0, rejections, stats);
   }
-  return result(combined.text, kept.length, rejections);
+  return result(combined.text, kept.length, rejections, stats);
 }
 
 function numberedLine(lines, i) {
@@ -436,7 +514,7 @@ function parseResponse(content) {
 // Returns { path, language, summary, symbols, text, added, rejected, rejections, failedWindows, errors }.
 async function commentFile({ path, text, level = 'medium', model, contextTokens = 8192, chat = ollama.chat, host }) {
   const language = languageForPath(path);
-  const base = { path, language: language && language.id, summary: '', symbols: [], text, added: 0, rejected: 0, rejections: [], failedWindows: 0, errors: [] };
+  const base = { path, language: language && language.id, summary: '', symbols: [], text, added: 0, rejected: 0, rejections: [], stats: emptyStats(0), failedWindows: 0, errors: [] };
   if (!language) return { ...base, skipped: 'unsupported language' };
   const lines = splitLines(stripBom(text).body);
   if (isMinified(lines)) return { ...base, skipped: 'minified' };
@@ -444,7 +522,7 @@ async function commentFile({ path, text, level = 'medium', model, contextTokens 
   const windows = buildWindows(lines, contextTokens);
   const summaries = [];
   const symbols = new Set();
-  const proposals = [];
+  const groups = [];
   for (const [index, window] of windows.entries()) {
     try {
       const content = await chat({
@@ -457,14 +535,14 @@ async function commentFile({ path, text, level = 'medium', model, contextTokens 
       const parsed = parseResponse(content);
       if (parsed.summary) summaries.push(parsed.summary);
       parsed.symbols.forEach((s) => symbols.add(s));
-      proposals.push(...parsed.comments);
+      groups.push(parsed.comments);
     } catch (err) {
       base.failedWindows++;
       base.errors.push(`lines ${window.start + 1}-${window.end}: ${err.message}`);
     }
   }
 
-  const applied = applyProposals({ text, language, level, proposals });
+  const applied = applyProposals({ text, language, level, groups });
   return {
     ...base,
     summary: summaries.join(' ').slice(0, 1000),
@@ -474,6 +552,7 @@ async function commentFile({ path, text, level = 'medium', model, contextTokens 
 }
 
 module.exports = {
+  CATEGORY,
   LEVELS,
   RESPONSE_SCHEMA,
   applyProposals,

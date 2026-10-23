@@ -457,6 +457,32 @@ describe('push to docturnal/update', () => {
     expect(t.logs.at(-1)).toBe('push octo/hello: updated pull request #1');
   });
 
+  it("ends the body with the settings link after the Action's last-run.md, which does not contain the link itself", async () => {
+    // A report built by the Action's own code, with per-file comment counts.
+    const { buildReport } = await import('../../src/report.js');
+    const report: string = buildReport({
+      processed: [{ path: 'math.js', verifier: 'typescript', added: 1, rejections: [], stats: { proposed: 3, added: 1, lineShift: 0, dropped: { placement: {}, length: {}, density: { 'level limit reached': 2 }, safety: {}, off: {} } } }],
+      models: { comment: 'qwen2.5-coder:3b', docs: 'qwen2.5-coder:7b', level: 'medium' },
+    });
+    expect(report).not.toContain('Change Docturnal settings');
+    const t = setup({ files: { 'docturnal/update:.docturnal/last-run.md': report } });
+    await t.deliver('push', pushToUpdate());
+    const body: string = t.gh.state.pulls[0].body;
+    expect(body).toContain('| `math.js` | 1 | Yes (TypeScript) | proposed 3, 2 dropped by the density limit, 1 added |');
+    expect(body.endsWith(`\n\n---\n\n${SETTINGS_LINK}`)).toBe(true);
+  });
+
+  it('keeps the settings link at the end when a long last-run.md is shortened', async () => {
+    const long = `# Docturnal update\n\n${'- A line of the report.\n'.repeat(5000)}`;
+    const t = setup({ files: { 'docturnal/update:.docturnal/last-run.md': long } });
+    await t.deliver('push', pushToUpdate());
+    const body: string = t.gh.state.pulls[0].body;
+    // GitHub rejects pull request bodies over 65,536 characters.
+    expect(body.length).toBeLessThanOrEqual(65536);
+    expect(body).toContain('The rest of this description is in `.docturnal/last-run.md`.');
+    expect(body.endsWith(SETTINGS_LINK)).toBe(true);
+  });
+
   it('ignores pushes by anyone but github-actions[bot] and pushes to other branches', async () => {
     const t = setup();
     await t.deliver('push', pushToUpdate('octo'));

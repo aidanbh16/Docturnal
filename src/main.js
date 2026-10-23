@@ -12,7 +12,7 @@ const { readConfig, ConfigError } = require('./config');
 const { generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, prepareBranch } = require('./git');
 const { readTotalMemory, selectModels } = require('./models');
-const { buildReport } = require('./report');
+const { buildReport, proposalSummary } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState } = require('./state');
 
 // Time kept free for the docs after the last file is commented.
@@ -83,8 +83,8 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
       continue;
     }
     files.set(entry.path, { hash: hashContent(finalBuffer), summary: result.summary, symbols: result.symbols });
-    processed.push({ path: entry.path, verifier: entry.language.verifier, added: result.added, rejections: result.rejections });
-    log(`${entry.path}: ${result.added} comments added, ${result.rejected} rejected`);
+    processed.push({ path: entry.path, verifier: entry.language.verifier, added: result.added, rejections: result.rejections, stats: result.stats });
+    log(`${entry.path}: ${proposalSummary(result.stats, { reasons: true })}`);
   }
 
   // Phase 2: docs, with the docs model only.

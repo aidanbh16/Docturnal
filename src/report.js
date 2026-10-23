@@ -2,9 +2,16 @@
 
 // Builds .docturnal/last-run.md, which the GitHub App uses as the pull request description.
 
-// Rejections that protect the code. The rest only keep the comment level and placement tidy.
-const SAFETY_REASON = /^(inside a string|shebang|tool directive|verification failed|cannot analyze|PHP file|contains \?>|JSDoc tag|mentions AI|emoji)/;
 const MAX_REJECTION_ROWS = 100;
+
+// What happened to proposed comments, by category, in report order.
+const DROP_LABELS = {
+  placement: 'dropped by placement rules',
+  length: 'dropped by the length limit',
+  density: 'dropped by the density limit',
+  safety: 'rejected by the safety check',
+  off: 'skipped because the comment level is off',
+};
 
 const VERIFIERS = { typescript: 'Yes (TypeScript)', python: 'Yes (Python)' };
 
@@ -16,7 +23,29 @@ function plural(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
-// processed: [{ path, verifier, added, rejections }]
+// A reason without details that could come from the file, such as a parser message.
+function shortReason(reason) {
+  return reason.replace(/^(cannot analyze file):.*$/s, '$1');
+}
+
+// One file's proposals as counts, for example "proposed 3, 2 dropped by the density limit,
+// 1 added". With reasons, each category lists its reasons with counts. It never includes
+// comment text or code.
+function proposalSummary(stats, { reasons = false } = {}) {
+  const parts = [`proposed ${stats.proposed}`];
+  for (const [category, label] of Object.entries(DROP_LABELS)) {
+    const counts = Object.entries(stats.dropped[category] || {});
+    const total = counts.reduce((sum, [, n]) => sum + n, 0);
+    if (!total) continue;
+    const detail = reasons ? ` (${counts.map(([reason, n]) => `${shortReason(reason)}: ${n}`).join(', ')})` : '';
+    parts.push(`${total} ${label}${detail}`);
+  }
+  parts.push(`${stats.added} added`);
+  const summary = parts.join(', ');
+  return stats.lineShift ? `${summary}; line numbers were read as counting from 0` : summary;
+}
+
+// processed: [{ path, verifier, added, rejections, stats }]
 // docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }] }
 // leftOver: [{ path, reason }]
 // models: { comment, docs, fallback, fallbackUsed, level }
@@ -32,9 +61,10 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   const lines = ['# Docturnal update', '', `${what} Review the changes, then merge the pull request to keep them.`];
 
   if (processed.length) {
-    lines.push('', '## Comments added', '', '| File | Comments added | Checked by a parser |', '| --- | --- | --- |');
+    lines.push('', '## Comments added', '', '| File | Comments added | Checked by a parser | Proposed comments |', '| --- | --- | --- | --- |');
     for (const file of processed) {
-      lines.push(`| \`${cell(file.path)}\` | ${file.added} | ${VERIFIERS[file.verifier] || 'No, placement rules only'} |`);
+      const proposals = file.stats ? proposalSummary(file.stats) : '-';
+      lines.push(`| \`${cell(file.path)}\` | ${file.added} | ${VERIFIERS[file.verifier] || 'No, placement rules only'} | ${cell(proposals)} |`);
     }
   }
 
@@ -44,26 +74,20 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
     for (const doc of docs.removed) lines.push(`- Removed \`${doc}\` because its layer no longer exists`);
   }
 
+  // The proposed-comments column covers placement, length, and density. This section lists
+  // each rejection that protects the code, by line and reason.
   const rejected = [];
-  let otherCount = 0;
   for (const file of processed) {
     for (const r of file.rejections || []) {
-      if (SAFETY_REASON.test(r.reason)) rejected.push({ path: file.path, line: r.line, reason: r.reason });
-      else otherCount++;
+      if (r.category === 'safety') rejected.push({ path: file.path, line: r.line, reason: shortReason(r.reason) });
     }
   }
-  if (rejected.length || otherCount) {
-    lines.push('', '## Comments rejected by the safety check', '');
-    if (rejected.length) {
-      lines.push('| File | Line | Reason |', '| --- | --- | --- |');
-      for (const r of rejected.slice(0, MAX_REJECTION_ROWS)) {
-        lines.push(`| \`${cell(r.path)}\` | ${Number.isInteger(r.line) ? r.line : '-'} | ${cell(r.reason)} |`);
-      }
-      if (rejected.length > MAX_REJECTION_ROWS) lines.push('', `${rejected.length - MAX_REJECTION_ROWS} more are not shown.`);
-    } else {
-      lines.push('No comments were rejected by the safety check.');
+  if (rejected.length) {
+    lines.push('', '## Comments rejected by the safety check', '', '| File | Line | Reason |', '| --- | --- | --- |');
+    for (const r of rejected.slice(0, MAX_REJECTION_ROWS)) {
+      lines.push(`| \`${cell(r.path)}\` | ${Number.isInteger(r.line) ? r.line : '-'} | ${cell(r.reason)} |`);
     }
-    if (otherCount) lines.push('', `${plural(otherCount, 'other proposed comment')} ${otherCount === 1 ? 'was' : 'were'} left out to keep the comment level and placement rules.`);
+    if (rejected.length > MAX_REJECTION_ROWS) lines.push('', `${rejected.length - MAX_REJECTION_ROWS} more are not shown.`);
   }
 
   const waiting = [...leftOver, ...docs.pending];
@@ -79,4 +103,4 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { buildReport };
+module.exports = { buildReport, proposalSummary };
