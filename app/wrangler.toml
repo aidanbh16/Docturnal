@@ -9,7 +9,7 @@ GITHUB_API_URL = "https://api.github.com"
 GITHUB_WEB_URL = "https://github.com"
 # The repository that publishes the Docturnal Action, such as "owner/docturnal".
 # Set during app registration and deploy.
-ACTION_REPOSITORY = ""
+ACTION_REPOSITORY = "aidanbh16/Docturnal"
 # How the Contents API path is sent: "encoded" (.github%2Fworkflows%2F...) or "plain".
 # Switch to "plain" if the real-api check in the logs shows GitHub rejecting the encoded path.
 CONTENTS_PATH_STYLE = "encoded"
