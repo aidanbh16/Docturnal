@@ -17,7 +17,9 @@ export function createMockGitHub({
   failPuts = 0,
   // Workflow runs that have not finished: [{ repo, status }], status in_progress, queued, or pending.
   runs = [],
-  // codes: OAuth code -> user token; installations: user token -> installations it can access.
+  // codes: OAuth code -> user token, each usable once like GitHub's; installations: user
+  // token -> installations it can access; clientSecret: when set, the only accepted secret;
+  // authorizeAs: the user token that the authorize page issues new codes for.
   oauth = { codes: {}, installations: {} },
 } = {}) {
   const state = {
@@ -61,9 +63,24 @@ export function createMockGitHub({
     if (!pathname.startsWith('/login/')) state.apiVersions.push(currentVersion);
 
     if (method === 'POST' && pathname === '/login/oauth/access_token') {
+      state.codeExchanges = (state.codeExchanges ?? 0) + 1;
+      if (!body.client_id || !body.client_secret || (oauth.clientSecret && body.client_secret !== oauth.clientSecret)) {
+        return json(200, { error: 'incorrect_client_credentials', error_description: 'The client_id and/or client_secret passed are incorrect.' });
+      }
       const token = oauth.codes[body.code];
-      if (!token || !body.client_id || !body.client_secret) return json(200, { error: 'bad_verification_code' });
+      // GitHub answers 200 with an error for a wrong, used, or expired code.
+      if (!token) return json(200, { error: 'bad_verification_code', error_description: 'The code passed is incorrect or expired.' });
+      delete oauth.codes[body.code];
       return json(200, { access_token: token, token_type: 'bearer' });
+    }
+    // A user who already approved the app: GitHub sends them straight back with a new code.
+    if (method === 'GET' && pathname === '/login/oauth/authorize' && oauth.authorizeAs) {
+      const code = `code-${(state.issuedCodes = (state.issuedCodes ?? 0) + 1)}`;
+      oauth.codes[code] = oauth.authorizeAs;
+      const back = new URL(searchParams.get('redirect_uri'));
+      back.searchParams.set('code', code);
+      if (searchParams.get('state')) back.searchParams.set('state', searchParams.get('state'));
+      return new Response(null, { status: 302, headers: { location: back.toString() } });
     }
     if (method === 'GET' && pathname === '/user/installations') {
       const token = String(headers.authorization || '').replace(/^Bearer /, '');

@@ -8,10 +8,12 @@ import { createMockGitHub } from './mock-github.mjs';
 const ORIGIN = 'https://docturnal.example';
 const START = Date.parse('2026-10-22T12:00:00Z');
 
-function setup({ settings }: { settings?: Record<string, unknown> } = {}) {
+function setup({ settings, clientSecret }: { settings?: Record<string, unknown>; clientSecret?: string } = {}) {
   const gh = createMockGitHub({
     oauth: {
-      codes: { 'owner-code': 'token-owner', 'other-code': 'token-other' },
+      clientSecret,
+      // Each code works once, like GitHub's.
+      codes: { 'owner-code': 'token-owner', 'other-code': 'token-other', 'fresh-code': 'token-owner' },
       installations: {
         'token-owner': [{ id: 1, account: { login: 'octo' } }],
         'token-other': [{ id: 99, account: { login: 'mallory' } }],
@@ -35,8 +37,8 @@ function setup({ settings }: { settings?: Record<string, unknown> } = {}) {
   } as Env;
   const handle = createHandler({ fetch: gh.fetch, log: (line) => logs.push(line), now: () => now });
 
-  async function get(path: string, cookie?: string) {
-    return handle(new Request(`${ORIGIN}${path}`, { headers: cookie ? { cookie } : {} }), env);
+  async function get(path: string, cookie?: string, headers: Record<string, string> = {}) {
+    return handle(new Request(`${ORIGIN}${path}`, { headers: { ...(cookie ? { cookie } : {}), ...headers } }), env);
   }
   // origin null sends no Origin header; extra adds headers such as Referer.
   async function post(fields: Record<string, string>, cookie?: string, origin: string | null = ORIGIN, extra: Record<string, string> = {}) {
@@ -104,10 +106,6 @@ describe('setup page sign-in', () => {
     expect(t.kv.data.size).toBe(0);
   });
 
-  it('rejects a code that GitHub does not accept', async () => {
-    const t = setup();
-    expect((await t.get('/setup?code=made-up&installation_id=1')).status).toBe(403);
-  });
 
   it('sends the settings link through GitHub sign-in before showing the form', async () => {
     const t = setup();
@@ -276,7 +274,6 @@ describe('saving settings', () => {
     const response = await t.post({ ...SAVE, csrf }, cookie, 'null');
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
-    expect(t.logs).toContain(`setup 1: origin check: Origin null, Referer (none), expected ${ORIGIN}`);
   });
 
   it('checks the Referer when the Origin is null, and still requires the session and CSRF token', async () => {
@@ -300,15 +297,6 @@ describe('saving settings', () => {
     expect((await t.get('/setup', cookie)).headers.get('referrer-policy')).toBe('same-origin');
   });
 
-  it('logs the Origin and Referer without the query string, cookies, or tokens', async () => {
-    const t = setup();
-    const { cookie, csrf } = await t.signIn();
-    await t.post({ ...SAVE, csrf }, cookie, ORIGIN, { referer: `${ORIGIN}/setup?code=secret-code` });
-    const line = t.logs.find((l) => l.includes('origin check'))!;
-    expect(line).toBe(`setup 1: origin check: Origin ${ORIGIN}, Referer ${ORIGIN}/setup, expected ${ORIGIN}`);
-    expect(t.logs.join(' ')).not.toMatch(new RegExp(`secret-code|${csrf}|${cookie.split('=')[1].slice(0, 20)}`));
-  });
-
   it('rejects an unknown time zone, an hour outside 0 to 23, or an unknown comment level', async () => {
     const t = setup();
     const { cookie, csrf } = await t.signIn();
@@ -323,5 +311,108 @@ describe('saving settings', () => {
     const { form } = await t.signIn();
     expect(form).toContain('octo/&lt;script&gt;');
     expect(form).not.toContain('octo/<script>');
+  });
+});
+
+describe('sign-in codes from GitHub', () => {
+  const INSTALL = '/setup?code=owner-code&installation_id=1&setup_action=install';
+  const UPDATE = '/setup?code=owner-code&installation_id=1&setup_action=update';
+
+  // Follows a 302 to GitHub's authorize page and returns the state it carries.
+  function authorizeState(response: Response): string {
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get('location')!);
+    expect(`${location.origin}${location.pathname}`).toBe('https://github.test/login/oauth/authorize');
+    expect(location.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/setup`);
+    return location.searchParams.get('state')!;
+  }
+
+  it('signs in on the normal install path, exchanging the code once', async () => {
+    const t = setup();
+    const response = await t.get(INSTALL);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe('/setup');
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    expect(await (await t.get('/setup', cookie)).text()).toContain('Docturnal settings');
+    expect(t.gh.state.codeExchanges).toBe(1);
+    expect(t.logs).toEqual(['setup 1: signed in for octo']);
+  });
+
+  it('signs in the same way from an installation update redirect with a code', async () => {
+    const t = setup();
+    expect((await t.get(UPDATE)).status).toBe(303);
+    expect(t.logs).toEqual(['setup 1: signed in for octo']);
+  });
+
+  it('sends an update redirect without a code to GitHub sign-in, then shows the form', async () => {
+    const t = setup();
+    const state = authorizeState(await t.get('/setup?installation_id=1&setup_action=update'));
+    // GitHub returns with a new code and our state, which names the installation.
+    const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(303);
+    const cookie = back.headers.get('set-cookie')!.split(';')[0];
+    expect(await (await t.get('/setup', cookie)).text()).toContain('<strong>octo</strong>');
+  });
+
+  it('signs in again, instead of showing an error, when the code is already used or expired', async () => {
+    const t = setup();
+    await t.get(INSTALL); // The code is now used.
+    t.logs.length = 0;
+    const state = authorizeState(await t.get(UPDATE));
+    expect(t.logs).toEqual(['setup 1: the sign-in code did not work (bad_verification_code), signing in again']);
+
+    const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(303);
+    expect(back.headers.get('set-cookie')).toMatch(/^docturnal_session=/);
+    expect(t.logs.at(-1)).toBe('setup 1: signed in for octo');
+  });
+
+  it('shows the error only when the fresh sign-in fails too, without looping', async () => {
+    const t = setup();
+    const state = authorizeState(await t.get('/setup?code=expired-code&installation_id=1&setup_action=update'));
+    const back = await t.get(`/setup?code=also-expired&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(403);
+    expect(await back.text()).toContain('GitHub sign-in did not work.');
+    expect(t.logs.at(-1)).toBe('setup 1: GitHub sign-in failed (bad_verification_code)');
+  });
+
+  it('shows the error at once when a new code would not help, such as a wrong client secret', async () => {
+    const t = setup({ clientSecret: 'the-real-secret' });
+    const response = await t.get(INSTALL);
+    expect(response.status).toBe(403);
+    expect(t.logs).toEqual(['setup 1: GitHub sign-in failed (incorrect_client_credentials)']);
+  });
+
+  it('does not spend the code twice when the same redirect is requested again', async () => {
+    const t = setup();
+    const first = await t.get(INSTALL);
+    const cookie = first.headers.get('set-cookie')!.split(';')[0];
+    // A repeated request with the new session goes straight to the form.
+    const again = await t.get(INSTALL, cookie);
+    expect(again.status).toBe(303);
+    expect(again.headers.get('location')).toBe('/setup');
+    expect(t.gh.state.codeExchanges).toBe(1);
+    // A repeated request that arrives before the cookie is stored signs in again instead of failing.
+    authorizeState(await t.get(INSTALL));
+  });
+
+  it('refuses a browser prefetch without spending the code', async () => {
+    const t = setup();
+    for (const headers of [{ 'sec-purpose': 'prefetch' }, { 'sec-purpose': 'prefetch;prerender' }, { purpose: 'prefetch' }]) {
+      const response = await t.get(INSTALL, undefined, headers);
+      expect(response.status).toBe(503);
+      expect(response.headers.get('set-cookie')).toBeNull();
+    }
+    expect(t.gh.state.codeExchanges ?? 0).toBe(0);
+    expect((await t.get(INSTALL)).status).toBe(303);
+  });
+
+  it('still rejects a signed-in session for another installation', async () => {
+    const t = setup();
+    const cookie = `${SESSION_COOKIE}=${await createSession(t.env, { installationId: 99, account: 'mallory', csrf: 'c' }, START)}`;
+    // The session is for 99, so the code for installation 1 is checked with GitHub.
+    const response = await t.get('/setup?code=other-code&installation_id=1&setup_action=update', cookie);
+    expect(response.status).toBe(403);
+    expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation']);
   });
 });

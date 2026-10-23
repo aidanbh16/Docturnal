@@ -261,7 +261,9 @@ Each webhook writes one line to `npx wrangler tail`. Find the line in this table
 | --- | --- |
 | `rejected, not configured (missing ...)` | Set the missing secret (step 6). If it names the `SETUP_QUEUE` or `SETTINGS` binding, create the queue or KV namespace and deploy again (step 4). |
 | `setup: not configured (missing CLIENT_ID, ...)` | Set `CLIENT_ID` and `CLIENT_SECRET` (step 6). The settings page answers 503 until you do. |
-| `setup ...: GitHub sign-in failed` | `CLIENT_SECRET` does not match the app's client secret. Generate a new one on the app settings page and set it again (step 6). |
+| `setup ...: GitHub sign-in failed (incorrect_client_credentials)` | `CLIENT_SECRET` or `CLIENT_ID` does not match the app. Generate a new client secret on the app settings page and set it again (step 6). |
+| `setup ...: the sign-in code did not work (bad_verification_code), signing in again` | Nothing to fix. The code from GitHub was already used or expired, so the page sent the user through GitHub sign-in again. |
+| `setup ...: GitHub sign-in failed (bad_verification_code)` | The fresh sign-in failed too. Check that the app's callback URL is `https://<your worker>/setup` (step 5).
 | `setup ...: rejected, the signed-in user cannot access this installation` | The person who signed in cannot manage that installation. That is the intended check; sign in with an account that can. |
 | `cron ...: 0 installations due` every hour | Normal outside each installation's chosen hour. If a run never starts, check the time and time zone on the settings page. |
 | `rejected, bad signature` | The webhook secrets do not match. Set `WEBHOOK_SECRET` again from the app settings (step 6). |

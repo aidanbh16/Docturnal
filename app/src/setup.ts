@@ -42,15 +42,34 @@ const LEVEL_DESCRIPTIONS: Record<CommentLevel, string> = {
 
 // --- GitHub sign-in ---
 
-async function exchangeCode(env: SetupEnv, options: SetupOptions, code: string): Promise<string | null> {
-  const response = await options.fetch(`${env.GITHUB_WEB_URL || 'https://github.com'}/login/oauth/access_token`, {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'docturnal-app' },
-    body: JSON.stringify({ client_id: env.CLIENT_ID, client_secret: env.CLIENT_SECRET, code }),
-  });
-  if (!response.ok) return null;
-  const data = (await response.json()) as { access_token?: string };
-  return typeof data.access_token === 'string' ? data.access_token : null;
+// Exchanges a sign-in code for a user token. On failure, returns GitHub's error code, such
+// as bad_verification_code for a code that is wrong, already used, or expired (codes are
+// single-use and last 10 minutes). Error codes are fixed names, safe to log.
+async function exchangeCode(env: SetupEnv, options: SetupOptions, code: string): Promise<{ token: string } | { error: string }> {
+  let response: Response;
+  try {
+    response = await options.fetch(`${env.GITHUB_WEB_URL || 'https://github.com'}/login/oauth/access_token`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'docturnal-app' },
+      body: JSON.stringify({ client_id: env.CLIENT_ID, client_secret: env.CLIENT_SECRET, code }),
+    });
+  } catch {
+    return { error: 'request failed' };
+  }
+  if (!response.ok) return { error: `HTTP ${response.status}` };
+  const data = (await response.json().catch(() => ({}))) as { access_token?: unknown; error?: unknown };
+  if (typeof data.access_token === 'string' && data.access_token) return { token: data.access_token };
+  return { error: typeof data.error === 'string' && /^[a-z_]{1,64}$/.test(data.error) ? data.error : 'unexpected response' };
+}
+
+// Errors that a new code fixes. Anything else, such as wrong client credentials, would fail
+// again, so it is shown at once.
+const CODE_ERRORS = new Set(['bad_verification_code']);
+
+// Browsers announce speculative loads, which must not spend a single-use code.
+function isPrefetch(request: Request): boolean {
+  const purpose = `${request.headers.get('sec-purpose') ?? ''} ${request.headers.get('purpose') ?? ''} ${request.headers.get('x-moz') ?? ''}`;
+  return /prefetch|prerender/i.test(purpose);
 }
 
 // Finds the installation among the ones this user can access, or returns null.
@@ -245,11 +264,17 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
   const requested = Number(url.searchParams.get('installation_id'));
 
   if (code) {
-    // GitHub sends installation_id after an install; after the settings link, our own
-    // signed state carries it instead.
+    // A prefetch or prerender would spend the code before the real visit; refuse it, and
+    // the browser loads the page normally when the user gets there.
+    if (isPrefetch(request)) {
+      return new Response('Not available for prefetch.\n', { status: 503, headers: { 'cache-control': 'no-store' } });
+    }
+    // GitHub sends installation_id after an install or an installation update; after our own
+    // sign-in redirect, the signed state carries it instead.
     let installationId = requested;
     const stateParam = url.searchParams.get('state');
-    if (stateParam && !url.searchParams.has('installation_id')) {
+    const fromOurRedirect = Boolean(stateParam) && !url.searchParams.has('installation_id');
+    if (fromOurRedirect) {
       const state = await verifyToken<{ installationId: number }>(env.WEBHOOK_SECRET, 'state', stateParam, now);
       if (!state) return errorPage(400, 'This sign-in link expired. Open the settings link in a Docturnal pull request again.');
       installationId = state.installationId;
@@ -257,12 +282,24 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
     if (!Number.isInteger(installationId) || installationId <= 0) {
       return errorPage(400, 'This link is missing the installation. Open the settings link in a Docturnal pull request.');
     }
-    const token = await exchangeCode(env, options, code);
-    if (!token) {
-      options.log(`setup ${installationId}: GitHub sign-in failed`);
+    // Already signed in for this installation, for example on a second visit or a repeated
+    // request: show the form without spending the code.
+    const existing = await readSession(request, env, now);
+    if (existing && existing.installationId === installationId) {
+      return new Response(null, { status: 303, headers: { location: '/setup', 'cache-control': 'no-store' } });
+    }
+    const exchanged = await exchangeCode(env, options, code);
+    if ('error' in exchanged) {
+      // GitHub's own redirect brought a code that no longer works: sign in again, once. If
+      // the code came back from that fresh sign-in, show the error instead of looping.
+      if (!fromOurRedirect && CODE_ERRORS.has(exchanged.error)) {
+        options.log(`setup ${installationId}: the sign-in code did not work (${exchanged.error}), signing in again`);
+        return signInRedirect(env, url.origin, installationId, now);
+      }
+      options.log(`setup ${installationId}: GitHub sign-in failed (${exchanged.error})`);
       return errorPage(403, 'GitHub sign-in did not work. Open the settings link in a Docturnal pull request and try again.');
     }
-    const access = await findUserInstallation(env, options, token, installationId);
+    const access = await findUserInstallation(env, options, exchanged.token, installationId);
     if (!access) {
       options.log(`setup ${installationId}: rejected, the signed-in user cannot access this installation`);
       return errorPage(403, "You can't change these settings. Sign in with a GitHub account that can manage this Docturnal installation.");
@@ -284,28 +321,14 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
   return errorPage(400, 'Open this page from the settings link in a Docturnal pull request.');
 }
 
-// Strips the query and fragment, so the log never shows a token that was in a URL.
-function withoutQuery(url: string | null): string {
-  if (url === null) return '(none)';
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return '(not a URL)';
-  }
-}
-
 // Checks that a POST came from our own page. The expected origin is always the origin of the
 // incoming request URL. A browser sends "Origin: null" for a form submit under some referrer
 // policies; then the Referer must match, and without a Referer the request is allowed here
 // and must still pass the session and CSRF checks that follow.
-function sameOriginPost(request: Request, installationId: number, options: SetupOptions): boolean {
+function sameOriginPost(request: Request): boolean {
   const expected = new URL(request.url).origin;
   const origin = request.headers.get('origin');
   const referer = request.headers.get('referer');
-  // Temporary: shows what the browser sent while the Save problem is confirmed fixed. It
-  // logs no cookies or tokens. Remove it after the next real test install.
-  options.log(`setup ${installationId}: origin check: Origin ${origin ?? '(none)'}, Referer ${withoutQuery(referer)}, expected ${expected}`);
   if (origin !== null && origin !== 'null') return origin === expected;
   if (referer === null) return true;
   try {
@@ -321,7 +344,7 @@ async function handlePost(request: Request, env: SetupEnv, options: SetupOptions
   if (!session) {
     return errorPage(403, 'Your session expired. Open the settings link in a Docturnal pull request to sign in again.');
   }
-  if (!sameOriginPost(request, session.installationId, options)) return errorPage(403, 'This form was sent from another site.');
+  if (!sameOriginPost(request)) return errorPage(403, 'This form was sent from another site.');
 
   let form: FormData;
   try {
