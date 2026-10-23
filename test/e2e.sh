@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# End-to-end test for the Action. Runs src/main.js against a sample repo with a local bare
+# git remote and the mock Ollama server, the way the nightly workflow would.
+#
+#   bash test/e2e.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="$(mktemp -d)"
+MOCK_PID=""
+
+cleanup() {
+  if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+fail() { echo "not ok - $*" >&2; exit 1; }
+pass() { echo "ok - $*"; }
+
+# Keep the user's git config (signing, hooks, default branch) out of the test.
+export GIT_CONFIG_GLOBAL="$WORK/gitconfig" GIT_CONFIG_NOSYSTEM=1
+: > "$GIT_CONFIG_GLOBAL"
+export GIT_AUTHOR_NAME="Test User" GIT_AUTHOR_EMAIL="test@example.com"
+export GIT_COMMITTER_NAME="Test User" GIT_COMMITTER_EMAIL="test@example.com"
+
+LOG="$WORK/requests.jsonl"
+: > "$LOG"
+node "$ROOT/test/mock-ollama.js" --serve --port-file "$WORK/port" --log "$LOG" --oom-model oom-docs-model > "$WORK/mock.out" 2>&1 &
+MOCK_PID=$!
+for _ in $(seq 1 100); do
+  [ -s "$WORK/port" ] && break
+  sleep 0.1
+done
+[ -s "$WORK/port" ] || fail "mock Ollama did not start"
+HOST="127.0.0.1:$(cat "$WORK/port")"
+
+# --- Sample repo ---
+git init -q --bare -b main "$WORK/remote.git"
+git clone -q "$WORK/remote.git" "$WORK/seed" 2>/dev/null
+cd "$WORK/seed"
+mkdir -p src/api src/db lib
+cat > src/api/users.js <<'EOF'
+export function getUser(db, id) {
+  return db.find(id);
+}
+
+export function listUsers(db) {
+  return db.all();
+}
+EOF
+cat > src/api/orders.js <<'EOF'
+export function listOrders(db, userId) {
+  return db.all().filter((order) => order.userId === userId);
+}
+EOF
+cat > src/db/client.js <<'EOF'
+export function connect(url) {
+  return { url, connected: true };
+}
+EOF
+cat > lib/util.py <<'EOF'
+def slugify(text):
+    return text.lower().replace(" ", "-")
+EOF
+cat > package.json <<'EOF'
+{ "name": "sample-shop", "description": "A sample shop.", "scripts": { "test": "node --test" } }
+EOF
+git add -A
+git commit -qm "Initial commit"
+git push -q origin main 2>/dev/null
+
+# --- Helpers ---
+RUN_LOG=""
+REQUESTS_BEFORE=0
+
+# run_docturnal NAME [VAR=value ...]: fresh clone like actions/checkout, then run the Action.
+run_docturnal() {
+  local name="$1"
+  shift
+  git clone -q "$WORK/remote.git" "$WORK/$name" 2>/dev/null
+  REQUESTS_BEFORE=$(wc -l < "$LOG")
+  RUN_LOG="$WORK/$name.log"
+  if ! (cd "$WORK/$name" && env OLLAMA_HOST="$HOST" INPUT_COMMENT_LEVEL=medium \
+        INPUT_SELECTED_COMMENT_MODEL=comment-model INPUT_SELECTED_DOCS_MODEL=docs-model "$@" \
+        node "$ROOT/src/main.js") > "$RUN_LOG" 2>&1; then
+    cat "$RUN_LOG" >&2
+    fail "$name exited with an error"
+  fi
+}
+
+# new_requests PATTERN: requests logged during the last run that match PATTERN.
+new_requests() {
+  tail -n "+$((REQUESTS_BEFORE + 1))" "$LOG" | { grep -c -- "$1" || true; }
+}
+
+remote_sha() { git --git-dir="$WORK/remote.git" rev-parse -q --verify refs/heads/docturnal/update || echo none; }
+# MSYS2_ARG_CONV_EXCL stops Git Bash on Windows from rewriting "branch:path" as a Windows path.
+remote_file() { MSYS2_ARG_CONV_EXCL='docturnal/' git --git-dir="$WORK/remote.git" show "docturnal/update:$1"; }
+
+expect_count() {
+  local label="$1" pattern="$2" expected="$3" actual
+  actual=$(new_requests "$pattern")
+  [ "$actual" = "$expected" ] || fail "$label: expected $expected requests matching $pattern, got $actual"
+}
+
+contains() { grep -qF -- "$2" <<< "$1" || fail "expected to find '$2' in: $3"; }
+lacks() { if grep -qF -- "$2" <<< "$1"; then fail "did not expect '$2' in: $3"; fi; }
+
+seed_commit() {
+  cd "$WORK/seed"
+  git add -A
+  git commit -qm "$1"
+  git push -q origin main 2>/dev/null
+}
+
+merge_pull_request() {
+  cd "$WORK/seed"
+  git fetch -q origin
+  git merge -q --no-edit origin/docturnal/update
+  git push -q origin main 2>/dev/null
+}
+
+# --- Run 1: processes everything ---
+run_docturnal run1
+[ "$(remote_sha)" != none ] || fail "run 1 did not push docturnal/update"
+expect_count "run 1 comments" '"kind":"comments"' 4
+expect_count "run 1 layers" '"kind":"layers"' 1
+expect_count "run 1 layer docs" '"kind":"layer-doc"' 3
+expect_count "run 1 main doc" '"kind":"readme"' 1
+expect_count "run 1 comment model only for comments" '"model":"comment-model","kind":"comments"' 4
+LAST_RUN="$(remote_file .docturnal/last-run.md)"
+for f in src/api/users.js src/api/orders.js src/db/client.js lib/util.py; do contains "$LAST_RUN" "\`$f\`" "run 1 last-run.md"; done
+contains "$LAST_RUN" '| `src/api/users.js` | 1 | Yes (TypeScript) |' "run 1 last-run.md"
+contains "$LAST_RUN" '| `lib/util.py` | 1 | Yes (Python) |' "run 1 last-run.md"
+contains "$LAST_RUN" '- Updated `docs/README.md`' "run 1 last-run.md"
+contains "$LAST_RUN" '- Updated `docs/api-code.md`' "run 1 last-run.md"
+contains "$LAST_RUN" '- Docs model: `docs-model`' "run 1 last-run.md"
+contains "$(remote_file src/api/users.js)" '// Keeps the getUser logic in one place for callers.' "run 1 users.js"
+contains "$(remote_file docs/db-code.md)" '<!-- Generated by Docturnal.' "run 1 docs/db-code.md"
+STATE="$(remote_file .docturnal/state.json)"
+for f in src/api/users.js src/api/orders.js src/db/client.js lib/util.py package.json; do contains "$STATE" "\"$f\"" "run 1 state.json"; done
+COMMIT_AUTHOR="$(git --git-dir="$WORK/remote.git" log -1 --format='%an <%ae>' docturnal/update)"
+[ "$COMMIT_AUTHOR" = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" ] || fail "run 1 commit author was $COMMIT_AUTHOR"
+pass "run 1 processes every file, writes all docs, and pushes docturnal/update"
+
+merge_pull_request
+
+# --- Run 2: no changes, does nothing ---
+BEFORE="$(remote_sha)"
+run_docturnal run2
+[ "$(remote_sha)" = "$BEFORE" ] || fail "run 2 pushed although nothing changed"
+expect_count "run 2" '"kind"' 0
+grep -q 'nothing changed since the last run' "$RUN_LOG" || fail "run 2 did not report that nothing changed"
+pass "run 2 with no changes makes no model calls and pushes nothing"
+
+# --- Run 3: one file edited ---
+cat >> "$WORK/seed/src/db/client.js" <<'EOF'
+
+export function disconnect(client) {
+  return { ...client, connected: false };
+}
+EOF
+seed_commit "Add disconnect"
+run_docturnal run3
+expect_count "run 3 comments" '"kind":"comments"' 1
+expect_count "run 3 comments for the edited file" '"file":"src/db/client.js"' 1
+expect_count "run 3 layers" '"kind":"layers"' 0
+expect_count "run 3 layer docs" '"kind":"layer-doc"' 1
+expect_count "run 3 main doc" '"kind":"readme"' 1
+LAST_RUN="$(remote_file .docturnal/last-run.md)"
+contains "$LAST_RUN" '`src/db/client.js`' "run 3 last-run.md"
+lacks "$LAST_RUN" 'src/api/users.js' "run 3 last-run.md"
+lacks "$LAST_RUN" 'lib/util.py' "run 3 last-run.md"
+contains "$LAST_RUN" '- Updated `docs/db-code.md`' "run 3 last-run.md"
+contains "$LAST_RUN" '- Updated `docs/README.md`' "run 3 last-run.md"
+lacks "$LAST_RUN" 'docs/api-code.md' "run 3 last-run.md"
+pass "run 3 processes only the edited file and its layer doc"
+
+# --- Run 4: the docs model runs out of memory (pull request from run 3 still open) ---
+cat >> "$WORK/seed/src/api/users.js" <<'EOF'
+
+export function deleteUser(db, id) {
+  return db.remove(id);
+}
+EOF
+seed_commit "Add deleteUser"
+run_docturnal run4 INPUT_SELECTED_DOCS_MODEL=oom-docs-model
+expect_count "run 4 failed docs model calls" '"model":"oom-docs-model","kind":"layer-doc","status":500' 1
+expect_count "run 4 fallback layer doc" '"model":"comment-model","kind":"layer-doc"' 1
+expect_count "run 4 fallback main doc" '"model":"comment-model","kind":"readme"' 1
+grep -q 'update branch existing' "$RUN_LOG" || fail "run 4 did not reuse the open update branch"
+LAST_RUN="$(remote_file .docturnal/last-run.md)"
+contains "$LAST_RUN" '- Updated `docs/api-code.md` (written with the fallback model)' "run 4 last-run.md"
+contains "$LAST_RUN" '- Updated `docs/README.md` (written with the fallback model)' "run 4 last-run.md"
+contains "$LAST_RUN" 'used `comment-model`' "run 4 last-run.md"
+contains "$LAST_RUN" '`src/api/users.js`' "run 4 last-run.md"
+lacks "$LAST_RUN" 'src/db/client.js' "run 4 last-run.md"
+contains "$(remote_file src/db/client.js)" 'disconnect' "run 4 keeps run 3's changes"
+pass "run 4 falls back to the comment model when the docs model runs out of memory"
+
+# --- Run 5: PUSH=false commits locally but does not push ---
+echo 'def unslugify(text):' >> "$WORK/seed/lib/util.py"
+echo '    return text.replace("-", " ")' >> "$WORK/seed/lib/util.py"
+seed_commit "Add unslugify"
+BEFORE="$(remote_sha)"
+run_docturnal run5 PUSH=false
+[ "$(remote_sha)" = "$BEFORE" ] || fail "run 5 pushed with PUSH=false"
+[ "$(git -C "$WORK/run5" log -1 --format=%s)" = "Docturnal: update comments and docs" ] || fail "run 5 did not commit locally"
+pass "run 5 with PUSH=false commits locally and pushes nothing"
+
+# --- Run 6: the base conflicts with the open update branch, so it starts fresh ---
+# The open update branch (run 4) also changed last-run.md, so both sides edit it.
+sed -i 's/^export function getUser(db, id) {$/export function getUser(db, id, options = {}) {/' "$WORK/seed/src/api/users.js"
+echo "Edited by hand on main." > "$WORK/seed/.docturnal/last-run.md"
+seed_commit "Add options to getUser"
+run_docturnal run6
+grep -q 'update branch fresh' "$RUN_LOG" || fail "run 6 did not start fresh after the conflict"
+contains "$(remote_file src/api/users.js)" 'getUser(db, id, options = {})' "run 6 users.js"
+contains "$(remote_file .docturnal/last-run.md)" '`src/api/users.js`' "run 6 last-run.md"
+pass "run 6 starts fresh from the base when merging it into the update branch conflicts"
+
+echo "All end-to-end scenarios passed."

@@ -1,0 +1,47 @@
+name = "docturnal"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# APP_ID, PRIVATE_KEY, WEBHOOK_SECRET, CLIENT_ID, and CLIENT_SECRET are Worker secrets.
+# Set them with `wrangler secret put NAME`, never here. See DEPLOY.md.
+[vars]
+GITHUB_API_URL = "https://api.github.com"
+GITHUB_WEB_URL = "https://github.com"
+# The repository that publishes the Docturnal Action, such as "owner/docturnal".
+# Set during app registration and deploy.
+ACTION_REPOSITORY = ""
+# How the Contents API path is sent: "encoded" (.github%2Fworkflows%2F...) or "plain".
+# Switch to "plain" if the real-api check in the logs shows GitHub rejecting the encoded path.
+CONTENTS_PATH_STYLE = "encoded"
+
+# Repository setup runs from this queue, one repository per message, so an install with
+# many repositories never has to finish within one Worker invocation.
+# Create it once with: npx wrangler queues create docturnal-setup
+[[queues.producers]]
+queue = "docturnal-setup"
+binding = "SETUP_QUEUE"
+
+[[queues.consumers]]
+queue = "docturnal-setup"
+max_batch_size = 5
+max_batch_timeout = 5
+# Keep max_retries in sync with MAX_RETRIES in src/handlers.ts.
+max_retries = 10
+# Two consumers at most, to stay clear of GitHub's secondary rate limits.
+max_concurrency = 2
+# Messages that still fail after max_retries land here.
+# Create it once with: npx wrangler queues create docturnal-setup-failed
+dead_letter_queue = "docturnal-setup-failed"
+
+# Per-installation settings from the setup page: run time, time zone, comment level, and the
+# repository list. Create the namespace once with:
+#   npx wrangler kv namespace create docturnal-settings
+# then paste the id it prints here.
+[[kv_namespaces]]
+binding = "SETTINGS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Starts each installation's nightly run. Runs hourly at minute 7; each run dispatches the
+# installations whose chosen local hour has arrived.
+[triggers]
+crons = ["7 * * * *"]

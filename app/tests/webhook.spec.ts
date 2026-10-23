@@ -1,0 +1,492 @@
+import { createHmac, generateKeyPairSync } from 'node:crypto';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { createHandler, createQueueHandler, createScheduledHandler, type Env } from '../src/index';
+import {
+  type QueueMessage,
+  SETUP_PR_TITLE,
+  UPDATE_PR_TITLE,
+  WORKFLOW_UPDATE_PR_TITLE,
+  resetRealApiChecks,
+} from '../src/handlers';
+import { SettingsStore } from '../src/settings';
+import { createSession, SESSION_COOKIE } from '../src/setup';
+import { WORKFLOW_PATH, isOldTemplate, workflowYaml } from '../src/workflow';
+import { FakeKV } from './fake-kv';
+import { FakeQueue } from './fake-queue';
+import { createMockGitHub } from './mock-github.mjs';
+
+const SECRET = 'webhook-secret';
+const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const ORIGIN = 'https://docturnal.example';
+const SETTINGS_LINK = `[Change Docturnal settings](${ORIGIN}/setup?installation_id=1)`;
+
+const REPO = {
+  full_name: 'octo/hello',
+  name: 'hello',
+  owner: { login: 'octo', name: 'octo' },
+  default_branch: 'main',
+};
+const WORKFLOW = workflowYaml('acme/docturnal');
+const OLD_WORKFLOW = `name: Docturnal
+on:
+  schedule:
+    - cron: "7 4 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  docturnal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: acme/docturnal@v1
+        with:
+          comment-level: heavy
+`;
+
+function sign(body: string, secret = SECRET): string {
+  return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+}
+
+// One test world: a mock GitHub, a fake queue and KV, and the log lines all handlers wrote.
+function setup(mockOptions: Record<string, unknown> = {}, envOverrides: Partial<Env> = {}) {
+  const gh = createMockGitHub(mockOptions);
+  const queue = new FakeQueue<QueueMessage>();
+  const kv = new FakeKV(2);
+  const logs: string[] = [];
+  const log = (line: string) => logs.push(line);
+  const env = {
+    APP_ID: '12345',
+    PRIVATE_KEY: PEM,
+    WEBHOOK_SECRET: SECRET,
+    CLIENT_ID: 'Iv1.client',
+    CLIENT_SECRET: 'client-secret',
+    GITHUB_API_URL: 'https://api.github.test',
+    ACTION_REPOSITORY: 'acme/docturnal',
+    SETUP_QUEUE: queue as unknown as Queue<QueueMessage>,
+    SETTINGS: kv as unknown as KVNamespace,
+    ...envOverrides,
+  } as Env;
+
+  async function deliver(event: string, payload: unknown, { signature }: { signature?: string } = {}) {
+    const body = JSON.stringify(payload);
+    const response = await createHandler({ fetch: gh.fetch, log })(
+      new Request(`${ORIGIN}/webhook`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': event,
+          'x-github-delivery': 'delivery-1',
+          'x-hub-signature-256': signature ?? sign(body),
+        },
+        body,
+      }),
+      env
+    );
+    return response.status;
+  }
+
+  // Each invocation gets a new handler, as a new Worker invocation would.
+  async function drain(batchSize = 5) {
+    await queue.drain((batch) => createQueueHandler({ fetch: gh.fetch, log })(batch, env), { batchSize });
+  }
+
+  async function cron(utc: string) {
+    await createScheduledHandler({ log })(Date.parse(utc), env);
+  }
+
+  return { gh, queue, kv, logs, env, deliver, drain, cron };
+}
+
+const installation = (repos = ['octo/hello'], id = 1) => ({
+  action: 'created',
+  installation: { id, account: { login: 'octo' } },
+  repositories: repos.map((full_name) => ({ full_name, name: full_name.split('/')[1] })),
+  sender: { login: 'octo' },
+});
+
+const pushToUpdate = (sender = 'github-actions[bot]') => ({
+  ref: 'refs/heads/docturnal/update',
+  deleted: false,
+  installation: { id: 1 },
+  repository: REPO,
+  sender: { login: sender },
+});
+
+const medium = { 'comment-level': 'medium' };
+
+beforeEach(() => resetRealApiChecks());
+
+describe('webhook signature', () => {
+  it('rejects a bad signature with 401 before doing anything', async () => {
+    const t = setup();
+    expect(await t.deliver('installation', installation(), { signature: sign('something else') })).toBe(401);
+    expect(t.logs).toEqual(['webhook: rejected, bad signature']);
+    expect(t.gh.state.calls).toEqual([]);
+    expect(t.queue.pending).toEqual([]);
+    expect(t.kv.data.size).toBe(0);
+  });
+
+  it('rejects a missing signature', async () => {
+    const t = setup();
+    expect(await t.deliver('installation', installation(), { signature: '' })).toBe(401);
+  });
+
+  it('accepts secrets that end with a newline, as piped secrets do', async () => {
+    const t = setup({}, { APP_ID: '12345\r\n', WEBHOOK_SECRET: `${SECRET}\n`, PRIVATE_KEY: `${PEM}\n` });
+    expect(await t.deliver('installation', installation())).toBe(200);
+    await t.drain();
+    expect(t.gh.state.dispatches).toHaveLength(1);
+  });
+});
+
+describe('installation', () => {
+  it('stores default settings, then creates the workflow and starts the first run from the queue', async () => {
+    const t = setup();
+    expect(await t.deliver('installation', installation())).toBe(200);
+    expect(t.logs).toEqual(['install 1: queued 1 repository for setup']);
+    expect(t.gh.state.calls).toEqual([]);
+    // The webhook writes one key per repository; without a settings key, the defaults apply.
+    expect([...t.kv.data.keys()]).toEqual(['install:1:repo:octo/hello']);
+
+    await t.drain();
+    expect(t.gh.state.repos.get('octo/hello').files.get(`main:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
+    expect(t.logs.slice(1)).toEqual([
+      'real-api check: GET /repos/octo/hello/contents/.github%2Fworkflows%2Fdocturnal.yml?ref=main -> 404 (path style encoded)',
+      'real-api check: PUT /repos/octo/hello/contents/.github%2Fworkflows%2Fdocturnal.yml -> 201 (path style encoded)',
+      'setup octo/hello: added .github/workflows/docturnal.yml to main, first run queued',
+      'dispatch octo/hello: started the first run on main with medium comments',
+    ]);
+  });
+
+  it('uses a comment level saved on the setup page before the first run starts', async () => {
+    const t = setup();
+    await t.deliver('installation', installation());
+    await t.kv.put('install:1:settings', JSON.stringify({ time: 0, timeZone: 'America/New_York', commentLevel: 'heavy' }), { metadata: { time: 0, timeZone: 'America/New_York' } });
+    await t.drain();
+    expect(t.gh.state.dispatches[0].inputs).toEqual({ 'comment-level': 'heavy' });
+  });
+
+  it('sets up all 50 repositories of a large install across many invocations, with retries', async () => {
+    const repos = Array.from({ length: 50 }, (_, i) => `octo/repo-${i + 1}`);
+    // Seven writes fail with 502 and the first three dispatches find no workflow yet.
+    const t = setup({ repos, failPuts: 7, dispatchNotFound: 3 });
+    expect(await t.deliver('installation', installation(repos))).toBe(200);
+    expect(t.queue.pending).toHaveLength(50);
+
+    await t.drain(4);
+    for (const repo of repos) {
+      expect(t.gh.state.repos.get(repo).files.get(`main:${WORKFLOW_PATH}`), repo).toBe(WORKFLOW);
+    }
+    expect(new Set(t.gh.state.dispatches.map((d: { repo: string }) => d.repo))).toEqual(new Set(repos));
+    expect(t.gh.state.dispatches).toHaveLength(50);
+    expect(t.queue.deadLetters).toEqual([]);
+    expect(t.queue.invocations).toBeGreaterThan(25);
+    expect(t.logs.filter((l) => l.includes('will retry'))).toHaveLength(10);
+    expect(t.logs.filter((l) => l.startsWith('real-api check: GET'))).toHaveLength(1);
+    expect(t.logs.filter((l) => l.startsWith('real-api check: PUT'))).toHaveLength(1);
+    expect(t.kv.repos(1)).toHaveLength(50);
+  });
+
+  it('adds and removes repositories in the stored settings, and deletes them on uninstall', async () => {
+    const t = setup({ repos: ['octo/one', 'octo/two'] });
+    await t.deliver('installation_repositories', {
+      action: 'added',
+      installation: { id: 1 },
+      repositories_added: [{ full_name: 'octo/one' }, { full_name: 'octo/two' }],
+    });
+    await t.drain();
+    expect(t.gh.state.dispatches.map((d: { repo: string }) => d.repo).sort()).toEqual(['octo/one', 'octo/two']);
+    expect(t.kv.repos(1)).toEqual(['octo/one', 'octo/two']);
+    await t.kv.put('install:1:settings', JSON.stringify({ time: 2, timeZone: 'UTC', commentLevel: 'low' }), { metadata: { time: 2, timeZone: 'UTC' } });
+
+    await t.deliver('installation_repositories', { action: 'removed', installation: { id: 1 }, repositories_removed: [{ full_name: 'octo/one' }] });
+    expect(t.kv.repos(1)).toEqual(['octo/two']);
+    expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'UTC', commentLevel: 'low' });
+
+    // Uninstalling deletes every install:1: key, across list pages, and leaves installation 10 alone.
+    await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/three' }, { full_name: 'octo/four' }] });
+    t.kv.seed(10, { time: 0, timeZone: 'UTC', commentLevel: 'low', repos: ['other/repo'] });
+    await t.deliver('installation', { action: 'deleted', installation: { id: 1 } });
+    expect([...t.kv.data.keys()].sort()).toEqual(['install:10:repo:other/repo', 'install:10:settings']);
+    expect(t.logs.at(-1)).toBe('install 1: uninstalled, deleted its settings');
+  });
+
+  it('never overwrites an existing workflow file that is not Docturnal\'s', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: 'name: Mine\n' } });
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(t.gh.state.repos.get('octo/hello').files.get(`main:${WORKFLOW_PATH}`)).toBe('name: Mine\n');
+    expect(t.gh.state.calls.some((c: string) => c.startsWith('PUT '))).toBe(false);
+    expect(t.gh.state.pulls).toEqual([]);
+    expect(t.logs).toContain('setup octo/hello: .github/workflows/docturnal.yml already exists on main, left it unchanged');
+  });
+
+  it('replaces the old scheduled template once, through an "Update Docturnal workflow" pull request', async () => {
+    expect(isOldTemplate(OLD_WORKFLOW)).toBe(true);
+    expect(isOldTemplate(WORKFLOW)).toBe(false);
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: OLD_WORKFLOW } });
+    await t.deliver('installation', installation());
+    await t.drain();
+
+    const repo = t.gh.state.repos.get('octo/hello');
+    expect(repo.files.get(`main:${WORKFLOW_PATH}`)).toBe(OLD_WORKFLOW);
+    expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.pulls[0]).toMatchObject({ title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main' });
+    expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
+    expect(t.gh.state.dispatches).toEqual([]);
+    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, opened update pull request #1');
+
+    // Closing it without merging does not bring it back.
+    t.gh.state.pulls[0].state = 'closed';
+    await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, update pull request #1 was already proposed');
+  });
+
+  it('queues the first run on retry when an earlier attempt created the file but could not queue the run', async () => {
+    const t = setup();
+    await t.deliver('installation', installation());
+    t.queue.failNextSends = 1;
+    await t.drain();
+    expect(t.gh.state.dispatches).toHaveLength(1);
+    expect(t.logs).toContain('setup octo/hello: found the workflow from an earlier attempt, first run queued');
+  });
+
+  it('falls back to a setup pull request when the default branch is protected', async () => {
+    const t = setup({ protectedBranches: ['main'] });
+    await t.deliver('installation', installation());
+    await t.drain();
+    const repo = t.gh.state.repos.get('octo/hello');
+    expect(repo.files.has(`main:${WORKFLOW_PATH}`)).toBe(false);
+    expect(repo.files.get(`docturnal/setup:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.pulls[0]).toMatchObject({ title: SETUP_PR_TITLE, head: 'docturnal/setup', base: 'main', state: 'open' });
+    expect(t.gh.state.pulls[0].body).toContain('Merge this pull request to turn Docturnal on.');
+    expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
+    expect(t.gh.state.dispatches).toEqual([]);
+    expect(t.logs).toContain('setup octo/hello: main is protected, opened setup pull request #1');
+  });
+
+  it('skips a repository the app cannot see, without retrying', async () => {
+    const t = setup({ repos: [] });
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(t.logs).toContain('setup octo/hello: skipped, the app cannot see this repository');
+    expect(t.queue.invocations).toBe(1);
+  });
+
+  it('moves a repository to the dead letter queue after GitHub keeps failing', async () => {
+    const t = setup({ failPuts: 1000 });
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(t.queue.deadLetters).toEqual([{ kind: 'setup', installationId: 1, repo: 'octo/hello', origin: ORIGIN }]);
+    expect(t.logs.at(-1)).toMatch(/^setup octo\/hello: gave up after 11 attempts, Server Error; the message moves to the dead letter queue$/);
+  });
+
+  it('answers 503 when the work cannot be queued, so the delivery can be redelivered', async () => {
+    const t = setup();
+    t.queue.failNextSends = 1;
+    expect(await t.deliver('installation', installation())).toBe(503);
+    expect(t.logs).toEqual(["webhook installation: failed to queue work or store settings, redeliver it from the app's Advanced settings"]);
+  });
+
+  it('sends unencoded slashes when CONTENTS_PATH_STYLE is plain', async () => {
+    const t = setup({}, { CONTENTS_PATH_STYLE: 'plain' });
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(t.gh.state.repos.get('octo/hello').files.get(`main:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.calls).toContain('PUT /repos/octo/hello/contents/.github/workflows/docturnal.yml');
+    expect(t.logs).toContain('real-api check: PUT /repos/octo/hello/contents/.github/workflows/docturnal.yml -> 201 (path style plain)');
+  });
+});
+
+describe('webhooks and settings saves at the same time', () => {
+  // Sends a settings page save the way a signed-in browser does.
+  async function saveSettings(t: ReturnType<typeof setup>, fields: Record<string, string>) {
+    const cookie = `${SESSION_COOKIE}=${await createSession(t.env, { installationId: 1, account: 'octo', csrf: 'c' }, Date.now())}`;
+    return createHandler({ fetch: t.gh.fetch, log: (line) => t.logs.push(line) })(
+      new Request(`${ORIGIN}/setup`, {
+        method: 'POST',
+        headers: { cookie, origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf: 'c', ...fields }).toString(),
+      }),
+      t.env
+    );
+  }
+
+  it('keeps both repositories when two webhooks add different repositories at the same moment', async () => {
+    const t = setup({ repos: ['octo/hello', 'octo/one', 'octo/two'] });
+    t.kv.seed(1, { time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', repos: ['octo/hello'] });
+    // Every KV write waits until both deliveries have written, so they truly overlap.
+    const writes = t.kv.holdWrites(2);
+    const added = (repo: string) => t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: repo }] });
+    const deliveries = Promise.all([added('octo/one'), added('octo/two')]);
+    await writes.reached;
+    writes.release();
+    expect(await deliveries).toEqual([200, 200]);
+
+    // Nothing was read and written back: no gets and no lists.
+    expect(t.kv.reads).toEqual([]);
+    expect(await new SettingsStore(t.env.SETTINGS).get(1)).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', repos: ['octo/hello', 'octo/one', 'octo/two'] });
+  });
+
+  it('keeps a repository added by a webhook and a settings save sent at the same moment', async () => {
+    const t = setup({ repos: ['octo/hello', 'octo/new'] });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+    const writes = t.kv.holdWrites(2);
+    const both = Promise.all([
+      t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/new' }] }),
+      saveSettings(t, { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy' }).then((r) => r.status),
+    ]);
+    await writes.reached;
+    writes.release();
+    expect(await both).toEqual([200, 200]);
+
+    expect(await new SettingsStore(t.env.SETTINGS).get(1)).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', repos: ['octo/hello', 'octo/new'] });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles' });
+  });
+});
+
+describe('nightly runs from the hourly cron', () => {
+  it('runs a user who installed and closed the setup page at local midnight, New York time', async () => {
+    const t = setup();
+    await t.deliver('installation', installation());
+    await t.drain();
+    t.gh.state.dispatches.length = 0;
+
+    await t.cron('2026-01-15T04:07:00Z'); // 11:07 PM in New York
+    await t.cron('2026-01-15T05:07:00Z'); // 12:07 AM
+    await t.cron('2026-01-15T06:07:00Z'); // 1:07 AM
+    await t.drain();
+    expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
+    expect(t.logs).toContain('cron 2026-01-15T05:07:00.000Z: 1 installation due, queued 1 run');
+    expect(t.logs).toContain('dispatch octo/hello: started the nightly run on main with medium comments');
+  });
+
+  it('runs a user who chose 2 AM in America/Los_Angeles at 2 AM Pacific, before and after daylight saving time', async () => {
+    const t = setup({ repos: ['octo/hello', 'octo/a', 'octo/b'], files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW } });
+    // Installation 1 keeps the defaults; installation 2 chose 2 AM Pacific with heavy comments.
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+    t.kv.seed(2, { time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', repos: ['octo/a', 'octo/b'] });
+    // An installation with a settings key but no repository list is never dispatched.
+    await t.kv.put('install:3:settings', JSON.stringify({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'low' }), { metadata: { time: 2, timeZone: 'America/Los_Angeles' } });
+    for (const repo of ['octo/a', 'octo/b']) t.gh.state.repos.get(repo).files.set(`main:${WORKFLOW_PATH}`, WORKFLOW);
+
+    const heavy = { 'comment-level': 'heavy' };
+    const dispatchedAt = async (utc: string) => {
+      t.gh.state.dispatches.length = 0;
+      await t.cron(utc);
+      await t.drain();
+      return t.gh.state.dispatches.map((d: { repo: string; inputs: unknown }) => [d.repo, d.inputs]);
+    };
+    // 7 March, before the change: 2 AM PST is 10:00 UTC.
+    expect(await dispatchedAt('2026-03-07T09:07:00Z')).toEqual([]);
+    expect(await dispatchedAt('2026-03-07T10:07:00Z')).toEqual([['octo/a', heavy], ['octo/b', heavy]]);
+    // 8 March, the day of the change: 2 AM does not exist, so the run comes at 3:07 AM PDT.
+    expect(await dispatchedAt('2026-03-08T09:07:00Z')).toEqual([]);
+    expect(await dispatchedAt('2026-03-08T10:07:00Z')).toEqual([['octo/a', heavy], ['octo/b', heavy]]);
+    // 9 March, after the change: 2 AM PDT is 09:00 UTC.
+    expect(await dispatchedAt('2026-03-09T09:07:00Z')).toEqual([['octo/a', heavy], ['octo/b', heavy]]);
+    expect(await dispatchedAt('2026-03-09T10:07:00Z')).toEqual([]);
+    // Midnight in New York (04:07 UTC in summer time) runs installation 1 only.
+    expect(await dispatchedAt('2026-03-09T04:07:00Z')).toEqual([['octo/hello', medium]]);
+  });
+
+  it('skips a repository without the workflow, and one still on the old template, without retrying', async () => {
+    const t = setup({ repos: ['octo/hello', 'octo/old'], files: { [`main:${WORKFLOW_PATH}`]: 'x' } });
+    t.gh.state.repos.get('octo/hello').files.delete(`main:${WORKFLOW_PATH}`);
+    t.gh.state.repos.get('octo/old').files.set(`main:${WORKFLOW_PATH}`, OLD_WORKFLOW);
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello', 'octo/old'] });
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.dispatches).toEqual([]);
+    expect(t.queue.invocations).toBe(1);
+    expect(t.logs).toContain('dispatch octo/hello: skipped, .github/workflows/docturnal.yml is not on main');
+    expect(t.logs).toContain('dispatch octo/old: skipped, the workflow still has its own schedule');
+  });
+});
+
+describe('setup pull request', () => {
+  const closed = (merged: boolean, ref = 'docturnal/setup') => ({
+    action: 'closed',
+    installation: { id: 1 },
+    repository: REPO,
+    pull_request: { number: 1, merged, head: { ref, repo: { full_name: 'octo/hello' } }, base: { ref: 'main' } },
+  });
+
+  it('starts the first run when the setup pull request is merged', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW } });
+    await t.deliver('pull_request', closed(true));
+    expect(t.logs).toEqual(['setup octo/hello: setup pull request #1 merged, first run queued']);
+    await t.drain();
+    expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
+  });
+
+  it('does nothing when the setup pull request is closed without merging, or for other branches', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: 'x' } });
+    await t.deliver('pull_request', closed(false));
+    await t.deliver('pull_request', closed(true, 'feature'));
+    expect(t.queue.pending).toEqual([]);
+    expect(t.gh.state.calls).toEqual([]);
+  });
+});
+
+describe('push to docturnal/update', () => {
+  it('creates the pull request the first time and updates it the second time, ending with the settings link', async () => {
+    const t = setup({ files: { 'docturnal/update:.docturnal/last-run.md': '# Docturnal update\n\nFirst run.\n' } });
+    await t.deliver('push', pushToUpdate());
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.pulls[0]).toMatchObject({
+      title: UPDATE_PR_TITLE,
+      head: 'docturnal/update',
+      base: 'main',
+      body: `# Docturnal update\n\nFirst run.\n\n---\n\n${SETTINGS_LINK}`,
+    });
+    expect(t.logs).toEqual(['push octo/hello: opened pull request #1']);
+
+    t.gh.state.repos.get('octo/hello').files.set('docturnal/update:.docturnal/last-run.md', '# Docturnal update\n\nSecond run.\n');
+    await t.deliver('push', pushToUpdate());
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.pulls[0].body).toBe(`# Docturnal update\n\nSecond run.\n\n---\n\n${SETTINGS_LINK}`);
+    expect(t.logs.at(-1)).toBe('push octo/hello: updated pull request #1');
+  });
+
+  it('ignores pushes by anyone but github-actions[bot] and pushes to other branches', async () => {
+    const t = setup();
+    await t.deliver('push', pushToUpdate('octo'));
+    await t.deliver('push', { ...pushToUpdate(), ref: 'refs/heads/main' });
+    await t.deliver('push', { ...pushToUpdate(), installation: undefined });
+    expect(t.gh.state.calls).toEqual([]);
+    expect(t.logs).toEqual(['push octo/hello: ignored a push to docturnal/update by octo']);
+  });
+
+  it('logs a failed pull request call and still returns 200', async () => {
+    const t = setup({ failPulls: true });
+    expect(await t.deliver('push', pushToUpdate())).toBe(200);
+    expect(t.logs[0]).toMatch(/^push octo\/hello: failed to open or update the pull request/);
+  });
+});
+
+describe('workflow template', () => {
+  it('has no schedule, takes comment-level as a dispatch input, and passes it to the Action', () => {
+    expect(WORKFLOW).not.toMatch(/schedule:|cron:/);
+    expect(WORKFLOW).toContain(`on:
+  workflow_dispatch:
+    inputs:
+      comment-level:
+        description: "How many comments to add: low, medium, heavy, or off (docs only)."
+        type: choice
+        options: ["low", "medium", "heavy", "off"]
+        default: "medium"`);
+    expect(WORKFLOW).toContain('permissions:\n  contents: write');
+    expect(WORKFLOW).toContain('    runs-on: ubuntu-latest\n    timeout-minutes: 120');
+    expect(WORKFLOW).toContain('      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0');
+    expect(WORKFLOW).toContain("      - uses: acme/docturnal@v1\n        with:\n          comment-level: ${{ inputs['comment-level'] || 'medium' }}\n");
+  });
+});

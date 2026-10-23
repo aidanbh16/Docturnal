@@ -1,0 +1,160 @@
+name: Docturnal
+description: Your codebase, documented overnight. Adds code comments and updates documentation using local Ollama models.
+author: Docturnal
+branding:
+  icon: moon
+  color: purple
+
+inputs:
+  comment-level:
+    description: >-
+      How many comments to add. One of: low (sparse, a few words each),
+      medium (longer single-line comments, less sparse), heavy (single-line and
+      multiline comments), or off (documentation only).
+    required: false
+    default: medium
+  docs-dir:
+    description: Folder for generated documentation, relative to the repository root.
+    required: false
+    default: docs
+  path:
+    description: Folder to process, relative to the repository root.
+    required: false
+    default: .
+  exclude:
+    description: Glob patterns for files to skip, separated by commas or newlines.
+    required: false
+    default: ''
+  extensions:
+    description: File extensions to process, separated by commas or newlines. Leave empty to use the built-in list.
+    required: false
+    default: ''
+  context-tokens:
+    description: Context window size, in tokens, for each model call.
+    required: false
+    default: '8192'
+  time-budget-minutes:
+    description: Maximum minutes to spend on comments and documentation before the run stops and pushes what it has.
+    required: false
+    default: '90'
+  model:
+    description: Internal override for the comment model. Leave as auto; Docturnal picks the model.
+    required: false
+    default: auto
+  docs-model:
+    description: Internal override for the documentation model. Leave as auto; Docturnal picks the model.
+    required: false
+    default: auto
+
+runs:
+  using: composite
+  steps:
+    # Cheap check first: on a night with no changes, nothing below runs.
+    - name: Check for changes
+      id: precheck
+      shell: bash
+      env:
+        INPUT_COMMENT_LEVEL: ${{ inputs.comment-level }}
+        INPUT_DOCS_DIR: ${{ inputs.docs-dir }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_EXTENSIONS: ${{ inputs.extensions }}
+      run: node "$GITHUB_ACTION_PATH/src/precheck.js"
+
+    - name: Select models
+      id: models
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      env:
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_DOCS_MODEL: ${{ inputs.docs-model }}
+      run: node "$GITHUB_ACTION_PATH/src/models.js"
+
+    - name: Restore Ollama models cache
+      if: steps.precheck.outputs.changed == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/docturnal-ollama-models
+        key: docturnal-ollama-${{ runner.os }}-${{ steps.models.outputs.comment-model }}-${{ steps.models.outputs.docs-model }}
+
+    - name: Install Ollama
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      run: |
+        if command -v ollama >/dev/null 2>&1; then
+          echo "Ollama is already installed: $(ollama --version 2>/dev/null || echo unknown version)"
+        else
+          curl -fsSL https://ollama.com/install.sh | sh
+        fi
+        # The installer starts a system service on port 11434. Stop it so our own server can use the cached models folder.
+        if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+          sudo systemctl stop ollama || true
+          sudo systemctl disable ollama || true
+        fi
+
+    - name: Start Ollama
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      env:
+        OLLAMA_HOST: 127.0.0.1:11434
+        OLLAMA_MODELS: ${{ runner.temp }}/docturnal-ollama-models
+        OLLAMA_MAX_LOADED_MODELS: '1'
+      run: |
+        mkdir -p "$OLLAMA_MODELS"
+        log="$RUNNER_TEMP/docturnal-ollama.log"
+        nohup ollama serve >"$log" 2>&1 &
+        pid=$!
+        for _ in $(seq 1 60); do
+          if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            echo "Ollama is running (pid $pid)."
+            exit 0
+          fi
+          if ! kill -0 "$pid" 2>/dev/null; then
+            break
+          fi
+          sleep 1
+        done
+        echo "::error::Ollama failed to start. Server log follows."
+        cat "$log"
+        exit 1
+
+    - name: Pull models
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      env:
+        OLLAMA_HOST: 127.0.0.1:11434
+        COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
+        DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
+      run: |
+        ollama pull "$COMMENT_MODEL"
+        if [ "$DOCS_MODEL" != "$COMMENT_MODEL" ]; then
+          ollama pull "$DOCS_MODEL"
+        fi
+
+    - name: Install dependencies
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm install --omit=dev --no-audit --no-fund
+
+    - name: Run Docturnal
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      env:
+        INPUT_COMMENT_LEVEL: ${{ inputs.comment-level }}
+        INPUT_DOCS_DIR: ${{ inputs.docs-dir }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_EXTENSIONS: ${{ inputs.extensions }}
+        INPUT_CONTEXT_TOKENS: ${{ inputs.context-tokens }}
+        INPUT_TIME_BUDGET_MINUTES: ${{ inputs.time-budget-minutes }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_DOCS_MODEL: ${{ inputs.docs-model }}
+        INPUT_SELECTED_COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
+        INPUT_SELECTED_DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
+        INPUT_DOCS_MAY_FALLBACK: ${{ steps.models.outputs.docs-may-fallback }}
+        INPUT_FALLBACK_DOCS_MODEL: ${{ steps.models.outputs.fallback-docs-model }}
+        OLLAMA_HOST: 127.0.0.1:11434
+        # The pre-check already moved the checkout to docturnal/update, so pass the base branch.
+        BASE_BRANCH: ${{ steps.precheck.outputs.base }}
+      run: node "$GITHUB_ACTION_PATH/src/main.js"

@@ -1,0 +1,99 @@
+'use strict';
+
+// Picks the Ollama models for this run. Runs as the first action step and
+// writes its choice to GITHUB_OUTPUT so later steps can cache and pull them.
+
+const fs = require('fs');
+const os = require('os');
+
+const COMMENT_MODEL = 'qwen2.5-coder:3b';
+const DOCS_MODEL = 'qwen2.5-coder:7b';
+const FALLBACK_DOCS_MODEL = 'qwen2.5-coder:3b';
+
+// Public-repo runners (16 GB) report about 15.6 GiB; private-repo runners (8 GB) about 7.8 GiB.
+// Below this, the docs model is still tried, but it may not load.
+const DOCS_MODEL_MIN_GIB = 14;
+
+const GIB = 1024 ** 3;
+
+function parseMemTotal(meminfo) {
+  const match = /^MemTotal:\s+(\d+)\s+kB\s*$/m.exec(meminfo);
+  if (!match) {
+    throw new Error('MemTotal not found in /proc/meminfo');
+  }
+  return Number(match[1]) * 1024;
+}
+
+// Falls back to os.totalmem() where /proc/meminfo does not exist, such as local runs on macOS or Windows.
+function readTotalMemory(readFile = fs.readFileSync) {
+  try {
+    return parseMemTotal(readFile('/proc/meminfo', 'utf8'));
+  } catch {
+    return os.totalmem();
+  }
+}
+
+function isAuto(value) {
+  const trimmed = (value || '').trim();
+  return trimmed === '' || trimmed.toLowerCase() === 'auto';
+}
+
+// `model` and `docsModel` are the escape-hatch inputs; anything other than "auto" wins.
+function selectModels({ totalMemoryBytes, model, docsModel }) {
+  const ramGib = totalMemoryBytes / GIB;
+  const docsAuto = isAuto(docsModel);
+  return {
+    ramGib,
+    commentModel: isAuto(model) ? COMMENT_MODEL : model.trim(),
+    docsModel: docsAuto ? DOCS_MODEL : docsModel.trim(),
+    docsMayFallback: docsAuto && ramGib < DOCS_MODEL_MIN_GIB,
+    fallbackDocsModel: FALLBACK_DOCS_MODEL,
+  };
+}
+
+function formatSummary(selection) {
+  const fallback = selection.docsMayFallback
+    ? ` (may fall back to ${selection.fallbackDocsModel})`
+    : '';
+  return `Docturnal: RAM ${selection.ramGib.toFixed(1)} GiB, ` +
+    `comment model ${selection.commentModel}, docs model ${selection.docsModel}${fallback}`;
+}
+
+function writeOutputs(selection, outputPath) {
+  const lines = [
+    `comment-model=${selection.commentModel}`,
+    `docs-model=${selection.docsModel}`,
+    `docs-may-fallback=${selection.docsMayFallback}`,
+    `fallback-docs-model=${selection.fallbackDocsModel}`,
+    `ram-gib=${selection.ramGib.toFixed(1)}`,
+  ];
+  fs.appendFileSync(outputPath, lines.join('\n') + '\n');
+}
+
+function main() {
+  const selection = selectModels({
+    totalMemoryBytes: readTotalMemory(),
+    model: process.env.INPUT_MODEL,
+    docsModel: process.env.INPUT_DOCS_MODEL,
+  });
+  console.log(formatSummary(selection));
+  if (process.env.GITHUB_OUTPUT) {
+    writeOutputs(selection, process.env.GITHUB_OUTPUT);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  COMMENT_MODEL,
+  DOCS_MODEL,
+  FALLBACK_DOCS_MODEL,
+  DOCS_MODEL_MIN_GIB,
+  parseMemTotal,
+  readTotalMemory,
+  selectModels,
+  formatSummary,
+  writeOutputs,
+};

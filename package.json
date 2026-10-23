@@ -1,0 +1,17 @@
+{
+  "name": "docturnal",
+  "version": "0.1.0",
+  "description": "Your codebase, documented overnight.",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "typescript": "~6.0.3"
+  }
+}

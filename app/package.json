@@ -1,0 +1,27 @@
+{
+  "name": "docturnal-app",
+  "version": "0.1.0",
+  "description": "The Docturnal GitHub App backend, deployed as a Cloudflare Worker.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@octokit/app": "^16.1.4",
+    "@octokit/core": "^7.0.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261022.1",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.152.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261019.1": true
+  }
+}

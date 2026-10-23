@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register Docturnal</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --panel: #f6f8fa;
+    --accent: #0969da; --accent-fg: #ffffff; --warn-bg: #fff8c5; --warn-border: #d4a72c; --error: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d; --panel: #151b23;
+      --accent: #4493f8; --accent-fg: #0d1117; --warn-bg: #272115; --warn-border: #9e6a03; --error: #f85149;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d; --panel: #151b23;
+    --accent: #4493f8; --accent-fg: #0d1117; --warn-bg: #272115; --warn-border: #9e6a03; --error: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  label { display: block; font-weight: 600; margin: 16px 0 4px; }
+  .hint { font-weight: 400; color: var(--muted); font-size: 0.9rem; }
+  input[type="text"], input[type="url"], textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--fg); font: inherit;
+  }
+  textarea, pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; }
+  textarea { min-height: 140px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+  .row label { display: inline; font-weight: 400; margin: 0; }
+  button {
+    margin-top: 20px; padding: 8px 16px; border: 1px solid var(--accent); border-radius: 6px;
+    background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); margin-top: 8px; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-x: auto; white-space: pre; }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 12px; margin: 16px 0; }
+  .error { color: var(--error); font-weight: 600; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 8px 0; }
+  dt { font-weight: 600; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Register the Docturnal app</h1>
+  <p class="muted">This page sends <code>manifest.json</code> to GitHub to create the app, then shows its credentials and the commands that store them as Worker secrets. Nothing leaves your computer except the requests to GitHub.</p>
+
+  <section id="form-view">
+    <form id="register">
+      <label for="worker">Worker URL <span class="hint">The address <code>wrangler deploy</code> printed, such as https://docturnal.you.workers.dev</span></label>
+      <input id="worker" type="url" required placeholder="https://docturnal.you.workers.dev">
+
+      <label for="action">Action repository <span class="hint">The public repository that publishes the Action, such as you/docturnal</span></label>
+      <input id="action" type="text" required pattern="[\w.\-]+/[\w.\-]+" placeholder="you/docturnal">
+
+      <label for="name">App name <span class="hint">App names are unique on GitHub. If Docturnal is taken, GitHub asks you for another.</span></label>
+      <input id="name" type="text" required value="Docturnal">
+
+      <label>Owner</label>
+      <div class="row">
+        <label><input type="radio" name="owner" value="personal" checked> My personal account</label>
+        <label><input type="radio" name="owner" value="org"> An organization:</label>
+        <input id="org" type="text" placeholder="organization name" style="width: auto; flex: 1; min-width: 160px;">
+      </div>
+
+      <p id="form-error" class="error" hidden></p>
+      <button type="submit">Create the app on GitHub</button>
+    </form>
+  </section>
+
+  <section id="exchange-view" hidden>
+    <p id="exchange-status">Getting the app's credentials from GitHub...</p>
+    <div id="fallback" hidden>
+      <p class="error" id="fallback-error"></p>
+      <p>Run this command within an hour of creating the app, then paste its output below:</p>
+      <pre id="fallback-command"></pre>
+      <textarea id="fallback-json" placeholder='{"id": 123, "pem": "...", ...}'></textarea>
+      <button type="button" id="fallback-submit">Show the credentials</button>
+    </div>
+  </section>
+
+  <section id="result-view" hidden>
+    <div class="warn"><strong>Save these now.</strong> GitHub shows the private key and webhook secret only once, and this page does not keep them. Do not refresh it until you have set the secrets.</div>
+
+    <h2>Your app</h2>
+    <dl>
+      <dt>Name</dt><dd id="r-name"></dd>
+      <dt>App ID</dt><dd id="r-id"></dd>
+      <dt>Settings</dt><dd><a id="r-settings" target="_blank" rel="noopener"></a></dd>
+      <dt>Install link</dt><dd><a id="r-install" target="_blank" rel="noopener"></a></dd>
+      <dt>Webhook URL</dt><dd id="r-webhook"></dd>
+      <dt>Client ID</dt><dd id="r-client"></dd>
+    </dl>
+
+    <h2>1. Download the three secret files</h2>
+    <p>Save the files in the <code>app</code> folder. Their names are in <code>app/.gitignore</code>, so git ignores them.</p>
+    <p id="key-note" class="muted"></p>
+    <button type="button" id="dl-key">Download private-key-pkcs8.pem</button>
+    <button type="button" id="dl-secret">Download webhook-secret.txt</button>
+    <button type="button" id="dl-client">Download client-secret.txt</button>
+
+    <h2>2. Set the Worker secrets</h2>
+    <p>Run these commands in the <code>app</code> folder.</p>
+    <p><strong>macOS, Linux, or Git Bash</strong></p>
+    <pre id="cmd-bash"></pre>
+    <p><strong>Windows PowerShell</strong></p>
+    <pre id="cmd-ps"></pre>
+
+    <h2>3. Delete the secret files</h2>
+    <pre id="cmd-clean"></pre>
+    <p>Then continue with the next step in <code>DEPLOY.md</code>.</p>
+
+    <details>
+      <summary>Show the values</summary>
+      <label for="r-secret">Webhook secret</label>
+      <input id="r-secret" type="text" readonly>
+      <label for="r-pem">Private key (PKCS#8)</label>
+      <textarea id="r-pem" readonly></textarea>
+    </details>
+  </section>
+</main>
+
+<script type="module">
+import { checkPkcs8, toPkcs8Pem } from './pkcs8.mjs';
+
+const $ = (id) => document.getElementById(id);
+const STORE = 'docturnal-registration';
+
+function remember(value) {
+  try { sessionStorage.setItem(STORE, JSON.stringify(value)); } catch { /* Private windows can block storage. */ }
+}
+function recall() {
+  try { return JSON.parse(sessionStorage.getItem(STORE) || 'null'); } catch { return null; }
+}
+
+function cleanWorkerUrl(raw) {
+  const url = new URL(raw.trim());
+  if (url.protocol !== 'https:') throw new Error('The Worker URL must start with https://.');
+  return `${url.origin}${url.pathname.replace(/\/(webhook)?\/?$/, '')}`;
+}
+
+$('register').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const error = $('form-error');
+  error.hidden = true;
+  try {
+    const worker = cleanWorkerUrl($('worker').value);
+    const action = $('action').value.trim();
+    const name = $('name').value.trim();
+    const owner = document.querySelector('input[name="owner"]:checked').value;
+    const org = $('org').value.trim();
+    if (owner === 'org' && !/^[\w.-]+$/.test(org)) throw new Error('Enter the organization name.');
+
+    const manifest = await (await fetch('manifest.json', { cache: 'no-store' })).json();
+    manifest.name = name;
+    manifest.url = `https://github.com/${action}`;
+    manifest.hook_attributes.url = `${worker}/webhook`;
+    manifest.setup_url = `${worker}/setup`;
+    manifest.callback_urls = [`${worker}/setup`];
+    manifest.redirect_url = `${location.origin}/`;
+
+    const state = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+    remember({ state, webhook: manifest.hook_attributes.url });
+
+    const target = owner === 'org'
+      ? `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new`
+      : 'https://github.com/settings/apps/new';
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${target}?state=${state}`;
+    const field = document.createElement('input');
+    field.type = 'hidden';
+    field.name = 'manifest';
+    field.value = JSON.stringify(manifest);
+    form.append(field);
+    document.body.append(form);
+    form.submit();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+});
+
+function download(name, text) {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+async function showResult(data, saved) {
+  if (!data || !data.id || !data.pem || !data.webhook_secret || !data.client_id || !data.client_secret) {
+    throw new Error('The response is missing the app ID, private key, webhook secret, client ID, or client secret.');
+  }
+  const pem = toPkcs8Pem(data.pem);
+  await checkPkcs8(pem);
+
+  $('exchange-view').hidden = true;
+  $('result-view').hidden = false;
+  $('r-name').textContent = data.name || '';
+  $('r-id').textContent = String(data.id);
+  $('r-settings').textContent = data.html_url || '';
+  $('r-settings').href = data.html_url || '#';
+  const install = data.slug ? `https://github.com/apps/${data.slug}/installations/new` : '';
+  $('r-install').textContent = install;
+  $('r-install').href = install || '#';
+  $('r-webhook').textContent = (saved && saved.webhook) || 'Check it on the settings page.';
+  $('key-note').textContent = data.pem.includes('BEGIN RSA PRIVATE KEY')
+    ? 'GitHub returned the key in PKCS#1 format. This page converted it to PKCS#8, which the Worker needs, and checked that the converted key loads.'
+    : 'The key is already in PKCS#8 format, which the Worker needs.';
+  $('r-secret').value = data.webhook_secret;
+  $('r-client').textContent = data.client_id;
+  $('r-pem').value = pem;
+
+  $('dl-key').onclick = () => download('private-key-pkcs8.pem', pem);
+  $('dl-secret').onclick = () => download('webhook-secret.txt', data.webhook_secret);
+  $('dl-client').onclick = () => download('client-secret.txt', data.client_secret);
+
+  $('cmd-bash').textContent = [
+    `echo ${data.id} | npx wrangler secret put APP_ID`,
+    'npx wrangler secret put PRIVATE_KEY < private-key-pkcs8.pem',
+    'npx wrangler secret put WEBHOOK_SECRET < webhook-secret.txt',
+    `echo ${data.client_id} | npx wrangler secret put CLIENT_ID`,
+    'npx wrangler secret put CLIENT_SECRET < client-secret.txt',
+  ].join('\n');
+  $('cmd-ps').textContent = [
+    `"${data.id}" | npx wrangler secret put APP_ID`,
+    'Get-Content -Raw private-key-pkcs8.pem | npx wrangler secret put PRIVATE_KEY',
+    'Get-Content -Raw webhook-secret.txt | npx wrangler secret put WEBHOOK_SECRET',
+    `"${data.client_id}" | npx wrangler secret put CLIENT_ID`,
+    'Get-Content -Raw client-secret.txt | npx wrangler secret put CLIENT_SECRET',
+  ].join('\n');
+  $('cmd-clean').textContent = 'rm private-key-pkcs8.pem webhook-secret.txt client-secret.txt\n\n# PowerShell\nRemove-Item private-key-pkcs8.pem, webhook-secret.txt, client-secret.txt';
+}
+
+async function exchange(code) {
+  $('form-view').hidden = true;
+  $('exchange-view').hidden = false;
+  const saved = recall();
+  const state = new URLSearchParams(location.search).get('state');
+  // The code works once, so drop it from the address bar before using it.
+  history.replaceState(null, '', location.pathname);
+  if (saved && state && saved.state !== state) {
+    $('exchange-status').innerHTML = '';
+    $('exchange-status').append(Object.assign(document.createElement('span'), {
+      className: 'error',
+      textContent: 'The state from GitHub does not match the one this page sent. Start again from the form.',
+    }));
+    return;
+  }
+
+  const fallback = (message) => {
+    $('exchange-status').hidden = true;
+    $('fallback').hidden = false;
+    $('fallback-error').textContent = message;
+    $('fallback-command').textContent =
+      `curl -s -X POST -H "Accept: application/vnd.github+json" https://api.github.com/app-manifests/${code}/conversions`;
+    $('fallback-submit').onclick = async () => {
+      try {
+        await showResult(JSON.parse($('fallback-json').value), saved);
+      } catch (err) {
+        $('fallback-error').textContent = err.message;
+      }
+    };
+  };
+
+  try {
+    const response = await fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, {
+      method: 'POST',
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(`GitHub answered ${response.status}: ${data.message || 'no message'}`);
+    await showResult(data, saved);
+  } catch (err) {
+    fallback(`${err.message}. You can finish with curl instead.`);
+  }
+}
+
+const code = new URLSearchParams(location.search).get('code');
+if (code) exchange(code);
+</script>
+</body>
+</html>

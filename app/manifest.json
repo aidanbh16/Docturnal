@@ -1,0 +1,23 @@
+{
+  "name": "Docturnal",
+  "url": "https://github.com/ACTION_REPOSITORY",
+  "description": "Your codebase, documented overnight. Every night, Docturnal adds comments to your code and updates your documentation, then opens a pull request for you to review. Your code never leaves GitHub's runner.",
+  "public": false,
+  "hook_attributes": {
+    "url": "https://WORKER_URL/webhook",
+    "active": true
+  },
+  "redirect_url": "http://localhost:8790/",
+  "setup_url": "https://WORKER_URL/setup",
+  "setup_on_update": true,
+  "request_oauth_on_install": true,
+  "callback_urls": ["https://WORKER_URL/setup"],
+  "default_permissions": {
+    "contents": "write",
+    "workflows": "write",
+    "pull_requests": "write",
+    "actions": "write",
+    "metadata": "read"
+  },
+  "default_events": ["push", "pull_request"]
+}
