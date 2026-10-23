@@ -21,6 +21,7 @@ import {
 } from './handlers';
 import { runSchedule } from './scheduler';
 import { SettingsStore } from './settings';
+import { withApiVersion } from './github';
 import { handleSetup } from './setup';
 
 export interface Env {
@@ -33,6 +34,9 @@ export interface Env {
   SETTINGS: KVNamespace;
   GITHUB_API_URL?: string;
   GITHUB_WEB_URL?: string;
+  // The Worker's public address, for the settings link in pull requests opened from the
+  // cron, which has no incoming request to take it from.
+  PUBLIC_URL?: string;
   ACTION_REPOSITORY?: string;
   CONTENTS_PATH_STYLE?: string;
 }
@@ -54,6 +58,7 @@ function normalizeEnv(raw: Env): Env {
     CLIENT_ID: (raw.CLIENT_ID ?? '').trim(),
     CLIENT_SECRET: (raw.CLIENT_SECRET ?? '').trim(),
     ACTION_REPOSITORY: (raw.ACTION_REPOSITORY ?? '').trim(),
+    PUBLIC_URL: (raw.PUBLIC_URL ?? '').trim().replace(/\/+$/, ''),
   };
 }
 
@@ -69,7 +74,7 @@ const SETUP_NEEDS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'SETTINGS']
 function makeDeps(env: Env, log: (line: string) => void, origin?: string): Deps {
   return {
     log,
-    origin,
+    origin: origin || env.PUBLIC_URL || undefined,
     actionRepository: env.ACTION_REPOSITORY ?? '',
     pathStyle: (env.CONTENTS_PATH_STYLE === 'plain' ? 'plain' : 'encoded') as PathStyle,
     settings: new SettingsStore(env.SETTINGS),
@@ -84,7 +89,7 @@ function makeApp(env: Env, options: Options): App {
     appId: env.APP_ID,
     privateKey: env.PRIVATE_KEY,
     webhooks: { secret: env.WEBHOOK_SECRET },
-    Octokit: Octokit.defaults({
+    Octokit: Octokit.plugin(withApiVersion).defaults({
       baseUrl: env.GITHUB_API_URL || 'https://api.github.com',
       request: options.fetch ? { fetch: options.fetch } : {},
     }),

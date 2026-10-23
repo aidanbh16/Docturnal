@@ -5,6 +5,7 @@
 // loads, so closing it gives midnight in the user's own time zone.
 
 import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type Settings, SettingsStore, isCommentLevel, isDefault, isValidHour, isValidTimeZone } from './settings';
+import { GITHUB_API_VERSION } from './github';
 import { randomToken, sameToken, signToken, verifyToken } from './session';
 
 export const SESSION_COOKIE = 'docturnal_session';
@@ -61,7 +62,7 @@ async function findUserInstallation(env: SetupEnv, options: SetupOptions, token:
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
         'user-agent': 'docturnal-app',
-        'x-github-api-version': '2022-11-28',
+        'x-github-api-version': GITHUB_API_VERSION,
       },
     });
     if (!response.ok) return null;

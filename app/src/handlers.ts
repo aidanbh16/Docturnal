@@ -5,7 +5,7 @@
 
 import type { Octokit } from '@octokit/core';
 import { type CommentLevel, DEFAULT_SETTINGS, SettingsStore } from './settings';
-import { WORKFLOW_FILE, WORKFLOW_PATH, isOldTemplate, workflowYaml } from './workflow';
+import { WORKFLOW_FILE, WORKFLOW_PATH, WORKFLOW_VERSION, templateVersion, workflowYaml } from './workflow';
 
 export const UPDATE_BRANCH = 'docturnal/update';
 export const SETUP_BRANCH = 'docturnal/setup';
@@ -33,11 +33,32 @@ This pull request adds one file, \`${WORKFLOW_PATH}\`. Docturnal starts it once 
 
 Merge this pull request to turn Docturnal on. The first run starts as soon as you merge. After that, Docturnal runs every night at midnight, New York time, with medium comments, until you change the settings.`;
 
-export const WORKFLOW_UPDATE_PR_BODY = `Docturnal now starts its nightly run from the app, at the time you choose in Docturnal's settings, instead of from a schedule in this repository.
+// Statuses of a run that has not finished. "pending" is a run waiting for the concurrency group.
+const ACTIVE_RUN_STATUSES = ['in_progress', 'queued', 'pending'] as const;
 
-This pull request replaces \`${WORKFLOW_PATH}\` with the new version. The new file has no schedule, and it takes the comment level from Docturnal's settings. Until you merge this pull request, Docturnal keeps running on the old schedule.
+// The pull request body for updating a workflow from `from` to the current version. A hidden
+// line records the version, so each version is proposed only once.
+export function workflowUpdateBody(from: number): string {
+  const intro = from === 0
+    ? `Docturnal now starts its nightly run from the app, at the time you choose in Docturnal's settings, instead of from a schedule in this repository.
 
-After you merge, Docturnal runs every night at the time in its settings: midnight, New York time, with medium comments, unless you change them.`;
+This pull request replaces \`${WORKFLOW_PATH}\` with the current version. The new file has no schedule, takes the comment level from Docturnal's settings, and lets only one Docturnal run happen at a time. Until you merge this pull request, Docturnal keeps running on the old schedule.
+
+After you merge, Docturnal runs every night at the time in its settings: midnight, New York time, with medium comments, unless you change them.`
+    : `This pull request updates \`${WORKFLOW_PATH}\` to version ${WORKFLOW_VERSION}.
+
+The new version lets only one Docturnal run happen at a time in this repository. If a run starts while another one is still going, for example a run you started by hand and the nightly run, the second one waits for the first to finish. Two runs then never push their changes at the same time.
+
+Nothing else changes: Docturnal keeps the run time and comment level from its settings.`;
+  return `${intro}\n\n<!-- docturnal-workflow-version: ${WORKFLOW_VERSION} -->`;
+}
+
+// The version a workflow update pull request proposed. Pull requests from before versions
+// were recorded proposed version 1.
+function proposedVersion(body: string | null | undefined): number {
+  const match = /<!-- docturnal-workflow-version: (\d+) -->/.exec(body ?? '');
+  return match ? Number(match[1]) : 1;
+}
 
 const FALLBACK_UPDATE_BODY = 'Docturnal added comments to your code and updated your documentation. Review the changes, then merge this pull request to keep them.';
 
@@ -215,13 +236,15 @@ async function writeWorkflowFile(octokit: Octokit, target: RepoRef, branch: stri
   }, deps);
 }
 
-async function createBranch(octokit: Octokit, { owner, repo }: RepoRef, branch: string, from: string) {
+// Creates the branch from `from`. If it exists, it is reused, or with reset moved to `from`
+// first, so a new pull request does not carry commits from an earlier one.
+async function createBranch(octokit: Octokit, { owner, repo }: RepoRef, branch: string, from: string, { reset = false } = {}) {
   const { data: base } = await octokit.request('GET /repos/{owner}/{repo}/git/ref/{ref}', { owner, repo, ref: `heads/${from}` });
   try {
     await octokit.request('POST /repos/{owner}/{repo}/git/refs', { owner, repo, ref: `refs/heads/${branch}`, sha: base.object.sha });
   } catch (err) {
-    // The branch is left over from an earlier attempt; reuse it.
     if (errorStatus(err) !== 422) throw err;
+    if (reset) await octokit.request('PATCH /repos/{owner}/{repo}/git/refs/{ref}', { owner, repo, ref: `heads/${branch}`, sha: base.object.sha, force: true });
   }
 }
 
@@ -319,17 +342,35 @@ async function openSetupPullRequest(octokit: Octokit, target: RepoRef, defaultBr
   return pr.number;
 }
 
-// Replaces an old scheduled template with the current one, through a pull request. It is
-// proposed once: if any pull request from the update branch exists, open or closed, the
-// app does not propose it again.
-async function proposeWorkflowUpdate(octokit: Octokit, target: RepoRef, defaultBranch: string, message: SetupMessage, deps: Deps): Promise<{ number: number; created: boolean }> {
+// Proposes the current template to a repository with an older one, through a pull request.
+// Each version is proposed once: an open pull request for an older version is brought up
+// to date, and a closed one for the current version means the owner declined it.
+// Returns the pull request number and what happened, or null when it was declined.
+async function proposeWorkflowUpdate(
+  octokit: Octokit,
+  target: RepoRef,
+  defaultBranch: string,
+  from: number,
+  origin: string | undefined,
+  installationId: number,
+  deps: Deps
+): Promise<{ number: number; action: 'opened' | 'updated' | 'already proposed' } | null> {
   const { owner, repo } = target;
+  const body = withSettingsLink(workflowUpdateBody(from), origin, installationId);
   const { data: earlier } = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'all', head: `${owner}:${WORKFLOW_UPDATE_BRANCH}` });
-  if (earlier.length) return { number: earlier[0].number, created: false };
-  await createBranch(octokit, target, WORKFLOW_UPDATE_BRANCH, defaultBranch);
+  const open = earlier.find((pr: { state: string }) => pr.state === 'open');
+  if (open && proposedVersion(open.body) >= WORKFLOW_VERSION) return { number: open.number, action: 'already proposed' };
+  if (!open && earlier.some((pr: { body?: string | null }) => proposedVersion(pr.body) >= WORKFLOW_VERSION)) return null;
+
+  // An open pull request keeps its branch; otherwise the branch starts again from the default branch.
+  if (!open) await createBranch(octokit, target, WORKFLOW_UPDATE_BRANCH, defaultBranch, { reset: true });
   const current = await readFile(octokit, target, WORKFLOW_PATH, WORKFLOW_UPDATE_BRANCH, deps);
   if (!current || current.content !== workflowYaml(deps.actionRepository)) {
-    await writeWorkflowFile(octokit, target, WORKFLOW_UPDATE_BRANCH, deps, { sha: current?.sha, message: 'Update the Docturnal workflow' });
+    await writeWorkflowFile(octokit, target, WORKFLOW_UPDATE_BRANCH, deps, { sha: current?.sha, message: `Update the Docturnal workflow to version ${WORKFLOW_VERSION}` });
+  }
+  if (open) {
+    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: open.number, body });
+    return { number: open.number, action: 'updated' };
   }
   const { data: pr } = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
     owner,
@@ -337,9 +378,20 @@ async function proposeWorkflowUpdate(octokit: Octokit, target: RepoRef, defaultB
     title: WORKFLOW_UPDATE_PR_TITLE,
     head: WORKFLOW_UPDATE_BRANCH,
     base: defaultBranch,
-    body: withSettingsLink(WORKFLOW_UPDATE_PR_BODY, message.origin, message.installationId),
+    body,
   });
-  return { number: pr.number, created: true };
+  return { number: pr.number, action: 'opened' };
+}
+
+function describeVersion(version: number): string {
+  return version === 0 ? 'the workflow has the old schedule' : `the workflow is version ${version}`;
+}
+
+function describeProposal(proposal: { number: number; action: string } | null): string {
+  if (!proposal) return `the update to version ${WORKFLOW_VERSION} was declined earlier, left it unchanged`;
+  if (proposal.action === 'opened') return `opened update pull request #${proposal.number}`;
+  if (proposal.action === 'updated') return `updated pull request #${proposal.number} to version ${WORKFLOW_VERSION}`;
+  return `update pull request #${proposal.number} was already proposed`;
 }
 
 type SetupMessage = Extract<QueueMessage, { kind: 'setup' }>;
@@ -382,11 +434,10 @@ export async function setUpRepository(octokit: Octokit, message: SetupMessage, a
         }
         return DONE;
       }
-      if (isOldTemplate(existing.content)) {
-        const { number, created } = await proposeWorkflowUpdate(octokit, target, defaultBranch, message, deps);
-        deps.log(created
-          ? `${label}: the workflow has the old schedule, opened update pull request #${number}`
-          : `${label}: the workflow has the old schedule, update pull request #${number} was already proposed`);
+      const version = templateVersion(existing.content, deps.actionRepository);
+      if (version !== null && version < WORKFLOW_VERSION) {
+        const proposal = await proposeWorkflowUpdate(octokit, target, defaultBranch, version, message.origin, message.installationId, deps);
+        deps.log(`${label}: ${describeVersion(version)}, ${describeProposal(proposal)}`);
         return DONE;
       }
       deps.log(`${label}: ${WORKFLOW_PATH} already exists on ${defaultBranch}, left it unchanged`);
@@ -409,6 +460,43 @@ export async function setUpRepository(octokit: Octokit, message: SetupMessage, a
   }
 }
 
+// True when a Docturnal run in this repository has not finished yet.
+async function hasActiveRun(octokit: Octokit, { owner, repo }: RepoRef): Promise<boolean> {
+  for (const status of ACTIVE_RUN_STATUSES) {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs', {
+      owner,
+      repo,
+      workflow_id: WORKFLOW_FILE,
+      status,
+      per_page: 1,
+    });
+    if (data.total_count > 0) return true;
+  }
+  return false;
+}
+
+// Checks a repository before its nightly run. Proposes a workflow update when the template
+// is older than the current version. Returns why the run is skipped, or null to start it.
+async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, message: DispatchMessage, deps: Deps): Promise<string | null> {
+  const workflow = await readFile(octokit, target, WORKFLOW_PATH, ref, deps);
+  if (!workflow) return `${WORKFLOW_PATH} is not on ${ref}`;
+  const version = templateVersion(workflow.content, deps.actionRepository);
+  if (version !== null && version < WORKFLOW_VERSION) {
+    // A failed proposal is logged and tried again the next night; it never blocks the run.
+    try {
+      const proposal = await proposeWorkflowUpdate(octokit, target, ref, version, deps.origin, message.installationId, deps);
+      // Logged only when something changed, so a declined or pending proposal is not logged every night.
+      if (proposal && proposal.action !== 'already proposed') deps.log(`dispatch ${message.repo}: ${describeVersion(version)}, ${describeProposal(proposal)}`);
+    } catch (err) {
+      deps.log(`dispatch ${message.repo}: could not propose the workflow update, ${errorMessage(err)}`);
+    }
+  }
+  // The old template runs on its own schedule until its update pull request is merged.
+  if (version === 0) return 'the workflow still has its own schedule';
+  if (await hasActiveRun(octokit, target)) return 'a run is already in progress';
+  return null;
+}
+
 // Starts docturnal.yml with the installation's comment level.
 export async function dispatchRun(octokit: Octokit, message: DispatchMessage, attempts: number, deps: Deps): Promise<Outcome> {
   const [owner, repo] = message.repo.split('/');
@@ -419,6 +507,13 @@ export async function dispatchRun(octokit: Octokit, message: DispatchMessage, at
     if (!ref) {
       const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
       ref = data.default_branch as string;
+    }
+    if (message.reason === 'nightly') {
+      const skip = await beforeNightlyRun(octokit, { owner, repo }, ref, message, deps);
+      if (skip) {
+        deps.log(`${label}: skipped, ${skip}`);
+        return DONE;
+      }
     }
     const commentLevel = message.commentLevel ?? ((await deps.settings.getChoices(message.installationId)) ?? DEFAULT_SETTINGS).commentLevel;
     try {

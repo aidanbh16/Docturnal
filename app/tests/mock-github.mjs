@@ -15,6 +15,8 @@ export function createMockGitHub({
   dispatchNotFound = 0,
   failPulls = false,
   failPuts = 0,
+  // Workflow runs that have not finished: [{ repo, status }], status in_progress, queued, or pending.
+  runs = [],
   // codes: OAuth code -> user token; installations: user token -> installations it can access.
   oauth = { codes: {}, installations: {} },
 } = {}) {
@@ -24,6 +26,9 @@ export function createMockGitHub({
     dispatches: [],
     pulls: [],
     nextPull: 1,
+    runs: [...runs],
+    // The X-GitHub-Api-Version header of each REST call, or null when it had none.
+    apiVersions: [],
   };
   for (const fullName of repos) {
     state.repos.set(fullName, {
@@ -36,16 +41,24 @@ export function createMockGitHub({
   let notFoundLeft = dispatchNotFound;
   let putFailuresLeft = failPuts;
 
+  // Like GitHub, answers a request on the closing-down 2022-11-28 version (the default
+  // without the header) with Deprecation and Sunset headers, which Octokit turns into a warning.
+  let currentVersion = null;
   const json = (status, body) =>
     new Response(status === 204 ? null : JSON.stringify(body), {
       status,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        ...(currentVersion === '2026-03-10' ? {} : { deprecation: '@1773100800', sunset: 'Fri, 10 Mar 2028 00:00:00 GMT' }),
+      },
     });
   const fileKey = (branch, path) => `${branch}:${path}`;
 
   async function handle(method, url, body, headers = {}) {
     const { pathname, searchParams } = new URL(url);
     state.calls.push(`${method} ${pathname}`);
+    currentVersion = headers['x-github-api-version'] ?? null;
+    if (!pathname.startsWith('/login/')) state.apiVersions.push(currentVersion);
 
     if (method === 'POST' && pathname === '/login/oauth/access_token') {
       const token = oauth.codes[body.code];
@@ -106,6 +119,20 @@ export function createMockGitHub({
       if (!repo.branches.has(branch)) return json(404, { message: 'Not Found' });
       return json(200, { ref: `refs/heads/${branch}`, object: { sha: repo.branches.get(branch), type: 'commit' } });
     }
+    const resetRef = rest.match(/^\/git\/refs\/heads\/(.+)$/);
+    if (method === 'PATCH' && resetRef) {
+      const branch = resetRef[1];
+      if (!repo.branches.has(branch)) return json(422, { message: 'Reference does not exist' });
+      if (!body.force) return json(422, { message: 'Update is not a fast forward' });
+      // Moving the branch to the default branch's commit gives it the default branch's files.
+      repo.branches.set(branch, body.sha);
+      for (const key of [...repo.files.keys()]) if (key.startsWith(`${branch}:`)) repo.files.delete(key);
+      for (const [key, value] of [...repo.files]) {
+        const [fromBranch, ...pathParts] = key.split(':');
+        if (fromBranch === repo.defaultBranch) repo.files.set(fileKey(branch, pathParts.join(':')), value);
+      }
+      return json(200, { ref: `refs/heads/${branch}`, object: { sha: body.sha } });
+    }
     if (method === 'POST' && rest === '/git/refs') {
       const branch = body.ref.replace(/^refs\/heads\//, '');
       if (repo.branches.has(branch)) return json(422, { message: 'Reference already exists' });
@@ -130,7 +157,17 @@ export function createMockGitHub({
         return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(Object.keys(inputs))}` });
       }
       state.dispatches.push({ repo: fullName, workflow: dispatch[1], ref: body.ref, inputs });
-      return json(204);
+      // Version 2026-03-10 answers 200 with the run details; 2022-11-28 answers 204.
+      if (currentVersion !== '2026-03-10') return json(204);
+      const id = 1000 + state.dispatches.length;
+      return json(200, { workflow_run_id: id, run_url: `https://api.github.com/repos/${fullName}/actions/runs/${id}`, html_url: `https://github.com/${fullName}/actions/runs/${id}` });
+    }
+
+    const runsList = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/);
+    if (method === 'GET' && runsList) {
+      const status = searchParams.get('status');
+      const found = state.runs.filter((r) => r.repo === fullName && (!status || r.status === status));
+      return json(200, { total_count: found.length, workflow_runs: found.map((r, i) => ({ id: i + 1, status: r.status })) });
     }
 
     if (rest === '/pulls' && method === 'GET') {

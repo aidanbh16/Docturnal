@@ -42,6 +42,8 @@ ACTION_REPOSITORY = "you/docturnal"
 
 The app writes this value into the workflow file it adds to each repository, as `uses: you/docturnal@v1`. Until you set it, the app skips installs and logs `ACTION_REPOSITORY is not set`.
 
+Also set `PUBLIC_URL` to the Worker's address, such as `https://docturnal.you.workers.dev`. Pull requests that the hourly cron opens use it for the settings link, because the cron has no incoming request to take the address from. Without it, those pull requests have no settings link.
+
 ## 3. Publish the v1 tag
 
 The workflow runs `you/docturnal@v1`, so that tag must exist before the first run. If you have not published a release yet, tag the current commit from the repository root:

@@ -30,9 +30,9 @@ This is one public repo with three parts.
 
 - A GitHub App named Docturnal, deployed as a Cloudflare Worker.
 - On install, it queues each selected repo (Cloudflare Queue, one repo per message), commits `.github/workflows/docturnal.yml`, and starts the first run.
-- An hourly cron (minute 7) dispatches `docturnal.yml` for every installation whose chosen local hour has arrived, passing `comment-level` as a `workflow_dispatch` input. Daylight saving time is handled with `Intl.DateTimeFormat`.
+- An hourly cron (minute 7) dispatches `docturnal.yml` for every installation whose chosen local hour has arrived, passing `comment-level` as a `workflow_dispatch` input. Daylight saving time is handled with `Intl.DateTimeFormat`. A repo is skipped that night if a Docturnal run is already queued, pending, or in progress. Every GitHub API call sends `X-GitHub-Api-Version: 2026-03-10`.
 - Serves the optional settings page at `/setup` (GitHub sign-in, then a check with `GET /user/installations` that the user can access the installation). Settings live in Cloudflare KV, and no key is ever read and written back: one empty key per repo, which webhooks create and delete, and one settings key with the time, time zone, and comment level, written only by the settings page (without it, the defaults apply). The cron finds each installation's repos by listing keys by prefix. Nothing else, and never code. Uninstalling deletes every key with the installation's prefix.
-- A repo with the earlier scheduled template gets the new one once, through a pull request titled "Update Docturnal workflow".
+- The workflow template carries a version line (`# Docturnal workflow version N.`), and its `concurrency` group lets only one run happen at a time per repo. A repo with an older version gets the current one through a pull request titled "Update Docturnal workflow", proposed once per version, at setup or before its nightly run. Raise `WORKFLOW_VERSION` in `app/src/workflow.ts` whenever the template changes.
 - When the Action pushes `docturnal/update`, the app opens the pull request under its own name, or updates the open one.
 - Only makes GitHub API calls. It never reads, stores, or forwards source code.
 

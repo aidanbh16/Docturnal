@@ -11,7 +11,7 @@ import {
 } from '../src/handlers';
 import { SettingsStore } from '../src/settings';
 import { createSession, SESSION_COOKIE } from '../src/setup';
-import { WORKFLOW_PATH, isOldTemplate, workflowYaml } from '../src/workflow';
+import { WORKFLOW_PATH, WORKFLOW_VERSION, isOldTemplate, templateVersion, workflowYaml } from '../src/workflow';
 import { FakeKV } from './fake-kv';
 import { FakeQueue } from './fake-queue';
 import { createMockGitHub } from './mock-github.mjs';
@@ -241,12 +241,19 @@ describe('installation', () => {
     expect(t.gh.state.dispatches).toEqual([]);
     expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, opened update pull request #1');
 
+    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 2 -->');
+
+    // While it is open, it is not proposed again.
+    await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
+    await t.drain();
+    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, update pull request #1 was already proposed');
+
     // Closing it without merging does not bring it back.
     t.gh.state.pulls[0].state = 'closed';
     await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
     await t.drain();
     expect(t.gh.state.pulls).toHaveLength(1);
-    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, update pull request #1 was already proposed');
+    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, the update to version 2 was declined earlier, left it unchanged');
   });
 
   it('queues the first run on retry when an earlier attempt created the file but could not queue the run', async () => {
@@ -514,5 +521,181 @@ describe('workflow template', () => {
     expect(WORKFLOW).toContain('    runs-on: ubuntu-latest\n    timeout-minutes: 120');
     expect(WORKFLOW).toContain('      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0');
     expect(WORKFLOW).toContain("      - uses: acme/docturnal@v1\n        with:\n          comment-level: ${{ inputs['comment-level'] || 'medium' }}\n");
+  });
+});
+
+// The version 1 template: the current one without its version line and concurrency block.
+const WORKFLOW_V1 = WORKFLOW
+  .replace('# Docturnal workflow version 2.\n', '')
+  .replace(/\n# One run at a time[\s\S]*?cancel-in-progress: false\n/, '');
+
+describe('workflow versions', () => {
+  it('lets one run at a time per repository, and carries its version', () => {
+    expect(WORKFLOW).toContain('\nconcurrency:\n  group: docturnal\n  cancel-in-progress: false\n');
+    expect(WORKFLOW).toContain(`\n# Docturnal workflow version ${WORKFLOW_VERSION}.\n`);
+    expect(WORKFLOW_VERSION).toBe(2);
+    expect(WORKFLOW_V1).not.toContain('concurrency');
+    expect(templateVersion(WORKFLOW, 'acme/docturnal')).toBe(2);
+    expect(templateVersion(WORKFLOW_V1, 'acme/docturnal')).toBe(1);
+    expect(templateVersion(OLD_WORKFLOW, 'acme/docturnal')).toBe(0);
+    expect(templateVersion(workflowYaml('someone/my-docs-tool'), 'someone/my-docs-tool')).toBe(2);
+    expect(templateVersion('jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n', 'acme/docturnal')).toBeNull();
+  });
+
+  it('proposes version 2 to a repository set up with version 1, through the update pull request', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } });
+    await t.deliver('installation', installation());
+    await t.drain();
+    const repo = t.gh.state.repos.get('octo/hello');
+    expect(repo.files.get(`main:${WORKFLOW_PATH}`)).toBe(WORKFLOW_V1);
+    expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.pulls).toEqual([expect.objectContaining({ title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', state: 'open' })]);
+    expect(t.gh.state.pulls[0].body).toContain('updates `.github/workflows/docturnal.yml` to version 2');
+    expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
+    expect(t.logs).toContain('setup octo/hello: the workflow is version 1, opened update pull request #1');
+  });
+
+  it('proposes the update from the nightly run for existing installs, once, and still starts the run', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } }, { PUBLIC_URL: ORIGIN });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(1);
+    // The cron has no incoming request, so the settings link comes from PUBLIC_URL.
+    expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
+    expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
+    expect(t.logs).toContain('dispatch octo/hello: the workflow is version 1, opened update pull request #1');
+
+    // The next night: no second pull request and no repeated log line.
+    t.logs.length = 0;
+    await t.cron('2026-01-16T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.dispatches).toHaveLength(2);
+    expect(t.logs.filter((l) => l.includes('update pull request'))).toEqual([]);
+  });
+
+  it('starts the update branch again from the default branch when an earlier update pull request was closed', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } });
+    const repo = t.gh.state.repos.get('octo/hello');
+    // The version 1 proposal from before versions were recorded, merged long ago.
+    repo.branches.set('docturnal/workflow-update', 'sha-old');
+    repo.files.set(`docturnal/workflow-update:${WORKFLOW_PATH}`, WORKFLOW_V1);
+    repo.files.set('docturnal/workflow-update:stale.txt', 'left from the earlier pull request');
+    t.gh.state.pulls.push({ repo: 'octo/hello', number: 7, state: 'closed', title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: 'Docturnal now starts its nightly run from the app.' });
+    t.gh.state.nextPull = 8;
+
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(repo.branches.get('docturnal/workflow-update')).toBe('sha-base');
+    expect(repo.files.has('docturnal/workflow-update:stale.txt')).toBe(false);
+    expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.pulls.map((p: { number: number; state: string }) => [p.number, p.state])).toEqual([[7, 'closed'], [8, 'open']]);
+  });
+
+  it('brings an open pull request for an older version up to date instead of opening another', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: OLD_WORKFLOW } });
+    const repo = t.gh.state.repos.get('octo/hello');
+    repo.branches.set('docturnal/workflow-update', 'sha-base');
+    repo.files.set(`docturnal/workflow-update:${WORKFLOW_PATH}`, WORKFLOW_V1);
+    t.gh.state.pulls.push({ repo: 'octo/hello', number: 3, state: 'open', title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: 'Docturnal now starts its nightly run from the app.' });
+    t.gh.state.nextPull = 4;
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
+    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 2 -->');
+    // Still on the scheduled template until the pull request is merged, so no dispatch.
+    expect(t.gh.state.dispatches).toEqual([]);
+    expect(t.logs).toContain('dispatch octo/hello: the workflow has the old schedule, updated pull request #3 to version 2');
+    expect(t.logs).toContain('dispatch octo/hello: skipped, the workflow still has its own schedule');
+  });
+
+  it('leaves a repository alone after its owner closes the version 2 pull request', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    t.gh.state.pulls[0].state = 'closed';
+    await t.cron('2026-01-16T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.dispatches).toHaveLength(2);
+  });
+});
+
+describe('nightly run while another run is going', () => {
+  for (const status of ['in_progress', 'queued', 'pending']) {
+    it(`skips the nightly run when a run is ${status}`, async () => {
+      const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW }, runs: [{ repo: 'octo/hello', status }] });
+      t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+      await t.cron('2026-01-15T05:07:00Z');
+      await t.drain();
+      expect(t.gh.state.dispatches).toEqual([]);
+      expect(t.logs).toContain('dispatch octo/hello: skipped, a run is already in progress');
+      expect(t.queue.deadLetters).toEqual([]);
+    });
+  }
+
+  it('checks only Docturnal runs in the same repository', async () => {
+    const t = setup({ repos: ['octo/hello', 'octo/busy'], files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW }, runs: [{ repo: 'octo/busy', status: 'in_progress' }] });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello', 'octo/busy'] });
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.dispatches.map((d: { repo: string }) => d.repo)).toEqual(['octo/hello']);
+    expect(t.gh.state.calls).toContain('GET /repos/octo/hello/actions/workflows/docturnal.yml/runs');
+    expect(t.logs).toContain('dispatch octo/busy: skipped, a run is already in progress');
+  });
+
+  it('does not check for runs before the first run after install', async () => {
+    const t = setup({ runs: [{ repo: 'octo/hello', status: 'in_progress' }] });
+    await t.deliver('installation', installation());
+    await t.drain();
+    expect(t.gh.state.dispatches).toHaveLength(1);
+  });
+});
+
+describe('GitHub API version', () => {
+  it('sends X-GitHub-Api-Version 2026-03-10 on every call, so GitHub sends no deprecation warning', async () => {
+    const warnings: unknown[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args);
+    try {
+      const t = setup({ files: { 'docturnal/update:.docturnal/last-run.md': '# Docturnal update\n' } });
+      await t.deliver('installation', installation());
+      await t.drain();
+      await t.deliver('push', pushToUpdate());
+      t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'heavy', repos: ['octo/hello'] });
+      await t.cron('2026-01-15T05:07:00Z');
+      await t.drain();
+
+      // 2026-03-10 answers a dispatch with 200 and the run details; both runs started.
+      expect(t.gh.state.dispatches).toHaveLength(2);
+      expect(t.logs).toContain('dispatch octo/hello: started the nightly run on main with heavy comments');
+      expect(t.gh.state.apiVersions.length).toBeGreaterThan(10);
+      expect(new Set(t.gh.state.apiVersions)).toEqual(new Set(['2026-03-10']));
+      expect(warnings).toEqual([]);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('the mock answers like GitHub, with a Sunset header, when a call has no version header', async () => {
+    const gh = createMockGitHub();
+    const response = await gh.fetch('https://api.github.test/repos/octo/hello', {});
+    expect(response.headers.get('sunset')).toBe('Fri, 10 Mar 2028 00:00:00 GMT');
+  });
+});
+
+describe('Worker entry module', () => {
+  // Workers treat each named export of the entry module as an entrypoint and refuse to start
+  // when one is not a function, which no other test would notice.
+  it('exports only functions besides the default handler', async () => {
+    const entry = await import('../src/index');
+    for (const [name, value] of Object.entries(entry)) {
+      if (name !== 'default') expect(typeof value, name).toBe('function');
+    }
   });
 });

@@ -42,6 +42,7 @@ If the Worker gets a PKCS#1 key, it logs a message that says to convert it and i
 `wrangler.toml` sets two variables that are not secret:
 
 - `ACTION_REPOSITORY`: the repository that publishes the Docturnal Action, such as `owner/docturnal`. The workflow file uses `<ACTION_REPOSITORY>@v1`. Until you set it, the app skips installs and logs why.
+- `PUBLIC_URL`: the Worker's address, for the settings link in pull requests that the hourly cron opens.
 - `GITHUB_API_URL`: the GitHub API address. Leave it as `https://api.github.com`.
 
 ## Develop and test
