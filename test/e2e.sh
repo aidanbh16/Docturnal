@@ -136,6 +136,9 @@ expect_count "run 1 layers" '"kind":"layers"' 1
 expect_count "run 1 layer docs" '"kind":"layer-doc"' 3
 expect_count "run 1 main doc" '"kind":"readme"' 1
 expect_count "run 1 comment model only for comments" '"model":"comment-model","kind":"comments"' 4
+# One accuracy check per commented file, with the docs model, which is loaded for the docs next.
+expect_count "run 1 accuracy checks with the docs model" '"model":"docs-model","kind":"accuracy"' 4
+contains "$(remote_file .docturnal/state.json)" '"comments": [' "run 1 state.json records Docturnal's comments"
 LAST_RUN="$(remote_file .docturnal/last-run.md)"
 for f in src/api/users.js src/api/orders.js src/db/client.js lib/util.py; do contains "$LAST_RUN" "\`$f\`" "run 1 last-run.md"; done
 contains "$LAST_RUN" '| `src/api/users.js` | 1 | Yes (TypeScript) |' "run 1 last-run.md"
@@ -180,7 +183,7 @@ EOF
 seed_commit "Add disconnect"
 run_docturnal run3
 expect_count "run 3 comments" '"kind":"comments"' 1
-expect_count "run 3 comments for the edited file" '"file":"src/db/client.js"' 1
+expect_count "run 3 comments for the edited file" '"kind":"comments","file":"src/db/client.js"' 1
 expect_count "run 3 layers" '"kind":"layers"' 0
 expect_count "run 3 layer docs" '"kind":"layer-doc"' 1
 expect_count "run 3 main doc" '"kind":"readme"' 1
@@ -203,7 +206,10 @@ export function deleteUser(db, id) {
 EOF
 seed_commit "Add deleteUser"
 run_docturnal run4 INPUT_SELECTED_DOCS_MODEL=oom-docs-model
-expect_count "run 4 failed docs model calls" '"model":"oom-docs-model","kind":"layer-doc","status":500' 1
+# The accuracy check loads the docs model first; after it fails, nothing tries it again.
+expect_count "run 4 failed docs model calls" '"model":"oom-docs-model","kind":"accuracy","file":"src/api/users.js","status":500' 1
+expect_count "run 4 docs model not tried again" '"model":"oom-docs-model","kind":"layer-doc"' 0
+expect_count "run 4 fallback accuracy check" '"model":"comment-model","kind":"accuracy"' 1
 expect_count "run 4 fallback layer doc" '"model":"comment-model","kind":"layer-doc"' 1
 expect_count "run 4 fallback main doc" '"model":"comment-model","kind":"readme"' 1
 grep -q 'update branch existing' "$RUN_LOG" || fail "run 4 did not reuse the open update branch"

@@ -42,8 +42,16 @@ def analyze(source):
             if first != node.lineno:
                 decorated.append([first, node.lineno])
 
+    # Module-level constants by convention: an upper-case name assigned at the top level.
+    constants = []
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if targets and all(isinstance(t, ast.Name) and t.id.isupper() for t in targets):
+            constants.append(node.lineno)
+
     return {
         "ok": True,
+        "constants": constants,
         "continued": continued,
         "comments": sorted(comments),
         "imports": sorted(imports),

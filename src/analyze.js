@@ -58,6 +58,8 @@ function baseInfo(lines) {
     unsafeStart: false,
     isImport: false,
     isDeclaration: false,
+    // A top-level constant, which heavy level gives a short line comment.
+    isConstant: false,
     // The name of a function, class, or component that starts on this line, if any.
     symbol: null,
   }));
@@ -72,6 +74,9 @@ function setSymbol(entry, name) {
 const NAMED_DECLARATION = /\b(?:class|struct|trait|object|record|protocol|actor|fn|func|fun|function|def|sub|procedure|filter)\s+([A-Za-z_$][\w$:.]*)/i;
 const CALL_NAME = /([A-Za-z_~$][\w$]*)\s*\(/g;
 const NOT_A_NAME = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'sizeof', 'typeof', 'new', 'func', 'function', 'fn', 'def']);
+
+// An unindented constant by naming convention, such as "const MAX_HOURS = 80" or "MAX_HOURS = 80".
+const GENERIC_CONSTANT = /^(?:#define\s+[A-Z][A-Z0-9_]+\s|(?:(?:export|pub|public|private|static|final|readonly)\s+)*(?:(?:const|val|let|var)\s+)?(?:[\w<>[\]]+\s+)?[A-Z][A-Z0-9_]+\s*(?::[^=]+)?=(?!=))/;
 
 function genericSymbol(trimmed) {
   const named = trimmed.match(NAMED_DECLARATION);
@@ -201,6 +206,7 @@ function analyzeTypeScript(text, lines, language) {
       else {
         const fn = declarations.find((d) => d.initializer && isFunctionLike(d.initializer));
         if (fn) markDeclaration(node, nameOf(fn));
+        else if (node.parent === sf && node.declarationList.flags & ts.NodeFlags.Const) info[lineOf(node.getStart(sf))].isConstant = true;
       }
     } else if (ts.isExpressionStatement(node)) {
       const expr = node.expression;
@@ -278,6 +284,7 @@ function analyzePythonLines(text, lines) {
   for (const n of result.imports) if (at(n)) at(n).isImport = true;
   for (const n of result.declarations) if (at(n)) at(n).isDeclaration = true;
   for (const [n, name] of result.symbols || []) setSymbol(at(n), name);
+  for (const n of result.constants || []) if (at(n)) at(n).isConstant = true;
   lines.forEach((line, l) => {
     info[l].commentOnly = !info[l].unsafeStart && line.text.trimStart().startsWith('#');
   });
@@ -423,6 +430,8 @@ function analyzeGeneric(lines, language) {
     else if ((language.declarations || []).some((re) => re.test(trimmed))) {
       info[l].isDeclaration = true;
       setSymbol(info[l], genericSymbol(trimmed));
+    } else if (line.text === trimmed && GENERIC_CONSTANT.test(trimmed)) {
+      info[l].isConstant = true;
     }
   });
 

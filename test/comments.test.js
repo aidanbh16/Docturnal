@@ -3,13 +3,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { applyProposals, cleanText, commentFile, buildWindows } = require('../src/comments');
+const { cleanText, commentFile, buildWindows } = require('../src/comments');
+const { applyAnchored: applyProposals, withAccuracy, withAnchor } = require('./helpers');
 const { classifyFile, languageById } = require('../src/languages');
 const { baseUrl } = require('../src/ollama');
 const { findPython } = require('../src/python');
 const { verifyCandidates } = require('../src/verify');
 const { splitLines } = require('../src/analyze');
-const { startMockOllama } = require('./mock-ollama');
+const { kindOf, startMockOllama } = require('./mock-ollama');
 
 const noPython = findPython() ? false : 'python3 is not available';
 
@@ -459,11 +460,11 @@ test('windows split long files into line ranges that fit the budget', () => {
 // --- End to end with the mock Ollama server ---
 
 test('commentFile asks the model per window and applies its proposals', async () => {
-  const mock = await startMockOllama(() => ({
+  const mock = await startMockOllama(withAccuracy(() => ({
     summary: 'Retries a function a fixed number of times.',
     symbols: ['retry'],
-    comments: [{ line: 10, text: 'Rethrow the final failure instead of a generic error.', kind: 'line' }],
-  }));
+    comments: [withAnchor(RETRY_JS, { line: 10, text: 'Rethrow the final failure instead of a generic error.', kind: 'line' })],
+  })));
   try {
     const result = await commentFile({
       path: 'src/retry.js',
@@ -477,7 +478,8 @@ test('commentFile asks the model per window and applies its proposals', async ()
     assert.deepStrictEqual(result.symbols, ['retry']);
     assert.match(result.text, /\/\/ Rethrow the final failure/);
 
-    assert.strictEqual(mock.requests.length, 1);
+    // One request for proposals, then one accuracy check.
+    assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'accuracy']);
     const request = mock.requests[0];
     assert.strictEqual(request.model, 'qwen2.5-coder:3b');
     assert.strictEqual(request.stream, false);

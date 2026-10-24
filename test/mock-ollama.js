@@ -30,6 +30,7 @@ function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
   const prompt = promptOf(body);
   if (prompt.includes('Write a block comment for each of these declarations')) return 'blocks';
+  if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
   if (props.layers) return 'layers';
   if (prompt.includes('Rewrite this README section')) return 'polish';
@@ -50,7 +51,7 @@ function commentsReply(body) {
     if (!match) continue;
     const name = match.slice(1).find(Boolean);
     names.push(name);
-    comments.push({ line: Number(number), text: `Keeps the ${name} logic in one place for callers.`, kind: 'line' });
+    comments.push({ line: Number(number), anchor: code.trim(), text: `Keeps the ${name} logic in one place for callers.`, kind: 'line' });
   }
   return {
     summary: names.length ? `Defines ${names.join(', ')} for ${file}.` : `Supports ${file}.`,
@@ -61,12 +62,22 @@ function commentsReply(body) {
 
 // The heavy-level follow-up: one block comment per listed declaration.
 function blocksReply(body) {
-  const comments = [...promptOf(body).matchAll(/^- line (\d+): (.+)$/gm)].map(([, number, name]) => ({
+  const prompt = promptOf(body);
+  const code = new Map([...prompt.matchAll(/^(\d+)\| (.*)$/gm)].map(([, number, text]) => [Number(number), text.trim()]));
+  const comments = [...prompt.matchAll(/^- line (\d+): (.+)$/gm)].map(([, number, name]) => ({
     line: Number(number),
+    anchor: code.get(Number(number)) || '',
     text: `Explains what ${name} is for and what it returns.`,
     kind: 'block',
   }));
   return { comments };
+}
+
+// The accuracy check: every comment is accurate unless isAccurate says otherwise.
+// isAccurate receives the comment text and the code lines under it.
+function accuracyReply(body, isAccurate = () => true) {
+  const items = [...promptOf(body).matchAll(/^Item (\d+)\nComment: (.*)\nCode:\n((?:\d+\| .*(?:\n|$))+)/gm)];
+  return { verdicts: items.map(([, id, comment, code]) => ({ id: Number(id), accurate: isAccurate(comment, code) })) };
 }
 
 function layersReply(body) {
@@ -115,6 +126,7 @@ function defaultHandler({ oomModels = [] } = {}) {
     switch (kindOf(body)) {
       case 'comments': return commentsReply(body);
       case 'blocks': return blocksReply(body);
+      case 'accuracy': return accuracyReply(body);
       case 'layers': return layersReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
@@ -185,4 +197,4 @@ if (require.main === module && process.argv.includes('--serve')) {
   });
 }
 
-module.exports = { OOM_MESSAGE, blocksReply, defaultHandler, kindOf, startMockOllama };
+module.exports = { OOM_MESSAGE, accuracyReply, blocksReply, defaultHandler, kindOf, startMockOllama };

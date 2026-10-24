@@ -78,12 +78,21 @@ The default is `medium`. Users change the level on the app's settings page (`/se
 |---|---|
 | `low` | Sparse, single-line comments of a few words. |
 | `medium` | Single-line comments that can be longer, placed less sparsely. |
-| `heavy` | A block comment (JSDoc `/** */` in JavaScript and TypeScript) above every function, class, and component, plus single-line comments on non-obvious logic such as calculations, loops, edge cases, and magic numbers. |
+| `heavy` | A block comment (JSDoc `/** */` in JavaScript and TypeScript) above every function, class, and component, a short single-line comment on each constant and magic number, plus single-line comments on non-obvious logic such as calculations, loops, and edge cases. |
 | `off` | No comments. Documentation only. |
 
-Only single-line comments are limited by the level's density limit and the minimum gap between comments. At `heavy`, a block comment above a function, class, or component never counts toward either limit and is never dropped by them, and neither does an existing comment there. After the model's first answer, the Action finds the functions, classes, and components that still have no comment directly above them (with the TypeScript parser for JavaScript and TypeScript, `ast` for Python, and the declaration patterns for other languages) and sends one follow-up request asking for a block comment for each, by name and line.
+Only single-line comments are limited by the level's density limit and the minimum gap between comments. At `heavy`, a block comment above a function, class, or component never counts toward either limit and is never dropped by them, and neither does an existing comment there. A comment on a top-level constant may sit on the line next to another one. After the model's first answer, the Action finds the functions, classes, and components that still have no comment directly above them (with the TypeScript parser for JavaScript and TypeScript, `ast` for Python, and the declaration patterns for other languages) and sends one follow-up request asking for a block comment for each, by name and line.
 
-Comments explain intent and non-obvious behavior. They do not restate the code. Docturnal never removes or changes existing comments, and never adds a comment where one already exists.
+Comments explain intent and non-obvious behavior: why, constraints, units, and edge cases. They never narrate what the syntax already says. Docturnal never adds a comment where one already exists.
+
+### Docturnal's own comments
+
+Docturnal may replace or remove comments it wrote itself, and never anyone else's. The code is in `src/owned.js`.
+
+- `.docturnal/state.json` records each comment Docturnal inserts: the file, the exact text, and a hash of the code line under it.
+- On a later run, a comment run whose text still matches a record exactly is Docturnal's. Before the model sees the file, these comments are taken out. Each one then competes with the new proposals for its line. It is kept when it is still accurate and fits the level, and an earlier comment wins over a new one on the same line. It is restyled when the level changed (for example, a `//` line above a function becomes a block at `heavy`). It is replaced or removed when the accuracy check marks it inaccurate, and removed at `off`.
+- A comment a person edited no longer matches its record, so it is theirs and is never touched. When the same text appears more than once, the record's hash picks the comment.
+- Comments Docturnal inserted before records existed have none, so they count as a person's.
 
 ## Documentation rules
 
@@ -133,12 +142,13 @@ Comments explain intent and non-obvious behavior. They do not restate the code. 
 
 - **The model never rewrites source files.** It proposes `{line, text}` comment pairs. Our code inserts them and then verifies the result.
 - Insertion rules:
-  - `line` refers to a line in the original file, counted from 1. Out-of-range, duplicate, or ill-formed pairs are dropped. One model response is read as counting from 0 only on clear evidence: a line 0, or at least two pairs that all fail placement as given and all fit after adding 1.
-  - Insert whole new lines only. Never edit, move, or delete an existing line.
+  - The model proposes `{line, anchor, text, kind}`, where `anchor` is the exact trimmed text of the line the comment belongs above. The comment goes above the line whose trimmed text matches the anchor, the given line first and then the nearest within 5 lines, looking below first. With no match, it is dropped and counted as "anchor not found". Out-of-range, duplicate, or ill-formed proposals are dropped.
+  - Insert whole new lines only. Never edit, move, or delete an existing line, except to take out a comment Docturnal recorded as its own.
+  - Line comments longer than 100 characters wrap onto more comment lines with the same indentation.
   - Match the indentation of the target line, and use the file's comment syntax and line endings.
   - Reject text that could end a comment early or inject code, such as `*/` or newlines in single-line comments.
 - Verification, required before a file is written:
-  - With the inserted lines removed, the file is byte-for-byte identical to the original.
+  - With Docturnal's recorded comments taken out, the file is byte-for-byte identical to the original with only those lines removed, and with the inserted lines removed, the result is byte-for-byte identical to that.
   - For JavaScript and TypeScript, parse the result with the `typescript` package and confirm it introduces no new syntax errors and the same tokens apart from comments.
   - If verification fails, discard all changes to that file.
 - Skip files that are generated, vendored, binary, minified, very large, or covered by `.gitignore`, as well as anything under `.github/`, `.docturnal/`, and `docs/`, unless they are Docturnal-owned generated docs.
@@ -154,13 +164,14 @@ Comments explain intent and non-obvious behavior. They do not restate the code. 
 
 ## Nightly behavior
 
-- `.docturnal/state.json` records each file's hash (taken after comments), summary, and symbols, plus the layers and the generated doc slugs. A file is processed when it is new or its hash differs from the state. Deleted files are removed from the state. Changing the comment level reprocesses every file.
+- `.docturnal/state.json` records each file's hash (taken after comments), summary, symbols, and Docturnal's comments (see "Docturnal's own comments"), plus the layers and the generated doc slugs. A file is processed when it is new or its hash differs from the state. Deleted files are removed from the state. Changing the comment level reprocesses every file.
 - If `origin/docturnal/update` exists, the run checks it out and merges the base branch into it, so an open pull request keeps its changes. If the merge conflicts, the run starts fresh from the base. The result is force-pushed.
 - Each run comments every file first with the comment model, then writes all docs with the docs model, so the model is swapped only once. New files stop starting at `time-budget-minutes` minus 25 minutes; files not reached wait for the next run.
+- Between the two, an accuracy check sends one request per file that lists each selected comment, earlier and new, with the 1 to 5 code lines under it, and asks for a yes or no verdict on whether it accurately describes that code. Comments marked no are dropped and counted as "inaccurate". The check uses the docs model when the time left before `time-budget-minutes` minus 15 minutes is at least the time the comment model took (the docs model loads next anyway), and otherwise the comment model. A file whose check gets no usable answer, or is not reached in time, is left unchanged for the next run.
 - Layers are re-planned only when the set of summarized files changes. If the docs model cannot load (out of memory or a load error), the doc is written with the comment model and marked "written with the fallback model" in `last-run.md`.
 - A night with no changes makes no model calls, no commit, and no push, and leaves the state timestamp alone. A pre-check step (`src/precheck.js`, Node built-ins only) runs first: it sets up the branch, loads the state, and hashes the in-scope files with the same code as `main.js`. It outputs `changed=true` when a file is new, changed, or deleted, the comment level changed, a generated doc is missing, a person edited `README.md` (so their section gets polished), or a `docs/README.md` with the marker is left to remove. Otherwise it logs "No changes since the last run", and every later step, including model selection and the Ollama install, is skipped.
 - The first run, with no state file, processes the whole repo, within runner time limits.
-- Write `.docturnal/last-run.md` as the pull request body. It lists comments added per file and whether a parser checked each file, a count per file of comments proposed, dropped by placement rules, the length limit, or the density limit, rejected by the safety check, and added (never comment text or code), docs updated or removed, the README sections updated, polished, kept in your wording, and not re-added because you removed them (by heading only), comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
+- Write `.docturnal/last-run.md` as the pull request body. It lists comments added per file and whether a parser checked each file, a count per file of comments proposed, dropped by placement rules, anchor not found, dropped by the length limit or the density limit, inaccurate, rejected by the safety check, and added, and of Docturnal's earlier comments kept, restyled, and removed (never comment text or code), docs updated or removed, the README sections updated, polished, kept in your wording, and not re-added because you removed them (by heading only), comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
 
 ## Names
 

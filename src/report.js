@@ -7,8 +7,10 @@ const MAX_REJECTION_ROWS = 100;
 // What happened to proposed comments, by category, in report order.
 const DROP_LABELS = {
   placement: 'dropped by placement rules',
+  anchor: 'anchor not found',
   length: 'dropped by the length limit',
   density: 'dropped by the density limit',
+  inaccurate: 'inaccurate',
   safety: 'rejected by the safety check',
   off: 'skipped because the comment level is off',
 };
@@ -28,9 +30,9 @@ function shortReason(reason) {
   return reason.replace(/^(cannot analyze file):.*$/s, '$1');
 }
 
-// One file's proposals as counts, for example "proposed 3, 2 dropped by the density limit,
-// 1 added". With reasons, each category lists its reasons with counts. It never includes
-// comment text or code.
+// One file's proposals as counts, for example "proposed 3, 1 anchor not found, 1 inaccurate,
+// 1 added", then what happened to the comments Docturnal wrote on earlier runs. With reasons,
+// each category lists its reasons with counts. It never includes comment text or code.
 function proposalSummary(stats, { reasons = false } = {}) {
   const parts = [`proposed ${stats.proposed}`];
   for (const [category, label] of Object.entries(DROP_LABELS)) {
@@ -42,7 +44,14 @@ function proposalSummary(stats, { reasons = false } = {}) {
   }
   parts.push(`${stats.added} added`);
   const summary = parts.join(', ');
-  return stats.lineShift ? `${summary}; line numbers were read as counting from 0` : summary;
+  const earlier = stats.earlier;
+  if (!earlier) return summary;
+  const removed = Object.entries(earlier.removed || {});
+  const removedTotal = removed.reduce((sum, [, n]) => sum + n, 0);
+  if (!earlier.kept && !removedTotal) return summary;
+  const kept = `${earlier.kept} kept${earlier.restyled ? ` (${earlier.restyled} restyled for the level)` : ''}`;
+  const gone = removedTotal ? `, ${removedTotal} removed (${removed.map(([reason, n]) => `${shortReason(reason)}: ${n}`).join(', ')})` : '';
+  return `${summary}; earlier Docturnal comments: ${kept}${gone}`;
 }
 
 // processed: [{ path, verifier, added, rejections, stats }]

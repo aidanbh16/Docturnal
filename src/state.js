@@ -1,10 +1,13 @@
 'use strict';
 
-// Reads and writes .docturnal/state.json, which records what the last run produced.
+// Reads and writes .docturnal/state.json, which records what the last run produced,
+// including the comments Docturnal inserted, so later runs know which ones are its own.
 
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+
+const { cleanRecords } = require('./owned');
 
 const STATE_PATH = '.docturnal/state.json';
 const LAST_RUN_PATH = '.docturnal/last-run.md';
@@ -38,6 +41,9 @@ function readState(root) {
         clean.summary = entry.summary;
         clean.symbols = Array.isArray(entry.symbols) ? entry.symbols.filter((s) => typeof s === 'string') : [];
       }
+      // The comments Docturnal inserted in this file: their exact text and a hash of the line under each.
+      const comments = cleanRecords(entry.comments);
+      if (comments.length) clean.comments = comments;
       state.files[file] = clean;
     }
   }

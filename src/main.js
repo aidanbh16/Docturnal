@@ -1,13 +1,14 @@
 'use strict';
 
-// Action entry point. Comments changed files with the comment model, then updates the docs
-// with the docs model, records the state, and pushes docturnal/update.
+// Action entry point. Comments changed files with the comment model, checks the comments for
+// accuracy, then updates the docs with the docs model, records the state, and pushes
+// docturnal/update.
 
 const fs = require('fs');
 const path = require('path');
 
 const { docExists, findChanges } = require('./changes');
-const { commentFile } = require('./comments');
+const { checkComments, finishComments, needsCheck, planComments } = require('./comments');
 const { readConfig, ConfigError } = require('./config');
 const { createCaller, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, prepareBranch } = require('./git');
@@ -16,8 +17,10 @@ const { updateReadme, writeReadme } = require('./readme');
 const { buildReport, proposalSummary } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState } = require('./state');
 
-// Time kept free for the docs after the last file is commented.
+// Time kept free for the accuracy check and the docs after the last file is commented, and
+// how much of it the accuracy check may use.
 const DOCS_RESERVE_MINUTES = 25;
+const CHECK_MINUTES = 10;
 
 function resolveModels(config) {
   if (config.selectedCommentModel && config.selectedDocsModel) {
@@ -43,11 +46,15 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
   const files = new Map(Object.entries(previous.files).filter(([file]) => current.has(file)));
   for (const e of changedDocsOnly) files.set(e.path, { hash: e.hash });
 
-  // Phase 1: comments, with the comment model only.
+  // Phase 1: comments. 1a proposes with the comment model. 1b checks every selected comment
+  // for accuracy, with the docs model when the time budget allows (it is loaded next for the
+  // docs anyway), otherwise with the comment model. 1c inserts and verifies, without a model.
   const commentDeadline = started + Math.max(config.timeBudgetMinutes - DOCS_RESERVE_MINUTES, config.timeBudgetMinutes / 2) * 60000;
+  const checkDeadline = commentDeadline + CHECK_MINUTES * 60000;
   const processed = [];
   const leftOver = [];
   const writtenSources = [];
+  const plans = [];
   for (const entry of toComment) {
     if (now() > commentDeadline) {
       leftOver.push({ path: entry.path, reason: 'time budget' });
@@ -59,21 +66,54 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
       log(`${entry.path}: skipped, not UTF-8`);
       continue;
     }
-    const result = await commentFile({
+    const plan = await planComments({
       path: entry.path,
       text,
       level: config.commentLevel,
       model: models.comment,
       contextTokens: config.contextTokens,
       chat,
+      records: (previous.files[entry.path] || {}).comments || [],
     });
-    if (result.failedWindows && !result.summary && !result.added) {
+    if (plan.failedWindows && !plan.summary && !(plan.built && plan.built.candidates.length)) {
       leftOver.push({ path: entry.path, reason: 'the model did not respond' });
-      log(`${entry.path}: the model did not respond (${result.errors.join('; ')})`);
+      log(`${entry.path}: the model did not respond (${plan.errors.join('; ')})`);
       continue;
     }
+    plans.push({ entry, plan });
+  }
+
+  // The docs model checks when the time left before the check deadline is at least the time
+  // the proposals took, since it is slower but gets one short request per file.
+  const toCheck = plans.filter(({ plan }) => needsCheck(plan));
+  const docsCaller = createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
+  const checkWithDocs = toCheck.length > 0 && models.docs !== models.comment && now() + (now() - started) <= checkDeadline;
+  if (toCheck.length) log(`Docturnal: checking comments in ${toCheck.length} files with ${checkWithDocs ? models.docs : models.comment}`);
+  const checked = [];
+  for (const item of plans) {
+    const { entry, plan } = item;
+    if (needsCheck(plan)) {
+      if (now() > checkDeadline) {
+        leftOver.push({ path: entry.path, reason: 'time budget' });
+        continue;
+      }
+      try {
+        await checkComments(plan, checkWithDocs
+          ? { chat: (request) => docsCaller.call(`accuracy check for ${entry.path}`, request), contextTokens: config.contextTokens }
+          : { chat, model: models.comment, contextTokens: config.contextTokens });
+      } catch (err) {
+        leftOver.push({ path: entry.path, reason: 'the accuracy check did not respond' });
+        log(`${entry.path}: the accuracy check did not respond (${err.message})`);
+        continue;
+      }
+    }
+    checked.push(item);
+  }
+
+  for (const { entry, plan } of checked) {
+    const result = finishComments(plan);
     let finalBuffer = entry.buffer;
-    if (result.text !== text) {
+    if (result.text !== plan.text) {
       finalBuffer = Buffer.from(result.text, 'utf8');
       fs.writeFileSync(path.join(cwd, entry.path), finalBuffer);
       writtenSources.push(entry.path);
@@ -83,7 +123,9 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
       log(`${entry.path}: skipped, ${result.skipped}`);
       continue;
     }
-    files.set(entry.path, { hash: hashContent(finalBuffer), summary: result.summary, symbols: result.symbols });
+    const fileState = { hash: hashContent(finalBuffer), summary: result.summary, symbols: result.symbols };
+    if (result.records.length) fileState.comments = result.records;
+    files.set(entry.path, fileState);
     processed.push({ path: entry.path, verifier: entry.language.verifier, added: result.added, rejections: result.rejections, stats: result.stats });
     log(`${entry.path}: ${proposalSummary(result.stats, { reasons: true })}`);
   }
@@ -104,7 +146,8 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
   let fallbackUsed = false;
   const writtenDocs = { written: [], deleted: [] };
   if (docsNeeded) {
-    const caller = createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
+    // The same caller as the accuracy check, so a docs model that could not load is not tried again.
+    const caller = docsCaller;
     const deadline = started + config.timeBudgetMinutes * 60000;
     const allFiles = listFiles(cwd);
     const result = await generateDocs({

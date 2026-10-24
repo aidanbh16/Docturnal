@@ -8,10 +8,11 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { applyProposals, commentFile } = require('../src/comments');
+const { commentFile } = require('../src/comments');
+const { applyAnchored: applyProposals, withAnchor } = require('./helpers');
 const { findPython } = require('../src/python');
 const { languageById } = require('../src/languages');
-const { blocksReply, kindOf, startMockOllama } = require('./mock-ollama');
+const { accuracyReply, blocksReply, kindOf, startMockOllama } = require('./mock-ollama');
 
 const js = languageById('javascript');
 const noPython = !findPython();
@@ -28,7 +29,7 @@ const FIRST_PASS = [
   { line: lineOf('  const overtime'), text: 'Only hours past the threshold earn the multiplier.', kind: 'line' },
   { line: lineOf('const OVERTIME_THRESHOLD_HOURS'), text: 'Weekly hours before overtime starts.', kind: 'line' },
   { line: lineOf('  return Math.round'), text: 'Rounds to cents so payslip totals add up.', kind: 'line' },
-];
+].map((p) => withAnchor(PAYROLL, p));
 
 function hasBlockAbove(text, name) {
   return new RegExp(`/\\*\\*\\n(?: \\*.*\\n)+ \\*/\\n(?:function|const) ${name}\\b`).test(text);
@@ -36,6 +37,7 @@ function hasBlockAbove(text, name) {
 
 function firstPassHandler(body) {
   if (kindOf(body) === 'blocks') return blocksReply(body);
+  if (kindOf(body) === 'accuracy') return accuracyReply(body);
   return { summary: 'Computes pay, tax, and payslips.', symbols: FUNCTIONS, comments: FIRST_PASS };
 }
 
@@ -72,7 +74,7 @@ test('heavy: every function in payroll.js gets a block comment, with one follow-
     assert.deepStrictEqual(result.undocumented, []);
     assert.deepStrictEqual(result.errors, []);
 
-    assert.strictEqual(mock.requests.length, 2);
+    assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'blocks', 'accuracy']);
     const followUp = mock.requests[1];
     assert.deepStrictEqual(followUp.format.required, ['comments']);
     const prompt = followUp.messages[1].content;
@@ -149,7 +151,7 @@ for (const [level, added, density] of [
     const mock = await startMockOllama(firstPassHandler);
     try {
       const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level, model: 'm', host: mock.host });
-      assert.strictEqual(mock.requests.length, 1);
+      assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'accuracy']);
       assert.strictEqual(result.added, added);
       assert.deepStrictEqual(result.stats.dropped.density, density);
       assert.doesNotMatch(result.text, /\/\*\*/);

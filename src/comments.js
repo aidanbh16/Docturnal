@@ -1,11 +1,16 @@
 'use strict';
 
-// The comment engine. The model only proposes { line, text, kind } comments; this module
-// filters them, enforces the comment level, inserts them, and verifies the result.
+// The comment engine. The model only proposes { line, anchor, text, kind } comments; this
+// module places each one above the line its anchor names, filters them, enforces the comment
+// level, has them checked for accuracy, inserts them, and verifies the result. Comments
+// Docturnal wrote on earlier runs (see owned.js) are taken out first and compete with the
+// new proposals, so they can be kept, restyled for the level, replaced, or removed.
 
+const { buildAccuracyMessages, ACCURACY_SCHEMA, parseVerdicts } = require('./accuracy');
 const { analyzeLines, splitLines } = require('./analyze');
 const { languageForPath } = require('./languages');
 const ollama = require('./ollama');
+const { findOwned, recordFor } = require('./owned');
 const { verifyCandidates } = require('./verify');
 
 const LEVELS = {
@@ -18,7 +23,7 @@ const LEVELS = {
 const LEVEL_GUIDANCE = {
   low: 'Comment level: low. Propose only a few comments, about one per 30 lines, on the most important or surprising code. Each comment is a single line of 10 words or fewer. Always use kind "line".',
   medium: 'Comment level: medium. Propose about one comment per 12 lines. Each comment is a single line of 25 words or fewer. Always use kind "line".',
-  heavy: 'Comment level: heavy. Give every function, class, and component a comment of kind "block" on its declaration line, explaining its purpose, inputs, and result in 80 words or fewer, without tags such as @param. Also propose about one comment of kind "line" per 5 lines on non-obvious logic: calculations, loops, edge cases, and magic numbers, each in 30 words or fewer.',
+  heavy: 'Comment level: heavy. Give every function, class, and component a comment of kind "block" on its declaration line, explaining its purpose, inputs, and result in 80 words or fewer, without tags such as @param. Give every constant and magic number a short comment of kind "line" on what it means and its unit. Also propose about one comment of kind "line" per 5 lines on non-obvious logic: calculations, loops, edge cases, and magic numbers, each in 30 words or fewer.',
   off: 'Comment level: off. Return an empty comments list.',
 };
 
@@ -26,12 +31,15 @@ const SYSTEM_PROMPT = `You review source code and propose comments for it. You n
 
 Each code line is prefixed with its line number and "| ". Line numbers start at 1. For every comment, give:
 - line: the number of the code line the comment describes. The comment is placed directly above that line.
+- anchor: the exact text of that code line, without its line number and without leading spaces. The comment is placed above the line with this text, so copy it exactly.
 - text: the comment text only, without comment markers such as //, #, /*, or *.
 - kind: "line" for a single-line comment, or "block" for a multiline comment.
 
 Write like a careful human engineer:
-- Explain intent, assumptions, and non-obvious behavior: why the code does something, not what it does.
-- Never restate the code or describe its syntax.
+- Explain why: intent, constraints, units, assumptions, and edge cases that a reader cannot see from the code alone.
+- Never narrate what the syntax already says, such as "loops over the items", "returns the result", or "calls the function".
+- Bad: "Loops over brackets." Good: "Each bracket's upTo is that bracket's width, not a running total."
+- A comment describes only the line it sits above and the code that belongs to it, never a neighboring statement or another function.
 - Use plain, precise language in the present tense. No filler, jokes, or emojis.
 - Never mention yourself, AI, or that the comment was generated.
 - Never write tool directives such as eslint-disable, ts-ignore, noqa, or type: annotations.
@@ -54,10 +62,11 @@ const RESPONSE_SCHEMA = {
         type: 'object',
         properties: {
           line: { type: 'integer' },
+          anchor: { type: 'string' },
           text: { type: 'string' },
           kind: { type: 'string', enum: ['line', 'block'] },
         },
-        required: ['line', 'text', 'kind'],
+        required: ['line', 'anchor', 'text', 'kind'],
       },
     },
   },
@@ -70,11 +79,13 @@ const BLOCK_PROMPT = `You write documentation comments for functions, classes, a
 
 Each code line is prefixed with its line number and "| ". Line numbers start at 1. For each declaration listed, return one comment with:
 - line: the declaration's line number, exactly as listed.
+- anchor: the exact text of that line, without its line number and without leading spaces.
 - text: what the declaration is for, what it takes, and what it returns or does, in 80 words or fewer. Give the comment text only, without comment markers such as //, #, /*, or *, and without tags such as @param.
 - kind: "block".
 
 Write like a careful human engineer:
-- Explain intent, assumptions, and non-obvious behavior. Never restate the code.
+- Explain why: intent, constraints, units, assumptions, and edge cases. Never narrate what the syntax already says.
+- Describe only the listed declaration, never a neighboring one.
 - Use plain, precise language in the present tense. No filler, jokes, or emojis.
 - Never mention yourself, AI, or that the comment was generated.
 - Never write tool directives such as eslint-disable, ts-ignore, noqa, or type: annotations.`;
@@ -88,11 +99,23 @@ const BLOCK_SCHEMA = {
 // Lines shown after each declaration in the follow-up, so the model sees what it documents.
 const BLOCK_CONTEXT_LINES = 30;
 
+// How far from the given line number a proposal's anchor is looked for.
+const ANCHOR_WINDOW = 5;
+
+// Line comments longer than this are wrapped onto more comment lines.
+const LINE_COMMENT_WIDTH = 100;
+
 // Token budget: what is left of the context after the instructions and the model's answer.
 const PROMPT_RESERVE_TOKENS = 1000;
 const OUTPUT_RESERVE_TOKENS = 1500;
 const CHARS_PER_TOKEN = 3;
 const MAX_PROMPT_LINE_CHARS = 500;
+
+const MODEL_OPTIONS = (contextTokens) => ({ temperature: 0.2, seed: 42, num_ctx: contextTokens });
+
+function promptBudget(contextTokens) {
+  return Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
+}
 
 // Comments that tools read as instructions. Inserting one could change lint, type checking, or builds.
 const DIRECTIVE = new RegExp(
@@ -185,11 +208,14 @@ function wrap(text, width) {
 }
 
 function formatComment(language, kind, paragraphs, indent) {
+  const indentWidth = indent.replace(/\t/g, '    ').length;
+  // A line comment longer than LINE_COMMENT_WIDTH continues on more comment lines.
   if (kind === 'line') {
     const text = paragraphs.join(' ');
-    return [language.lineComment ? `${indent}${language.lineComment} ${text}` : `${indent}/* ${text} */`];
+    const [open, close] = language.lineComment ? [`${language.lineComment} `, ''] : ['/* ', ' */'];
+    const parts = wrap(text, Math.max(40, LINE_COMMENT_WIDTH - indentWidth - open.length - close.length));
+    return parts.map((part) => `${indent}${open}${part}${close}`);
   }
-  const indentWidth = indent.replace(/\t/g, '    ').length;
   const width = Math.max(40, 80 - indentWidth - 3);
   const body = [];
   paragraphs.forEach((p, i) => {
@@ -301,9 +327,11 @@ function render(lines, insertions, eol, bom) {
 
 // What happens to each proposal, by category. The PR body and the log count these.
 const CATEGORY = {
-  placement: /^(line out of range|shebang|blank line|inside a string|existing comment|import|closing bracket|previous line is a comment|duplicate line)/,
+  placement: /^(line out of range|shebang|blank line|inside a string|existing comment|import|closing bracket|previous line is a comment|duplicate line|kept the earlier comment)/,
+  anchor: /^anchor not found/,
   length: /^(longer than|block comment longer than)/,
-  density: /^(level limit reached|within \d+ lines of another comment)/,
+  density: /^(level limit reached|within \d+ lines of another comment|too many comments to check)/,
+  inaccurate: /^inaccurate/,
   off: /^comment level is off/,
 };
 
@@ -313,89 +341,167 @@ function categoryOf(reason) {
   return 'safety';
 }
 
+// proposed and dropped count the model's proposals. earlier counts the comments Docturnal
+// wrote on earlier runs: kept (restyled when their form changed for the level) or removed.
 function emptyStats(proposed) {
-  return { proposed, added: 0, lineShift: 0, dropped: { placement: {}, length: {}, density: {}, safety: {}, off: {} } };
-}
-
-function result(text, added, rejections, stats, undocumented = []) {
-  for (const r of rejections) {
-    const bucket = stats.dropped[r.category];
-    bucket[r.reason] = (bucket[r.reason] || 0) + 1;
-  }
-  stats.added = added;
-  return { text, added, rejected: rejections.length, rejections, stats, undocumented };
-}
-
-function hasLine(proposal) {
-  return proposal !== null && typeof proposal === 'object' && Number.isInteger(proposal.line);
-}
-
-// Small models sometimes count lines from 0. Within one model response, line numbers are
-// read as zero-based only on clear evidence: one of them is 0, or there are at least two,
-// none can take a comment as given, and all can after adding 1. Anything else keeps the
-// numbers as given, so a comment never moves onto a line it was not written for.
-// Returns the shift to add: 0 or 1.
-function lineShiftFor(group, isPlaceable) {
-  const numbered = group.filter(hasLine);
-  if (!numbered.length) return 0;
-  if (numbered.some((p) => p.line === 0)) return 1;
-  if (numbered.length < 2) return 0;
-  const noneFit = numbered.every((p) => !isPlaceable(p.line));
-  const allFitShifted = numbered.every((p) => isPlaceable(p.line + 1));
-  return noneFit && allFitShifted ? 1 : 0;
-}
-
-// Filters, limits, inserts, and verifies proposals for one file.
-// proposals: [{ line, text, kind }], or groups: one array of proposals per model response.
-// Returns { text, added, rejected, rejections, stats }, where stats counts the proposals
-// and what happened to them, and never holds comment text.
-function applyProposals({ text, language, level, proposals, groups = [proposals] }) {
-  const rules = LEVELS[level];
-  const all = groups.flat();
-  const stats = emptyStats(all.length);
-  const rejections = [];
-  const reject = (proposal, reason) =>
-    rejections.push({ line: hasLine(proposal) ? proposal.line : undefined, reason, category: categoryOf(reason) });
-  const rejectAll = (reason) => {
-    all.forEach((p) => reject(p, reason));
-    return result(text, 0, rejections, stats);
+  return {
+    proposed,
+    added: 0,
+    dropped: { placement: {}, anchor: {}, length: {}, density: {}, inaccurate: {}, safety: {}, off: {} },
+    earlier: { kept: 0, restyled: 0, removed: {} },
   };
+}
 
-  if (!rules) return rejectAll('comment level is off');
-  // Heavy level still looks for undocumented functions when the model proposed nothing.
-  if (!all.length && !rules.blocks) return result(text, 0, rejections, stats);
+function isProposal(proposal) {
+  return proposal !== null && typeof proposal === 'object';
+}
 
-  const { bom, body } = stripBom(text);
-  const lines = splitLines(body);
-  if (language.phpTags && !phpIsSafe(lines)) return rejectAll('PHP file mixes code with HTML');
+// Anchors are compared with runs of spaces collapsed, and without a line-number prefix the
+// model may have copied from the prompt.
+function collapse(text) {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function anchorMatches(lineText, anchor) {
+  const line = collapse(lineText);
+  if (line === anchor) return true;
+  // Prompt lines longer than MAX_PROMPT_LINE_CHARS end in "...", and so may their anchors.
+  return anchor.endsWith('...') && anchor.length > 23 && line.startsWith(anchor.slice(0, -3));
+}
+
+// The line, counted from 1, whose text the anchor gives: the given line if it matches,
+// otherwise the nearest match within ANCHOR_WINDOW lines, looking below first. Null if none.
+function findAnchor(lines, line, anchor) {
+  if (typeof anchor !== 'string') return null;
+  const want = collapse(anchor.replace(/^\s*\d+\s*\|\s?/, ''));
+  if (!want) return null;
+  const center = Math.min(Math.max(line, 1), lines.length);
+  for (let d = 0; d <= ANCHOR_WINDOW; d++) {
+    for (const l of d ? [center + d, center - d] : [center]) {
+      if (l >= 1 && l <= lines.length && anchorMatches(lines[l - 1].text, want)) return l;
+    }
+  }
+  return null;
+}
+
+// A shebang or encoding line looks like a comment but documents nothing, so it does not
+// count toward the level or block the line after it.
+function analyzeFile(body, lines, language) {
   const analysis = analyzeLines(body, lines, language);
-  if (!analysis.ok) return rejectAll(`cannot analyze file: ${analysis.error}`);
-
-  const protectedUntil = protectedHeadLines(lines, language);
-  // A shebang or encoding line looks like a comment but documents nothing, so it does not
-  // count toward the level or block the line after it.
-  for (let i = 0; i < protectedUntil; i++) {
+  if (!analysis.ok) return analysis;
+  analysis.protectedUntil = protectedHeadLines(lines, language);
+  for (let i = 0; i < analysis.protectedUntil; i++) {
     analysis.info[i].commentOnly = false;
     analysis.info[i].hasComment = false;
   }
-  const isPlaceable = (line) => line >= 1 && line <= lines.length &&
-    !placementProblem(resolveTarget(line, lines, analysis, language), lines, analysis, protectedUntil);
-  const aligned = [];
-  for (const group of groups) {
-    const shift = lineShiftFor(group, isPlaceable);
-    if (shift) stats.lineShift += group.filter(hasLine).length;
-    aligned.push(...group.map((p) => (shift && hasLine(p) ? { ...p, line: p.line + shift } : p)));
+  return analysis;
+}
+
+// Reads the file and takes out the comments Docturnal wrote on earlier runs (records).
+// Returns the context the later steps share: `lines` and `analysis` describe the file
+// without those comments, which is what the model sees and where comments are placed.
+// `owned` lists the comments taken out, each with its target line in `lines`. On a file
+// that cannot be commented, `error` says why.
+function prepareFile({ text, language, level, records = [] }) {
+  const { bom, body } = stripBom(text);
+  const original = splitLines(body);
+  const ctx = { language, original: text, bom, body, lines: original, analysis: null, owned: [] };
+  // At level off with nothing of Docturnal's to remove, there is nothing to place.
+  if (!LEVELS[level] && !records.length) return ctx;
+  if (language.phpTags && !phpIsSafe(original)) return { ...ctx, error: 'PHP file mixes code with HTML' };
+  const analysis = analyzeFile(body, original, language);
+  if (!analysis.ok) return { ...ctx, error: `cannot analyze file: ${analysis.error}` };
+  ctx.analysis = analysis;
+  const owned = records.length ? findOwned(original, analysis.info, records) : [];
+  if (!owned.length) return ctx;
+
+  const removed = new Set();
+  for (const o of owned) for (let i = o.start; i <= o.end; i++) removed.add(i);
+  const body0 = original.filter((_, i) => !removed.has(i)).map((line) => line.text + line.eol).join('');
+  // Taking the comments out must leave every other line, and the program, exactly as it is.
+  if (!verifyCandidates(language, bom + body0, [{ text, inserted: [...removed] }])[0]) return ctx;
+  const lines = splitLines(body0);
+  const analysis0 = analyzeFile(body0, lines, language);
+  if (!analysis0.ok) return ctx;
+  const removedBefore = (index) => [...removed].filter((r) => r < index).length;
+  return {
+    ...ctx,
+    body: body0,
+    lines,
+    analysis: analysis0,
+    owned: owned.map((o) => ({
+      record: o.record,
+      target: o.anchor - removedBefore(o.anchor) + 1,
+      lines: original.slice(o.start, o.end + 1).map((line) => line.text),
+    })),
+  };
+}
+
+// Turns the earlier comments and the model's proposals into candidates: each placed, cleaned,
+// and given the kind the level calls for. Returns { rules, candidates, rejections,
+// earlierRemoved, symbols, undocumented, proposed }. At heavy level, symbols lists the
+// functions, classes, and components that can take a block comment, and undocumented the
+// ones without a new proposal, which the follow-up request asks for.
+function buildCandidates(ctx, level, groups) {
+  const rules = LEVELS[level];
+  const all = groups.flat();
+  const built = { rules, candidates: [], rejections: [], earlierRemoved: [], symbols: [], undocumented: [], proposed: all.length };
+  const reject = (proposal, reason) => built.rejections.push({
+    line: isProposal(proposal) && Number.isInteger(proposal.line) ? proposal.line : undefined,
+    reason,
+    category: categoryOf(reason),
+  });
+  if (ctx.error || !rules) {
+    all.forEach((p) => reject(p, ctx.error || 'comment level is off'));
+    ctx.owned.forEach(() => built.earlierRemoved.push('comment level is off'));
+    return built;
   }
 
-  const candidates = [];
-  const seenTargets = new Set();
-  for (const proposal of aligned) {
-    if (!hasLine(proposal) || proposal.line < 1 || proposal.line > lines.length) {
+  const { lines, analysis, language } = ctx;
+  const info = analysis.info;
+  const problemAt = (target) => placementProblem(target, lines, analysis, analysis.protectedUntil);
+  // At heavy level, every comment on a declaration is a block comment, whatever kind the
+  // model gave it; everything else is a line comment.
+  const shape = (target, cleaned) => {
+    if (rules.blocks && info[target - 1].isDeclaration) {
+      return wordCount(cleaned.joined) > rules.maxBlockWords
+        ? { reason: `block comment longer than ${rules.maxBlockWords} words` }
+        : { kind: 'block', paragraphs: cleaned.paragraphs };
+    }
+    return wordCount(cleaned.joined) > rules.maxWords
+      ? { reason: `longer than ${rules.maxWords} words` }
+      : { kind: 'line', paragraphs: [cleaned.joined] };
+  };
+  const add = (fields, target, shaped) => built.candidates.push({
+    ...fields,
+    target,
+    kind: shaped.kind,
+    paragraphs: shaped.paragraphs,
+    declaration: info[target - 1].isDeclaration,
+    // Only heavy level asks for comments on constants, so only there do they rank with declarations.
+    constant: rules.blocks && info[target - 1].isConstant,
+  });
+
+  for (const earlier of ctx.owned) {
+    const problem = problemAt(earlier.target);
+    const cleaned = cleanText(earlier.lines.map(stripMarkers).join('\n'), language);
+    const shaped = problem ? { reason: problem } : cleaned.reason ? cleaned : shape(earlier.target, cleaned);
+    if (shaped.reason) built.earlierRemoved.push(shaped.reason);
+    else add({ source: 'earlier', earlier }, earlier.target, shaped);
+  }
+
+  for (const proposal of all) {
+    if (!isProposal(proposal) || !Number.isInteger(proposal.line) || proposal.line < 0 || proposal.line > lines.length + ANCHOR_WINDOW) {
       reject(proposal, 'line out of range');
       continue;
     }
-    const target = resolveTarget(proposal.line, lines, analysis, language);
-    const problem = placementProblem(target, lines, analysis, protectedUntil);
+    const line = findAnchor(lines, proposal.line, proposal.anchor);
+    if (!line) {
+      reject(proposal, 'anchor not found');
+      continue;
+    }
+    const target = resolveTarget(line, lines, analysis, language);
+    const problem = problemAt(target);
     if (problem) {
       reject(proposal, problem);
       continue;
@@ -405,104 +511,163 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
       reject(proposal, cleaned.reason);
       continue;
     }
-    // At heavy level, every comment on a declaration is a block comment, whatever kind the
-    // model gave it.
-    let kind = 'line';
-    if (rules.blocks && analysis.info[target - 1].isDeclaration) {
-      kind = 'block';
-      if (wordCount(cleaned.joined) > rules.maxBlockWords) {
-        reject(proposal, `block comment longer than ${rules.maxBlockWords} words`);
-        continue;
-      }
-    } else if (wordCount(cleaned.joined) > rules.maxWords) {
-      reject(proposal, `longer than ${rules.maxWords} words`);
+    const shaped = shape(target, cleaned);
+    if (shaped.reason) {
+      reject(proposal, shaped.reason);
       continue;
     }
-    if (seenTargets.has(target)) {
-      reject(proposal, 'duplicate line');
-      continue;
-    }
-    seenTargets.add(target);
-    candidates.push({
-      proposal,
-      target,
-      kind,
-      declaration: analysis.info[target - 1].isDeclaration,
-      paragraphs: kind === 'block' ? cleaned.paragraphs : [cleaned.joined],
-    });
+    add({ source: 'model', proposal }, target, shaped);
   }
 
-  // Functions, classes, and components that heavy level wants a block comment on, and that
-  // have none yet. finish() reports the ones still without a comment after this pass.
-  const symbols = rules.blocks
-    ? analysis.info.flatMap((li, i) => {
+  if (rules.blocks) {
+    built.symbols = info.flatMap((li, i) => {
       if (!li.symbol) return [];
       const target = resolveTarget(i + 1, lines, analysis, language);
-      return placementProblem(target, lines, analysis, protectedUntil) ? [] : [{ line: i + 1, target, name: li.symbol }];
-    })
-    : [];
-  const finish = (newText, kept) => {
-    const documented = new Set(kept.map((c) => c.target));
-    const undocumented = symbols.filter((s) => !documented.has(s.target)).map(({ line, name }) => ({ line, name }));
-    return result(newText, kept.length, rejections, stats, undocumented);
-  };
+      return problemAt(target) ? [] : [{ line: i + 1, target, name: li.symbol }];
+    });
+    const proposedAt = new Set(built.candidates.filter((c) => c.source === 'model').map((c) => c.target));
+    built.undocumented = built.symbols.filter((s) => !proposedAt.has(s.target)).map(({ line, name }) => ({ line, name }));
+  }
+  return built;
+}
+
+// Block comments first, then comments on declarations and constants, then the rest; earlier
+// comments before new ones; each in file order. A limited budget goes to the first.
+function byRank(a, b) {
+  const rank = (c) => (c.kind === 'block' ? 0 : c.declaration || c.constant ? 1 : 2);
+  const age = (c) => (c.source === 'earlier' ? 0 : 1);
+  return rank(a) - rank(b) || age(a) - age(b) || a.target - b.target;
+}
+
+// Picks the comments to insert: drops the ones the accuracy check marked inaccurate, keeps an
+// earlier comment over a new one on the same line, and applies the level's limits.
+function selectComments(ctx, built, verdicts, drop) {
+  const { rules } = built;
+  const firstAt = new Map();
+  const unique = [];
+  const earlierFirst = [...built.candidates].sort((a, b) => (a.source === 'earlier' ? 0 : 1) - (b.source === 'earlier' ? 0 : 1));
+  for (const c of earlierFirst) {
+    const verdict = verdicts.get(c);
+    if (verdict === false) {
+      drop(c, 'inaccurate');
+    } else if (verdict === 'unchecked') {
+      drop(c, 'too many comments to check');
+    } else if (firstAt.has(c.target)) {
+      drop(c, firstAt.get(c.target) === 'earlier' ? 'kept the earlier comment' : 'duplicate line');
+    } else {
+      firstAt.set(c.target, c.source);
+      unique.push(c);
+    }
+  }
+  if (!rules) return [];
 
   // Existing comments count toward the level's limits, so re-runs do not pile up comments.
   // Every file may have at least one comment, so a short file with a function can get one.
   // Only line comments are limited: a block comment above a declaration never counts toward
-  // the level or the gap, and is never dropped by them.
-  const codeLines = analysis.info.filter((li) => !li.blank && !li.commentOnly).length;
+  // the level or the gap, and is never dropped by them. At heavy level, a comment on a
+  // constant may sit next to another, since constants are often declared together.
+  const info = ctx.analysis.info;
+  const codeLines = info.filter((li) => !li.blank && !li.commentOnly).length;
   const allowed = Math.max(1, Math.round(codeLines / rules.linesPerComment));
-  const taken = existingCommentPositions(analysis.info, rules.blocks);
+  const taken = existingCommentPositions(info, rules.blocks);
   let budget = allowed - taken.length;
-  // Block comments first, then comments on functions and classes, then the rest, each in
-  // file order, so a limited budget goes to declarations.
-  const rank = (c) => (c.kind === 'block' ? 0 : c.declaration ? 1 : 2);
-  candidates.sort((a, b) => rank(a) - rank(b) || a.target - b.target);
   const accepted = [];
-  for (const candidate of candidates) {
+  for (const candidate of unique.sort(byRank)) {
     if (candidate.kind === 'block') {
       accepted.push(candidate);
       continue;
     }
     if (budget <= 0) {
-      reject(candidate.proposal, 'level limit reached');
+      drop(candidate, 'level limit reached');
       continue;
     }
-    if (taken.some((pos) => Math.abs(pos - candidate.target) < rules.minGap)) {
-      reject(candidate.proposal, `within ${rules.minGap} lines of another comment`);
+    const gapExempt = rules.blocks && candidate.constant;
+    if (!gapExempt && taken.some((pos) => Math.abs(pos - candidate.target) < rules.minGap)) {
+      drop(candidate, `within ${rules.minGap} lines of another comment`);
       continue;
     }
     taken.push(candidate.target);
     accepted.push(candidate);
     budget--;
   }
-  if (!accepted.length) return finish(text, []);
+  return accepted;
+}
 
+// Inserts the accepted comments and verifies the result. Returns { text, kept }.
+function renderComments(ctx, accepted, drop) {
+  const { language, lines, bom } = ctx;
+  const base = bom + ctx.body;
+  if (!accepted.length) return { text: base, kept: [] };
   const eol = dominantEol(lines);
-  const insertionFor = (c) => ({
-    target: c.target,
-    commentLines: formatComment(language, c.kind, c.paragraphs, lines[c.target - 1].text.match(/^[ \t]*/)[0]),
-  });
-  const renderSet = (set) => render(lines, set.map(insertionFor), eol, bom);
+  for (const c of accepted) {
+    c.commentLines = formatComment(language, c.kind, c.paragraphs, lines[c.target - 1].text.match(/^[ \t]*/)[0]);
+  }
+  const renderSet = (set) => render(lines, set.map((c) => ({ target: c.target, commentLines: c.commentLines })), eol, bom);
 
   const full = renderSet(accepted);
-  if (verifyCandidates(language, text, [full])[0]) return finish(full.text, accepted);
+  if (verifyCandidates(language, base, [full])[0]) return { text: full.text, kept: accepted };
 
   // The full set failed, so test each comment alone and keep only those that pass.
   const singles = accepted.map((c) => renderSet([c]));
-  const passed = verifyCandidates(language, text, singles);
+  const passed = verifyCandidates(language, base, singles);
   const kept = accepted.filter((c, i) => {
-    if (!passed[i]) reject(c.proposal, 'verification failed');
+    if (!passed[i]) drop(c, 'verification failed');
     return passed[i];
   });
-  if (!kept.length) return finish(text, []);
+  if (!kept.length) return { text: base, kept: [] };
   const combined = renderSet(kept);
-  if (!verifyCandidates(language, text, [combined])[0]) {
-    kept.forEach((c) => reject(c.proposal, 'verification failed in combination'));
-    return finish(text, []);
+  if (!verifyCandidates(language, base, [combined])[0]) {
+    kept.forEach((c) => drop(c, 'verification failed in combination'));
+    return { text: base, kept: [] };
   }
-  return finish(combined.text, kept);
+  return { text: combined.text, kept };
+}
+
+// Selects, inserts, and verifies, and counts what happened. verdicts: Map from candidate to
+// the accuracy check's answer (true, false, or 'unchecked'); a candidate without one stays.
+// Returns { text, added, rejected, rejections, stats, records, undocumented }, where stats
+// never holds comment text, and records lists every Docturnal comment now in the file.
+function finishFile(ctx, built, verdicts = new Map()) {
+  const stats = emptyStats(built.proposed);
+  const rejections = [...built.rejections];
+  const earlierRemoved = [...built.earlierRemoved];
+  const drop = (c, reason) => {
+    if (c.source === 'earlier') earlierRemoved.push(reason);
+    else rejections.push({ line: c.proposal.line, reason, category: categoryOf(reason) });
+  };
+  const { text, kept } = ctx.error
+    ? { text: ctx.original, kept: [] }
+    : renderComments(ctx, selectComments(ctx, built, verdicts, drop), drop);
+
+  for (const r of rejections) {
+    const bucket = stats.dropped[r.category];
+    bucket[r.reason] = (bucket[r.reason] || 0) + 1;
+  }
+  for (const reason of earlierRemoved) stats.earlier.removed[reason] = (stats.earlier.removed[reason] || 0) + 1;
+  const keptEarlier = kept.filter((c) => c.source === 'earlier');
+  stats.earlier.kept = keptEarlier.length;
+  stats.earlier.restyled = keptEarlier.filter((c) =>
+    c.commentLines.map((l) => l.trim()).join('\n') !== c.earlier.lines.map((l) => l.trim()).join('\n')).length;
+  stats.added = kept.length - keptEarlier.length;
+
+  const documented = new Set(kept.map((c) => c.target));
+  return {
+    text,
+    added: stats.added,
+    rejected: rejections.length,
+    rejections,
+    stats,
+    records: [...kept].sort((a, b) => a.target - b.target).map((c) => recordFor(c.commentLines, ctx.lines[c.target - 1].text)),
+    undocumented: built.symbols.filter((s) => !documented.has(s.target)).map(({ line, name }) => ({ line, name })),
+  };
+}
+
+// Filters, limits, inserts, and verifies proposals for one file, without a model.
+// proposals: [{ line, anchor, text, kind }], or groups: one array of proposals per model
+// response. records: the Docturnal comments recorded for this file on earlier runs.
+function applyProposals({ text, language, level, proposals, groups = [proposals], records = [] }) {
+  const ctx = prepareFile({ text, language, level, records });
+  return finishFile(ctx, buildCandidates(ctx, level, groups));
 }
 
 function numberedLine(lines, i) {
@@ -513,7 +678,7 @@ function numberedLine(lines, i) {
 // Splits the file into windows of whole lines that fit the context budget, preferring to
 // break at a blank line.
 function buildWindows(lines, contextTokens) {
-  const budget = Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
+  const budget = promptBudget(contextTokens);
   const windows = [];
   let start = 0;
   while (start < lines.length) {
@@ -549,7 +714,7 @@ function buildMessages({ path, language, level, lines, window, index, count }) {
 // The follow-up request: the declarations by name and line, and the code from each one on,
 // as many as fit the context budget.
 function buildBlockMessages({ path, language, lines, missing, contextTokens }) {
-  const budget = Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
+  const budget = promptBudget(contextTokens);
   const shown = new Set();
   const asked = [];
   let size = 0;
@@ -596,15 +761,18 @@ function parseResponse(content) {
   };
 }
 
-// Comments one file. `chat` defaults to the local Ollama client and is replaceable for tests.
-// Returns { path, language, summary, symbols, text, added, rejected, rejections, failedWindows, errors }.
-async function commentFile({ path, text, level = 'medium', model, contextTokens = 8192, chat = ollama.chat, host }) {
+// Step 1 of 3, with the comment model: asks for proposals per window and, at heavy level,
+// sends one follow-up request for the functions, classes, and components still without one.
+// records: the Docturnal comments recorded for this file on earlier runs.
+// Returns a plan for checkComments and finishComments.
+async function planComments({ path, text, level = 'medium', model, contextTokens = 8192, chat = ollama.chat, host, records = [] }) {
   const language = languageForPath(path);
-  const base = { path, language: language && language.id, summary: '', symbols: [], text, added: 0, rejected: 0, rejections: [], stats: emptyStats(0), failedWindows: 0, errors: [] };
-  if (!language) return { ...base, skipped: 'unsupported language' };
-  const lines = splitLines(stripBom(text).body);
-  if (isMinified(lines)) return { ...base, skipped: 'minified' };
+  const plan = { path, language: language && language.id, level, text, summary: '', symbols: [], failedWindows: 0, errors: [], ctx: null, built: null, verdicts: new Map() };
+  if (!language) return { ...plan, skipped: 'unsupported language' };
+  if (isMinified(splitLines(stripBom(text).body))) return { ...plan, skipped: 'minified' };
 
+  const ctx = prepareFile({ text, language, level, records });
+  const { lines } = ctx;
   const windows = buildWindows(lines, contextTokens);
   const summaries = [];
   const symbols = new Set();
@@ -616,43 +784,100 @@ async function commentFile({ path, text, level = 'medium', model, contextTokens 
         host,
         messages: buildMessages({ path, language, level, lines, window, index, count: windows.length }),
         format: RESPONSE_SCHEMA,
-        options: { temperature: 0.2, seed: 42, num_ctx: contextTokens },
+        options: MODEL_OPTIONS(contextTokens),
       });
       const parsed = parseResponse(content);
       if (parsed.summary) summaries.push(parsed.summary);
       parsed.symbols.forEach((s) => symbols.add(s));
       groups.push(parsed.comments);
     } catch (err) {
-      base.failedWindows++;
-      base.errors.push(`lines ${window.start + 1}-${window.end}: ${err.message}`);
+      plan.failedWindows++;
+      plan.errors.push(`lines ${window.start + 1}-${window.end}: ${err.message}`);
     }
   }
 
-  let applied = applyProposals({ text, language, level, groups });
-  // Heavy level: one follow-up request for the functions, classes, and components that still
-  // have no comment above them. Skipped when the model answered nothing at all.
-  if (applied.undocumented.length && groups.length) {
-    const { messages } = buildBlockMessages({ path, language, lines, missing: applied.undocumented, contextTokens });
+  let built = buildCandidates(ctx, level, groups);
+  // Skipped when the model answered nothing at all.
+  if (built.undocumented.length && groups.length) {
+    const { messages } = buildBlockMessages({ path, language, lines, missing: built.undocumented, contextTokens });
     try {
-      const content = await chat({
-        model,
-        host,
-        messages,
-        format: BLOCK_SCHEMA,
-        options: { temperature: 0.2, seed: 42, num_ctx: contextTokens },
-      });
+      const content = await chat({ model, host, messages, format: BLOCK_SCHEMA, options: MODEL_OPTIONS(contextTokens) });
       groups.push(parseResponse(content).comments);
-      applied = applyProposals({ text, language, level, groups });
+      built = buildCandidates(ctx, level, groups);
     } catch (err) {
-      base.errors.push(`block comments: ${err.message}`);
+      plan.errors.push(`block comments: ${err.message}`);
     }
   }
-  return {
-    ...base,
-    summary: summaries.join(' ').slice(0, 1000),
-    symbols: [...symbols].slice(0, 50),
-    ...applied,
-  };
+  plan.summary = summaries.join(' ').slice(0, 1000);
+  plan.symbols = [...symbols].slice(0, 50);
+  plan.ctx = ctx;
+  plan.built = built;
+  return plan;
+}
+
+// Whether the plan has comments for the accuracy check.
+function needsCheck(plan) {
+  return Boolean(plan.built && plan.built.candidates.length);
+}
+
+// Step 2 of 3: one request that asks whether each candidate comment, earlier or new, is
+// true of the code under it. `chat` and `model` may be the docs model's. Sets plan.verdicts.
+// Throws when the check gets no usable answer.
+async function checkComments(plan, { chat = ollama.chat, model, host, contextTokens = 8192 }) {
+  if (!needsCheck(plan)) return plan;
+  const items = [...plan.built.candidates].sort(byRank).map((c) => ({ candidate: c, comment: c.paragraphs.join(' '), target: c.target }));
+  const { messages, checked } = buildAccuracyMessages({
+    path: plan.path,
+    language: plan.ctx.language,
+    lines: plan.ctx.lines,
+    items,
+    budget: promptBudget(contextTokens),
+  });
+  const content = await chat({ model, host, messages, format: ACCURACY_SCHEMA, options: MODEL_OPTIONS(contextTokens) });
+  const answers = parseVerdicts(content, checked.length);
+  const verdicts = new Map();
+  checked.forEach((item, i) => {
+    if (answers.has(i + 1)) verdicts.set(item.candidate, answers.get(i + 1));
+  });
+  // New comments that did not fit one check are not added; earlier ones stay as they were.
+  for (const item of items.slice(checked.length)) {
+    if (item.candidate.source === 'model') verdicts.set(item.candidate, 'unchecked');
+  }
+  plan.verdicts = verdicts;
+  return plan;
+}
+
+// Step 3 of 3, without a model: selects, inserts, and verifies.
+// Returns { path, language, summary, symbols, text, added, rejected, rejections, stats,
+// records, undocumented, failedWindows, errors, skipped }.
+function finishComments(plan) {
+  if (plan.skipped) return { ...unchanged(plan), skipped: plan.skipped };
+  return { ...headOf(plan), ...finishFile(plan.ctx, plan.built, plan.verdicts) };
+}
+
+function headOf(plan) {
+  return { path: plan.path, language: plan.language, summary: plan.summary, symbols: plan.symbols, failedWindows: plan.failedWindows, errors: plan.errors };
+}
+
+// The result for a file left as it is.
+function unchanged(plan) {
+  return { ...headOf(plan), text: plan.text, added: 0, rejected: 0, rejections: [], stats: emptyStats(0), records: [], undocumented: [] };
+}
+
+// Comments one file with one model for every step. `chat` defaults to the local Ollama client
+// and is replaceable for tests. checkModel, if given, runs the accuracy check. When the
+// check fails, nothing changes and checkFailed holds the error.
+async function commentFile(options) {
+  const plan = await planComments(options);
+  if (needsCheck(plan)) {
+    try {
+      await checkComments(plan, { ...options, model: options.checkModel || options.model });
+    } catch (err) {
+      plan.errors.push(`accuracy check: ${err.message}`);
+      return { ...unchanged(plan), checkFailed: err.message };
+    }
+  }
+  return finishComments(plan);
 }
 
 module.exports = {
@@ -661,6 +886,10 @@ module.exports = {
   RESPONSE_SCHEMA,
   applyProposals,
   buildWindows,
+  checkComments,
   cleanText,
   commentFile,
+  finishComments,
+  needsCheck,
+  planComments,
 };

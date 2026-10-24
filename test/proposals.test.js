@@ -6,7 +6,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { applyProposals, commentFile } = require('../src/comments');
+const { commentFile } = require('../src/comments');
+const { applyAnchored: applyProposals, withAccuracy, withAnchor } = require('./helpers');
 const { languageById } = require('../src/languages');
 const { buildReport, proposalSummary } = require('../src/report');
 const { startMockOllama } = require('./mock-ollama');
@@ -48,14 +49,16 @@ test('counts proposals, each drop category with its reasons, and added comments'
   assert.deepStrictEqual(result.stats, {
     proposed: 6,
     added: 1,
-    lineShift: 0,
     dropped: {
       placement: { 'closing bracket': 1 },
+      anchor: {},
       length: { 'longer than 25 words': 1 },
       density: { 'level limit reached': 2 },
+      inaccurate: {},
       safety: { 'tool directive': 1 },
       off: {},
     },
+    earlier: { kept: 0, restyled: 0, removed: {} },
   });
   assert.strictEqual(
     proposalSummary(result.stats),
@@ -123,45 +126,61 @@ test('a comment directly above code still counts, so re-runs do not pile up comm
   assert.deepStrictEqual(result.stats.dropped.density, { 'level limit reached': 1 });
 });
 
-// --- 3. Zero-based line numbers ---
+// --- 3. Placement by anchor ---
 
-test('reads line numbers as zero-based when the model uses line 0', () => {
-  // Zero-based: 0 is "function add" and 4 is "function multiply".
-  const result = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(0), line(4)] });
-  assert.strictEqual(result.stats.lineShift, 2);
-  assert.strictEqual(result.added, 1);
-  assert.match(result.text, /^\/\/ Callers pass numbers[^\n]*\nfunction add/);
-  // The other one lands on "function multiply" and is dropped only by the density limit.
-  assert.deepStrictEqual(result.stats.dropped.placement, {});
-  assert.deepStrictEqual(result.stats.dropped.density, { 'level limit reached': 1 });
-  assert.match(proposalSummary(result.stats), /; line numbers were read as counting from 0$/);
+const at = (n, anchor, text) => ({ ...line(n, text), anchor });
+
+test('places a comment above the line its anchor names, even when the line number is off', () => {
+  // Zero-based numbers: 0 and 4 are one line above "function add" and "function multiply".
+  const result = applyProposals({
+    text: MATH_JS,
+    language: js,
+    level: 'heavy',
+    proposals: [at(0, 'function add(a, b) {', 'Adds without coercion.'), at(4, 'function multiply(a, b) {', 'Multiplies without coercion.')],
+  });
+  assert.strictEqual(result.added, 2);
+  assert.match(result.text, /^\/\*\*\n \* Adds without coercion\.\n \*\/\nfunction add/);
+  assert.match(result.text, /\/\*\*\n \* Multiplies without coercion\.\n \*\/\nfunction multiply/);
 });
 
-test('reads line numbers as zero-based when none fit as given and all fit one line down', () => {
-  // Zero-based 4 and 8 are "function multiply" and "module.exports"; as given, both are blank lines.
-  const result = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(4), line(8)] });
-  assert.strictEqual(result.stats.lineShift, 2);
+test('ignores a line-number prefix and extra spaces copied into the anchor', () => {
+  const result = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [at(5, '5|   function  multiply(a, b) {')] });
   assert.strictEqual(result.added, 1);
   assert.match(result.text, /\/\/ Callers pass numbers[^\n]*\nfunction multiply/);
 });
 
-test('keeps line numbers as given when some fit, or when there is only one', () => {
-  const mixed = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(1), line(4)] });
-  assert.strictEqual(mixed.stats.lineShift, 0);
-  assert.deepStrictEqual(mixed.stats.dropped.placement, { 'blank line': 1 });
-  assert.match(mixed.text, /^\/\/ Callers pass numbers[^\n]*\nfunction add/);
-
-  const single = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(4)] });
-  assert.strictEqual(single.stats.lineShift, 0);
-  assert.strictEqual(single.added, 0);
+test('drops a comment whose anchor is not near the given line, and counts it', () => {
+  const result = applyProposals({
+    text: MATH_JS,
+    language: js,
+    level: 'medium',
+    proposals: [at(2, 'return a - b;'), at(2, ''), { line: 2, anchor: undefined, text: 'No anchor at all.', kind: 'line' }],
+  });
+  assert.strictEqual(result.added, 0);
+  assert.strictEqual(result.text, MATH_JS);
+  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found': 3 });
+  assert.match(proposalSummary(result.stats), /^proposed 3, 3 anchor not found, 0 added$/);
 });
 
-test('commentFile checks each model response for zero-based numbers on its own', async () => {
-  const mock = await startMockOllama(() => ({ summary: 'Adds and multiplies numbers.', symbols: ['add', 'multiply'], comments: [line(0), line(4)] }));
+test('picks the nearest matching line when the anchor text repeats', () => {
+  // "return 1;" is on lines 2 and 6; line 6 is nearer the given line 5.
+  const text = 'function a() {\n  return 1;\n}\n\nfunction b() {\n  return 1;\n}\n';
+  const result = applyProposals({ text, language: js, level: 'medium', proposals: [at(5, 'return 1;', 'Always one, by design.')] });
+  assert.strictEqual(result.added, 1);
+  assert.match(result.text, /function b\(\) \{\n  \/\/ Always one, by design\.\n  return 1;/);
+});
+
+test('commentFile asks for the anchor and places by it', async () => {
+  const mock = await startMockOllama(withAccuracy(() => ({
+    summary: 'Adds and multiplies numbers.',
+    symbols: ['add', 'multiply'],
+    comments: [at(0, 'function add(a, b) {'), at(4, 'function multiply(a, b) {')],
+  })));
   try {
     const result = await commentFile({ path: 'math.js', text: MATH_JS, level: 'medium', model: 'qwen2.5-coder:3b', host: mock.host });
     assert.match(mock.requests[0].messages[0].content, /Line numbers start at 1\./);
-    assert.strictEqual(result.stats.lineShift, 2);
+    assert.match(mock.requests[0].messages[0].content, /- anchor: the exact text of that code line/);
+    assert.deepStrictEqual(mock.requests[0].format.properties.comments.items.required, ['line', 'anchor', 'text', 'kind']);
     assert.strictEqual(result.added, 1);
     assert.match(result.text, /^\/\/ Callers pass numbers[^\n]*\nfunction add/);
   } finally {
