@@ -162,6 +162,9 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     if (result.records.length) fileState.comments = result.records;
     files.set(entry.path, fileState);
     processed.push({ path: entry.path, verifier: entry.language.verifier, added: result.added, rejections: result.rejections, stats: result.stats });
+    for (const r of result.rejections) {
+      if (r.coverage !== undefined) log(`${entry.path}: line ${r.line} dropped as restating the code (coverage ${r.coverage.toFixed(2)})`);
+    }
     log(`${entry.path}: ${proposalSummary(result.stats, { reasons: true })}`);
   }
 

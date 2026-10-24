@@ -127,7 +127,7 @@ test('a verdict without the usefulness answers keeps the comment', async () => {
   const mock = await startMockOllama((body) => {
     if (kindOf(body) === 'accuracy') return { verdicts: [{ id: 1, accurate: true }] };
     if (kindOf(body) === 'blocks') return { comments: [] };
-    return { summary: 's', symbols: [], comments: [proposal('  let remaining = gross;', RESTATES)] };
+    return { summary: 's', symbols: [], comments: [proposal('    const taxed = Math.min(remaining, bracket.upTo);', WHY)] };
   });
   try {
     const result = await commentFile({ path: 'src/payroll.js', text: WITHHOLDING, level: 'heavy', model: 'm', host: mock.host });

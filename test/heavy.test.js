@@ -25,7 +25,7 @@ const lineOf = (code) => PAYROLL.split('\n').findIndex((l) => l.startsWith(code)
 // What the model proposed in the real run: one block comment and four line comments.
 const FIRST_PASS = [
   { line: lineOf('function grossPay'), text: 'Pays hours past the weekly threshold at the overtime rate.', kind: 'block' },
-  { line: lineOf('  const regular'), text: 'Hours up to the threshold are paid at the base rate.', kind: 'line' },
+  { line: lineOf('  const regular'), text: 'Regular hours never exceed the threshold, whatever was logged.', kind: 'line' },
   { line: lineOf('  const overtime'), text: 'Only hours past the threshold earn the multiplier.', kind: 'line' },
   { line: lineOf('const OVERTIME_THRESHOLD_HOURS'), text: 'Weekly hours before overtime starts.', kind: 'line' },
   { line: lineOf('  return Math.round'), text: 'Rounds to cents so payslip totals add up.', kind: 'line' },
@@ -44,7 +44,7 @@ function firstPassHandler(body) {
 test('heavy: a block comment above a function never uses up the level or the gap', () => {
   const result = applyProposals({ text: PAYROLL, language: js, level: 'heavy', proposals: FIRST_PASS });
   // The line comment directly below the grossPay block is kept; before, the gap rule dropped it.
-  assert.match(result.text, /\/\*\*\n \* Pays hours past[^\n]*\n \*\/\nfunction grossPay\(hours, hourlyRate\) \{\n  \/\/ Hours up to the threshold/);
+  assert.match(result.text, /\/\*\*\n \* Pays hours past[^\n]*\n \*\/\nfunction grossPay\(hours, hourlyRate\) \{\n  \/\/ Regular hours never exceed the threshold/);
   assert.strictEqual(result.added, 4);
   // Line comments are still limited among themselves.
   assert.deepStrictEqual(result.stats.dropped.density, { 'within 2 lines of another comment': 1 });
@@ -145,7 +145,7 @@ test('heavy: a failed follow-up keeps the first pass', async () => {
 
 for (const [level, added, density] of [
   ['medium', 3, { 'within 5 lines of another comment': 2 }],
-  ['low', 1, { 'level limit reached': 3 }],
+  ['low', 1, { 'level limit reached': 4 }],
 ]) {
   test(`${level}: the same proposals keep the existing limits and get no follow-up`, async () => {
     const mock = await startMockOllama(firstPassHandler);

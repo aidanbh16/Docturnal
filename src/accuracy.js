@@ -34,14 +34,19 @@ const ACCURACY_SCHEMA = {
 const CODE_LINES = 5;
 const MAX_CODE_LINE_CHARS = 200;
 
-function attachedCode(lines, target) {
+// Returns [{ number, text }], counted from 1.
+function codeUnder(lines, target) {
   const out = [];
   for (let i = target - 1; i < Math.min(lines.length, target - 1 + CODE_LINES); i++) {
     if (out.length && lines[i].text.trim() === '') break;
-    const text = lines[i].text;
-    out.push(`${i + 1}| ${text.length > MAX_CODE_LINE_CHARS ? `${text.slice(0, MAX_CODE_LINE_CHARS)}...` : text}`);
+    out.push({ number: i + 1, text: lines[i].text });
   }
   return out;
+}
+
+function attachedCode(lines, target) {
+  return codeUnder(lines, target).map(({ number, text }) =>
+    `${number}| ${text.length > MAX_CODE_LINE_CHARS ? `${text.slice(0, MAX_CODE_LINE_CHARS)}...` : text}`);
 }
 
 // items: [{ comment, target, functionComment }], one batch; item i has id i + 1. Only the 1
@@ -73,4 +78,4 @@ function parseVerdicts(content, count) {
   return verdicts;
 }
 
-module.exports = { ACCURACY_SCHEMA, attachedCode, buildAccuracyMessages, parseVerdicts };
+module.exports = { ACCURACY_SCHEMA, attachedCode, buildAccuracyMessages, codeUnder, parseVerdicts };

@@ -6,11 +6,12 @@
 // Docturnal wrote on earlier runs (see owned.js) are taken out first and compete with the
 // new proposals, so they can be kept, restyled for the level, replaced, or removed.
 
-const { buildAccuracyMessages, ACCURACY_SCHEMA, parseVerdicts } = require('./accuracy');
+const { buildAccuracyMessages, ACCURACY_SCHEMA, codeUnder, parseVerdicts } = require('./accuracy');
 const { analyzeLines, splitLines } = require('./analyze');
 const { languageForPath } = require('./languages');
 const ollama = require('./ollama');
 const { findOwned, recordFor } = require('./owned');
+const { restatement, restates } = require('./restates');
 const { verifyCandidates } = require('./verify');
 
 const LEVELS = {
@@ -577,12 +578,21 @@ function selectComments(ctx, built, verdicts, drop) {
     // Docturnal's or a person's, stays, and a block comment is what heavy level promises
     // every function.
     const judged = c.source === 'model' && c.kind === 'line';
+    // After the model's answers, a word count catches restatements the model let through.
+    // Comments on constants are exempt, since naming what a constant holds is their job, and
+    // so are comments on declarations, the function summary at medium and low that heavy
+    // writes as a block: a summary always shares words with the function's own names.
+    const words = judged && !c.constant && !c.declaration
+      ? restatement(c.paragraphs.join(' '), codeUnder(ctx.lines, c.target).map((l) => l.text))
+      : null;
     if (verdict.accurate === false) {
       drop(c, 'inaccurate');
     } else if (judged && verdict.useful === false) {
       drop(c, 'restates the code');
     } else if (judged && verdict.repeats === true && c.functionComment) {
       drop(c, 'repeats the function comment');
+    } else if (words && restates(words)) {
+      drop(c, 'restates the code (word match)', { coverage: words.coverage });
     } else if (firstAt.has(c.target)) {
       drop(c, firstAt.get(c.target) === 'earlier' ? 'kept the earlier comment' : 'duplicate line');
     } else {
@@ -662,9 +672,10 @@ function finishFile(ctx, built, verdicts = new Map()) {
   const stats = emptyStats(built.proposed);
   const rejections = [...built.rejections];
   const earlierRemoved = [...built.earlierRemoved];
-  const drop = (c, reason) => {
+  // extra: details for the log, such as the word-match coverage; never comment text.
+  const drop = (c, reason, extra = {}) => {
     if (c.source === 'earlier') earlierRemoved.push(reason);
-    else rejections.push({ line: c.proposal.line, reason, category: categoryOf(reason) });
+    else rejections.push({ line: c.proposal.line, reason, category: categoryOf(reason), ...extra });
   };
   const { text, kept } = ctx.error
     ? { text: ctx.original, kept: [] }

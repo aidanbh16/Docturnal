@@ -30,8 +30,10 @@ const gitEnv = {
 };
 let clones = 0;
 let mock;
-// Set per test: how the mock answers each accuracy check.
+// Set per test: how the mock answers each accuracy check, and proposals it adds to each
+// comments request.
 let onCheck = () => undefined;
+let addComments = () => [];
 const fallback = defaultHandler();
 
 function git(cwd, ...args) {
@@ -75,7 +77,9 @@ describe('the accuracy check in a run', () => {
         const answer = onCheck(body);
         if (answer instanceof Error) throw answer;
       }
-      return fallback(body, index);
+      const reply = fallback(body, index);
+      if (kindOf(body) === 'comments') reply.comments.push(...addComments(body));
+      return reply;
     });
     fs.writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '');
     git(work, 'init', '-q', '--bare', '-b', 'main', remote);
@@ -137,6 +141,31 @@ describe('the accuracy check in a run', () => {
     assert.match(log, /^Docturnal: nothing to commit this run; 1 file was deferred to the next run\.$/m);
     assert.strictEqual(git(remote, 'rev-parse', 'refs/heads/docturnal/update'), before);
     assert.match(fs.readFileSync(path.join(cwd, 'src/payroll.js'), 'utf8'), /const HOLIDAY_RATE = 2;\n$/);
+  });
+
+  it('logs the coverage score of each comment dropped as a restatement, never its text', async () => {
+    onCheck = () => undefined;
+    const sumHours = '  for (const day of days) total += day.hours;';
+    fs.appendFileSync(path.join(seed, 'src/payroll.js'), `\nfunction sumHours(days) {\n  let total = 0;\n${sumHours}\n  return total;\n}\n`);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-qm', 'Add sumHours');
+    git(seed, 'push', '-q', 'origin', 'main');
+    let line;
+    addComments = (body) => {
+      const match = body.messages[1].content.match(/^(\d+)\|   for \(const day of days\) total \+= day\.hours;$/m);
+      if (!match) return [];
+      line = Number(match[1]);
+      return [{ line, anchor: sumHours.trim(), text: "Adds each day's hours to the total.", kind: 'line' }];
+    };
+    try {
+      const { log } = await runMain();
+      assert.ok(line > 0);
+      assert.match(log, new RegExp(`^src/payroll\\.js: line ${line} dropped as restating the code \\(coverage 1\\.00\\)$`, 'm'));
+      assert.ok(!log.includes("Adds each day's hours"));
+      assert.match(log, /restates the code \(restates the code \(word match\): 1\)/);
+    } finally {
+      addComments = () => [];
+    }
   });
 
   it('skips a file with syntax errors and says so in the log and in last-run.md', async () => {
