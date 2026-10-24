@@ -136,7 +136,8 @@ expect_count "run 1 layers" '"kind":"layers"' 1
 expect_count "run 1 layer docs" '"kind":"layer-doc"' 3
 expect_count "run 1 main doc" '"kind":"readme"' 1
 expect_count "run 1 comment model only for comments" '"model":"comment-model","kind":"comments"' 4
-# One accuracy check per commented file, with the docs model, which is loaded for the docs next.
+# The docs model is loaded once, then checks the comments in each commented file.
+expect_count "run 1 docs model loaded before the check" '"model":"docs-model","kind":"load"' 1
 expect_count "run 1 accuracy checks with the docs model" '"model":"docs-model","kind":"accuracy"' 4
 contains "$(remote_file .docturnal/state.json)" '"comments": [' "run 1 state.json records Docturnal's comments"
 LAST_RUN="$(remote_file .docturnal/last-run.md)"
@@ -206,8 +207,9 @@ export function deleteUser(db, id) {
 EOF
 seed_commit "Add deleteUser"
 run_docturnal run4 INPUT_SELECTED_DOCS_MODEL=oom-docs-model
-# The accuracy check loads the docs model first; after it fails, nothing tries it again.
-expect_count "run 4 failed docs model calls" '"model":"oom-docs-model","kind":"accuracy","file":"src/api/users.js","status":500' 1
+# The docs model is loaded before the accuracy check; after it fails to load, nothing tries it again.
+expect_count "run 4 failed docs model calls" '"model":"oom-docs-model","kind":"load","status":500' 1
+expect_count "run 4 no check with the docs model" '"model":"oom-docs-model","kind":"accuracy"' 0
 expect_count "run 4 docs model not tried again" '"model":"oom-docs-model","kind":"layer-doc"' 0
 expect_count "run 4 fallback accuracy check" '"model":"comment-model","kind":"accuracy"' 1
 expect_count "run 4 fallback layer doc" '"model":"comment-model","kind":"layer-doc"' 1

@@ -113,6 +113,11 @@ const MAX_PROMPT_LINE_CHARS = 500;
 
 const MODEL_OPTIONS = (contextTokens) => ({ temperature: 0.2, seed: 42, num_ctx: contextTokens });
 
+// The accuracy check sends at most this many comments per request. Its answer is only a
+// verdict per comment, so it may be short.
+const ACCURACY_BATCH = 8;
+const ACCURACY_PREDICT_TOKENS = 256;
+
 function promptBudget(contextTokens) {
   return Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
 }
@@ -330,7 +335,7 @@ const CATEGORY = {
   placement: /^(line out of range|shebang|blank line|inside a string|existing comment|import|closing bracket|previous line is a comment|duplicate line|kept the earlier comment)/,
   anchor: /^anchor not found/,
   length: /^(longer than|block comment longer than)/,
-  density: /^(level limit reached|within \d+ lines of another comment|too many comments to check)/,
+  density: /^(level limit reached|within \d+ lines of another comment)/,
   inaccurate: /^inaccurate/,
   off: /^comment level is off/,
 };
@@ -550,8 +555,6 @@ function selectComments(ctx, built, verdicts, drop) {
     const verdict = verdicts.get(c);
     if (verdict === false) {
       drop(c, 'inaccurate');
-    } else if (verdict === 'unchecked') {
-      drop(c, 'too many comments to check');
     } else if (firstAt.has(c.target)) {
       drop(c, firstAt.get(c.target) === 'earlier' ? 'kept the earlier comment' : 'duplicate line');
     } else {
@@ -624,7 +627,7 @@ function renderComments(ctx, accepted, drop) {
 }
 
 // Selects, inserts, and verifies, and counts what happened. verdicts: Map from candidate to
-// the accuracy check's answer (true, false, or 'unchecked'); a candidate without one stays.
+// the accuracy check's answer (true or false); a candidate without one stays.
 // Returns { text, added, rejected, rejections, stats, records, undocumented }, where stats
 // never holds comment text, and records lists every Docturnal comment now in the file.
 function finishFile(ctx, built, verdicts = new Map()) {
@@ -780,6 +783,7 @@ async function planComments({ path, text, level = 'medium', model, contextTokens
   for (const [index, window] of windows.entries()) {
     try {
       const content = await chat({
+        label: `comments for ${path}, lines ${window.start + 1} to ${window.end}`,
         model,
         host,
         messages: buildMessages({ path, language, level, lines, window, index, count: windows.length }),
@@ -801,7 +805,7 @@ async function planComments({ path, text, level = 'medium', model, contextTokens
   if (built.undocumented.length && groups.length) {
     const { messages } = buildBlockMessages({ path, language, lines, missing: built.undocumented, contextTokens });
     try {
-      const content = await chat({ model, host, messages, format: BLOCK_SCHEMA, options: MODEL_OPTIONS(contextTokens) });
+      const content = await chat({ label: `block comments for ${path}`, model, host, messages, format: BLOCK_SCHEMA, options: MODEL_OPTIONS(contextTokens) });
       groups.push(parseResponse(content).comments);
       built = buildCandidates(ctx, level, groups);
     } catch (err) {
@@ -820,28 +824,31 @@ function needsCheck(plan) {
   return Boolean(plan.built && plan.built.candidates.length);
 }
 
-// Step 2 of 3: one request that asks whether each candidate comment, earlier or new, is
-// true of the code under it. `chat` and `model` may be the docs model's. Sets plan.verdicts.
+// Step 2 of 3: asks whether each candidate comment, earlier or new, is true of the code
+// under it, ACCURACY_BATCH comments per request. `chat` and `model` may be the docs
+// model's. Sets plan.verdicts.
 // Throws when the check gets no usable answer.
 async function checkComments(plan, { chat = ollama.chat, model, host, contextTokens = 8192 }) {
   if (!needsCheck(plan)) return plan;
   const items = [...plan.built.candidates].sort(byRank).map((c) => ({ candidate: c, comment: c.paragraphs.join(' '), target: c.target }));
-  const { messages, checked } = buildAccuracyMessages({
-    path: plan.path,
-    language: plan.ctx.language,
-    lines: plan.ctx.lines,
-    items,
-    budget: promptBudget(contextTokens),
-  });
-  const content = await chat({ model, host, messages, format: ACCURACY_SCHEMA, options: MODEL_OPTIONS(contextTokens) });
-  const answers = parseVerdicts(content, checked.length);
   const verdicts = new Map();
-  checked.forEach((item, i) => {
-    if (answers.has(i + 1)) verdicts.set(item.candidate, answers.get(i + 1));
-  });
-  // New comments that did not fit one check are not added; earlier ones stay as they were.
-  for (const item of items.slice(checked.length)) {
-    if (item.candidate.source === 'model') verdicts.set(item.candidate, 'unchecked');
+  const batches = Math.ceil(items.length / ACCURACY_BATCH);
+  for (let b = 0; b < batches; b++) {
+    const batch = items.slice(b * ACCURACY_BATCH, (b + 1) * ACCURACY_BATCH);
+    const messages = buildAccuracyMessages({ path: plan.path, language: plan.ctx.language, lines: plan.ctx.lines, items: batch });
+    const content = await chat({
+      label: `accuracy check for ${plan.path}${batches > 1 ? ` (${b + 1} of ${batches})` : ''}`,
+      model,
+      host,
+      messages,
+      format: ACCURACY_SCHEMA,
+      // The same context size as every other call, so Ollama does not reload the model.
+      options: { ...MODEL_OPTIONS(contextTokens), num_predict: ACCURACY_PREDICT_TOKENS },
+    });
+    const answers = parseVerdicts(content, batch.length);
+    batch.forEach((item, i) => {
+      if (answers.has(i + 1)) verdicts.set(item.candidate, answers.get(i + 1));
+    });
   }
   plan.verdicts = verdicts;
   return plan;

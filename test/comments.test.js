@@ -482,7 +482,7 @@ test('commentFile asks the model per window and applies its proposals', async ()
     assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'accuracy']);
     const request = mock.requests[0];
     assert.strictEqual(request.model, 'qwen2.5-coder:3b');
-    assert.strictEqual(request.stream, false);
+    assert.strictEqual(request.stream, true);
     assert.deepStrictEqual(request.format.required, ['summary', 'symbols', 'comments']);
     assert.match(request.messages[1].content, /^File: src\/retry\.js\nLanguage: JavaScript\n/);
     assert.match(request.messages[1].content, /\n10\|   throw lastError;/);

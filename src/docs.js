@@ -714,7 +714,7 @@ function createCaller({ chat = ollama.chat, model, fallbackModel = null, host, e
   const caller = { model, activeModel: model, fallbackUsed: false, lastUsedFallback: false, errors };
   caller.call = async (label, request) => {
     try {
-      const content = await chat({ ...request, model: caller.activeModel, host });
+      const content = await chat({ ...request, label: request.label || label, model: caller.activeModel, host });
       caller.lastUsedFallback = caller.activeModel !== model;
       return content;
     } catch (err) {
@@ -722,7 +722,7 @@ function createCaller({ chat = ollama.chat, model, fallbackModel = null, host, e
       errors.push(`${label}: the docs model ${model} could not load (${err.message.slice(0, 200)}); switched to ${fallbackModel}`);
       caller.activeModel = fallbackModel;
       caller.fallbackUsed = true;
-      const content = await chat({ ...request, model: caller.activeModel, host });
+      const content = await chat({ ...request, label: request.label || label, model: caller.activeModel, host });
       caller.lastUsedFallback = true;
       return content;
     }

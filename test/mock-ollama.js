@@ -29,6 +29,7 @@ function promptOf(body) {
 function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
   const prompt = promptOf(body);
+  if (!(body.messages || []).length) return 'load';
   if (prompt.includes('Write a block comment for each of these declarations')) return 'blocks';
   if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
@@ -127,6 +128,7 @@ function defaultHandler({ oomModels = [] } = {}) {
       case 'comments': return commentsReply(body);
       case 'blocks': return blocksReply(body);
       case 'accuracy': return accuracyReply(body);
+      case 'load': return '';
       case 'layers': return layersReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
@@ -157,18 +159,42 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
       const body = JSON.parse(raw);
       requests.push(body);
       let status = 200;
+      let content;
       let payload;
       try {
+        // A request without messages only loads the model, as in Ollama. The handler may
+        // still fail it, for example for a model that does not fit in memory.
         const reply = await handler(body, requests.length - 1);
-        const content = typeof reply === 'string' ? reply : JSON.stringify(reply);
-        payload = JSON.stringify({ model: body.model, message: { role: 'assistant', content }, done: true });
+        content = !(body.messages || []).length ? '' : typeof reply === 'string' ? reply : JSON.stringify(reply);
       } catch (err) {
         status = err.status || 500;
         payload = err.message;
+        // A handler error with dropConnection closes the socket without a reply, the way a
+        // connection that times out or resets looks to the client.
+        if (err.dropConnection) status = 0;
       }
       if (onRequest) onRequest({ model: body.model, kind: kindOf(body), file: (promptOf(body).match(/^File: (.+)$/m) || [])[1], status });
-      res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(payload);
+      if (status === 0) {
+        req.socket.destroy();
+        return;
+      }
+      if (status !== 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(payload);
+        return;
+      }
+      if (!body.stream) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ model: body.model, message: { role: 'assistant', content }, done: true }));
+        return;
+      }
+      // Streamed like Ollama: one JSON object per line, the message in pieces, then done.
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      const size = Math.max(1, Math.ceil(content.length / 3));
+      for (let i = 0; i < content.length; i += size) {
+        res.write(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: content.slice(i, i + size) }, done: false })}\n`);
+      }
+      res.end(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: content ? 'stop' : 'load' })}\n`);
     });
   });
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));

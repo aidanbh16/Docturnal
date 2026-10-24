@@ -109,15 +109,26 @@ test('a "no" verdict from the accuracy check drops the comment', async () => {
   assert.doesNotMatch(result.text, /Applies the overtime rate/);
   assert.deepStrictEqual(result.stats.dropped.inaccurate, { inaccurate: 1 });
 
-  // One check per file, with the check model, showing each comment over the code it describes.
+  // The check runs with the check model, at most 8 comments per request, each shown over the
+  // 1 to 5 code lines it describes, and with a short answer limit.
   const checks = requests.filter((r) => kindOf(r) === 'accuracy');
-  assert.strictEqual(checks.length, 1);
-  assert.strictEqual(checks[0].model, 'docs-model');
-  const prompt = checks[0].messages[1].content;
-  assert.match(prompt, /Comment: Validates the timesheet entry and throws when the hours are out of range\.\nCode:\n\d+\| function payStub\(entry\) \{\n\d+\|   validateTimesheet\(entry\);/);
-  for (const [, code] of prompt.matchAll(/\nCode:\n((?:\d+\| .*\n?)+)/g)) {
-    assert.ok(code.trim().split('\n').length <= 5);
+  assert.ok(checks.length >= 2, 'more than 8 comments are checked in batches');
+  const items = [];
+  for (const check of checks) {
+    assert.strictEqual(check.model, 'docs-model');
+    assert.strictEqual(check.options.num_predict, 256);
+    assert.strictEqual(check.options.num_ctx, 8192);
+    const prompt = check.messages[1].content;
+    const ids = [...prompt.matchAll(/^Item (\d+)$/gm)].map((m) => Number(m[1]));
+    assert.ok(ids.length >= 1 && ids.length <= 8);
+    assert.deepStrictEqual(ids, ids.map((_, i) => i + 1));
+    for (const [, code] of prompt.matchAll(/\nCode:\n((?:\d+\| .*\n?)+)/g)) {
+      assert.ok(code.trim().split('\n').length <= 5);
+    }
+    assert.doesNotMatch(prompt, /module\.exports/);
+    items.push(prompt);
   }
+  assert.match(items.join('\n'), /Comment: Validates the timesheet entry and throws when the hours are out of range\.\nCode:\n\d+\| function payStub\(entry\) \{\n\d+\|   validateTimesheet\(entry\);/);
 });
 
 test('a comment a person edited is never touched', async () => {

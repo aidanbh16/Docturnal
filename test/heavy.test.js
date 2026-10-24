@@ -74,7 +74,7 @@ test('heavy: every function in payroll.js gets a block comment, with one follow-
     assert.deepStrictEqual(result.undocumented, []);
     assert.deepStrictEqual(result.errors, []);
 
-    assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'blocks', 'accuracy']);
+    assert.deepStrictEqual([...new Set(mock.requests.map(kindOf))], ['comments', 'blocks', 'accuracy']);
     const followUp = mock.requests[1];
     assert.deepStrictEqual(followUp.format.required, ['comments']);
     const prompt = followUp.messages[1].content;

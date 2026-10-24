@@ -13,6 +13,7 @@ const { readConfig, ConfigError } = require('./config');
 const { createCaller, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, prepareBranch } = require('./git');
 const { readTotalMemory, selectModels } = require('./models');
+const ollama = require('./ollama');
 const { updateReadme, writeReadme } = require('./readme');
 const { buildReport, proposalSummary } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState } = require('./state');
@@ -22,6 +23,9 @@ const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState
 const DOCS_RESERVE_MINUTES = 25;
 const CHECK_MINUTES = 10;
 
+// How long Ollama keeps the docs model loaded after it is loaded ahead of the accuracy check.
+const DOCS_MODEL_KEEP_ALIVE = '30m';
+
 function resolveModels(config) {
   if (config.selectedCommentModel && config.selectedDocsModel) {
     return { comment: config.selectedCommentModel, docs: config.selectedDocsModel };
@@ -30,10 +34,12 @@ function resolveModels(config) {
   return { comment: selection.commentModel, docs: selection.docsModel };
 }
 
-async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.now, log = console.log } = {}) {
+async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ollama.chat, now = Date.now, log = console.log } = {}) {
   const config = readConfig(env);
   const push = !/^(false|0|no)$/i.test((env.PUSH || 'true').trim());
   const started = now();
+  // Every model call is logged with its duration, and the run's time budget is its only limit.
+  const chat = ollama.loggedChat(baseChat, { log, now, deadline: started + config.timeBudgetMinutes * 60000 });
   const models = resolveModels(config);
   log(`Docturnal: comment level ${config.commentLevel}, comment model ${models.comment}, docs model ${models.docs}`);
 
@@ -55,9 +61,14 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
   const leftOver = [];
   const writtenSources = [];
   const plans = [];
+  // A file left for the next run keeps its old state, so the next run processes it again.
+  const defer = (file, reason, detail = reason) => {
+    leftOver.push({ path: file, reason });
+    log(`${file}: deferred to the next run, ${detail}`);
+  };
   for (const entry of toComment) {
     if (now() > commentDeadline) {
-      leftOver.push({ path: entry.path, reason: 'time budget' });
+      defer(entry.path, 'time budget');
       continue;
     }
     const text = entry.buffer.toString('utf8');
@@ -76,34 +87,54 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
       records: (previous.files[entry.path] || {}).comments || [],
     });
     if (plan.failedWindows && !plan.summary && !(plan.built && plan.built.candidates.length)) {
-      leftOver.push({ path: entry.path, reason: 'the model did not respond' });
-      log(`${entry.path}: the model did not respond (${plan.errors.join('; ')})`);
+      defer(entry.path, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
       continue;
     }
     plans.push({ entry, plan });
   }
 
   // The docs model checks when the time left before the check deadline is at least the time
-  // the proposals took, since it is slower but gets one short request per file.
+  // the proposals took, since it is slower but gets short requests. It is loaded first, with
+  // the same context size as every later call, so the check does not start against a cold
+  // model and the docs do not reload it. If it cannot load, the caller switches to the
+  // comment model for the rest of the run.
   const toCheck = plans.filter(({ plan }) => needsCheck(plan));
   const docsCaller = createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
-  const checkWithDocs = toCheck.length > 0 && models.docs !== models.comment && now() + (now() - started) <= checkDeadline;
-  if (toCheck.length) log(`Docturnal: checking comments in ${toCheck.length} files with ${checkWithDocs ? models.docs : models.comment}`);
+  let checkWithDocs = toCheck.length > 0 && models.docs !== models.comment && now() + (now() - started) <= checkDeadline;
+  if (checkWithDocs) {
+    try {
+      await docsCaller.call(`loading ${models.docs}`, { messages: [], options: { num_ctx: config.contextTokens }, keepAlive: DOCS_MODEL_KEEP_ALIVE });
+    } catch {
+      checkWithDocs = false;
+    }
+  }
+  const checkWith = (model) => (model === models.comment
+    ? { chat, model: models.comment, contextTokens: config.contextTokens }
+    : { chat: (request) => docsCaller.call(`accuracy check`, request), contextTokens: config.contextTokens });
+  const firstChecker = checkWithDocs ? docsCaller.activeModel : models.comment;
+  if (toCheck.length) log(`Docturnal: checking comments in ${toCheck.length} files with ${firstChecker}`);
   const checked = [];
   for (const item of plans) {
     const { entry, plan } = item;
     if (needsCheck(plan)) {
       if (now() > checkDeadline) {
-        leftOver.push({ path: entry.path, reason: 'time budget' });
+        defer(entry.path, 'time budget');
         continue;
       }
-      try {
-        await checkComments(plan, checkWithDocs
-          ? { chat: (request) => docsCaller.call(`accuracy check for ${entry.path}`, request), contextTokens: config.contextTokens }
-          : { chat, model: models.comment, contextTokens: config.contextTokens });
-      } catch (err) {
-        leftOver.push({ path: entry.path, reason: 'the accuracy check did not respond' });
-        log(`${entry.path}: the accuracy check did not respond (${err.message})`);
+      // A check that fails with the docs model is tried once more with the comment model.
+      const checkers = checkWithDocs && docsCaller.activeModel !== models.comment ? [models.docs, models.comment] : [models.comment];
+      let passed = false;
+      for (const model of checkers) {
+        try {
+          await checkComments(plan, checkWith(model));
+          passed = true;
+          break;
+        } catch (err) {
+          log(`${entry.path}: the accuracy check with ${model} failed (${ollama.describeError(err)})`);
+        }
+      }
+      if (!passed) {
+        defer(entry.path, 'the accuracy check failed', 'accuracy check failed');
         continue;
       }
     }
@@ -207,7 +238,9 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
     staleDocs,
   };
   if (!writtenSources.length && !writtenDocs.written.length && !writtenDocs.deleted.length && sameState(previous, next)) {
-    log('Docturnal: nothing changed since the last run.');
+    log(leftOver.length
+      ? `Docturnal: nothing to commit this run; ${leftOver.length} ${leftOver.length === 1 ? 'file was' : 'files were'} deferred to the next run.`
+      : 'Docturnal: nothing changed since the last run.');
     return { changed: false, processed, leftOver };
   }
 

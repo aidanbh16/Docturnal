@@ -1,8 +1,8 @@
 'use strict';
 
-// The accuracy check: one request per file that shows each selected comment with the code it
-// sits above and asks whether the comment is true of that code. Comments marked inaccurate
-// are dropped. It catches comments written for a neighboring line or another function.
+// The accuracy check: requests that show each selected comment with the code it sits above
+// and ask whether the comment is true of that code. Comments marked inaccurate are
+// dropped. It catches comments written for a neighboring line or another function.
 
 const ACCURACY_PROMPT = `You check code comments against the code they sit above. You never rewrite code or comments.
 
@@ -41,27 +41,14 @@ function attachedCode(lines, target) {
   return out;
 }
 
-// items: [{ comment, target }], most important first. Items that do not fit the budget
-// (in characters) are left out. Returns { messages, checked } where checked lists the items
-// sent, and item i has id i + 1.
-function buildAccuracyMessages({ path, language, lines, items, budget }) {
-  const parts = [];
-  const checked = [];
-  let size = 0;
-  for (const item of items) {
-    const part = `Item ${checked.length + 1}\nComment: ${item.comment}\nCode:\n${attachedCode(lines, item.target).join('\n')}`;
-    if (checked.length && size + part.length + 2 > budget) break;
-    size += part.length + 2;
-    parts.push(part);
-    checked.push(item);
-  }
-  return {
-    checked,
-    messages: [
-      { role: 'system', content: ACCURACY_PROMPT },
-      { role: 'user', content: `File: ${path}\nLanguage: ${language.name}\n\n${parts.join('\n\n')}` },
-    ],
-  };
+// items: [{ comment, target }], one batch; item i has id i + 1. Only the 1 to 5 code lines
+// under each comment are sent, never the whole file.
+function buildAccuracyMessages({ path, language, lines, items }) {
+  const parts = items.map((item, i) => `Item ${i + 1}\nComment: ${item.comment}\nCode:\n${attachedCode(lines, item.target).join('\n')}`);
+  return [
+    { role: 'system', content: ACCURACY_PROMPT },
+    { role: 'user', content: `File: ${path}\nLanguage: ${language.name}\n\n${parts.join('\n\n')}` },
+  ];
 }
 
 // Returns a Map from id to true or false. Anything malformed is ignored, so a comment
