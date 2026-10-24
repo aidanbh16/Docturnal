@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-24T23:49:49.599Z",
+  "commentLevel": "medium",
+  "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
+  "files": {
+    "app/package.json": {
+      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247"
+    },
+    "app/scripts/pkcs8.mjs": {
+      "hash": "sha256-cf47aa2847e73e847c5d28840f06d4e0b59c2d6874db082bc617e74cc773d8ff",
+      "summary": "This module converts a GitHub PKCS#1 private key to PKCS#8 format, which is the only RSA format WebCrypto can import. It includes functions to parse PEM-encoded keys, convert them to DER format, and then to PKCS#8 PEM format. The module also includes a function to check if the conversion is successful by importing the key.",
+      "symbols": [
+        "toPkcs8Pem",
+        "checkPkcs8"
+      ]
+    },
+    "app/src/github.ts": {
+      "hash": "sha256-d433d34d022578fe67cc8132c5ccdebc023e7449a75de4c07170eb5de0117123",
+      "summary": "This file defines the GitHub API version used by the app and a plugin to set the version on every request.",
+      "symbols": [
+        "GITHUB_API_VERSION",
+        "withApiVersion"
+      ]
+    },
+    "app/src/handlers.ts": {
+      "hash": "sha256-fde5c46f82f6af486f86d5617bd1e666d22711a67b8852d9992279448484c22d",
+      "summary": "This file contains handlers for webhooks and queue operations related to Docturnal, a GitHub Actions workflow that comments on code and updates documentation nightly. This file contains functions for handling GitHub events related to pull requests, updates, and repository setup. It manages branches, pull requests, and workflows to ensure Docturnal runs are scheduled and executed correctly.",
+      "symbols": [
+        "UPDATE_BRANCH",
+        "SETUP_BRANCH",
+        "WORKFLOW_UPDATE_BRANCH",
+        "LAST_RUN_PATH",
+        "BOT_LOGIN",
+        "UPDATE_PR_TITLE",
+        "SETUP_PR_TITLE",
+        "WORKFLOW_UPDATE_PR_TITLE",
+        "MAX_RETRIES",
+        "DISPATCH_DELAY_SECONDS",
+        "NOT_REGISTERED_DELAY_SECONDS",
+        "QUEUE_BATCH_LIMIT",
+        "MAX_BODY",
+        "SETUP_PR_BODY",
+        "ACTIVE_RUN_STATUSES",
+        "VERSION_CHANGES",
+        "changesSince",
+        "workflowUpdateBody",
+        "proposedVersion",
+        "FALLBACK_UPDATE_BODY",
+        "QueueMessage",
+        "Outcome",
+        "DONE",
+        "PathStyle",
+        "Deps",
+        "InfrastructureError",
+        "RepoRef",
+        "settingsUrl",
+        "withSettingsLink",
+        "errorStatus",
+        "errorMessage",
+        "retryAfterSeconds",
+        "retryDelay",
+        "failure",
+        "infrastructure",
+        "isProtectedBranchError",
+        "toBase64",
+        "fromBase64",
+        "realApiLogged",
+        "resetRealApiChecks",
+        "contentsRoute",
+        "logRealApiCheck",
+        "contentsRequest",
+        "readFile",
+        "writeWorkflowFile",
+        "createBranch",
+        "queueSetups",
+        "onRepositoriesRemoved",
+        "onInstallationDeleted",
+        "onSetupMerged"
+      ]
+    },
+    "app/src/index.ts": {
+      "hash": "sha256-533093bc513e4f80b8abc2d5ccdb113e3dfaaf79915e34ae1ee19addc2ebd3ab",
+      "summary": "The Docturnal GitHub App backend handles webhooks, serves the optional settings page, manages repository setups on a queue, and starts nightly runs from an hourly cron. It only makes GitHub API calls and never reads code.",
+      "symbols": [
+        "App",
+        "Octokit",
+        "Deps",
+        "InfrastructureError",
+        "Outcome",
+        "PathStyle",
+        "QueueMessage",
+        "dispatchRun",
+        "failure",
+        "onInstallationDeleted",
+        "onRepositoriesRemoved",
+        "onPullRequestClosed",
+        "onSetupMerged",
+        "onUpdatePush",
+        "queueSetups",
+        "setUpRepository",
+        "Env",
+        "Options",
+        "normalizeEnv",
+        "missingConfig",
+        "WEBHOOK_NEEDS",
+        "SETUP_NEEDS",
+        "makeDeps",
+        "makeApp",
+        "containsInfrastructureError",
+        "handleWebhook",
+        "createHandler",
+        "handleSetup",
+        "createQueueHandler",
+        "createScheduledHandler",
+        "handleFetch",
+        "handleQueue",
+        "handleScheduled"
+      ]
+    },
+    "app/src/scheduler.ts": {
+      "hash": "sha256-79449649ce56eb72c37213bb51137f098696ad32e8455d147f001e57ec9c125c",
+      "summary": "This file contains the logic for scheduling nightly runs of docturnal.yml for installations based on their chosen local hour. It includes functions to determine if a local hour is due, format local hours, and run the schedule.",
+      "symbols": [
+        "localHour",
+        "isDue",
+        "ScheduleEnv",
+        "runSchedule"
+      ]
+    },
+    "app/tests/mock-github.mjs": {
+      "hash": "sha256-0051fb31f1630df4b902603b61c595c1ce7c3ab413214760db9b985cc16970d4",
+      "summary": "This module provides a mock implementation of the GitHub REST API for testing purposes. It allows developers to simulate various API responses and behaviors, such as handling OAuth tokens, repository data, and pull requests.",
+      "symbols": [
+        "createMockGitHub",
+        "argValue",
+        "mockFetch",
+        "handle"
+      ]
+    },
+    "app/tsconfig.json": {
+      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2"
+    },
+    "package.json": {
+      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f"
+    }
+  },
+  "layers": [
+    {
+      "name": "Scripts",
+      "slug": "scripts",
+      "description": "Code in the `app/scripts` folder.",
+      "files": [
+        "app/scripts/pkcs8.mjs"
+      ]
+    },
+    {
+      "name": "Src",
+      "slug": "src",
+      "description": "Code in the `app/src` folder.",
+      "files": [
+        "app/src/github.ts",
+        "app/src/handlers.ts",
+        "app/src/index.ts",
+        "app/src/scheduler.ts"
+      ]
+    },
+    {
+      "name": "Tests",
+      "slug": "tests",
+      "description": "Code in the `app/tests` folder.",
+      "files": [
+        "app/tests/mock-github.mjs"
+      ]
+    }
+  ],
+  "docs": [],
+  "staleDocs": [
+    "scripts",
+    "src",
+    "tests",
+    "README"
+  ]
+}

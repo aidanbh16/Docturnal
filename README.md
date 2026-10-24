@@ -1,3 +1,5 @@
+<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->
+
 # Docturnal
 
 Your codebase, documented overnight.
@@ -13,6 +15,14 @@ The models that write the comments and documents run on GitHub's own runner, ins
 Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/docturnal-app) and choose your repositories. That is the only step.
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
+
+### Available scripts
+
+<!-- docturnal:scripts -->
+| Command | Runs |
+| --- | --- |
+| `npm run test` | `node --test` |
+<!-- /docturnal:scripts -->
 
 ## Docturnal for teams
 
@@ -161,6 +171,26 @@ To work on it, you need Node.js 20 or later:
 - Run the Action tests with `npm test`.
 - Run the end-to-end runs against a local git remote with `bash test/e2e.sh`.
 - Run the app tests with `npm test` in the `app` folder.
+
+<!-- docturnal:tree -->
+```text
+.
+├── app/
+│   ├── scripts/
+│   ├── src/
+│   └── tests/
+├── docs/
+├── src/
+├── test/
+├── .docturnalignore
+├── .gitignore
+├── CLAUDE.md
+├── README.md
+├── action.yml
+├── package-lock.json
+└── package.json
+```
+<!-- /docturnal:tree -->
 
 ## License
 
