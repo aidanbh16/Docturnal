@@ -14,6 +14,15 @@ Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/do
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
 
+## Docturnal for teams
+
+If your organization does not allow third-party GitHub Apps, or does not allow your code to be processed on GitHub-hosted runners, you can run Docturnal without the app:
+
+- **Level 1:** you add the workflow file yourself, and the Action opens the pull request.
+- **Level 2:** the same, on your own self-hosted runner, with the models on that runner or on an Ollama server in your network. Your code and the models never leave your machines.
+
+The settings then live in your workflow file. See [Docturnal for teams](docs/teams.md) for the setup, two complete workflow files, and the network access each mode needs.
+
 ## Settings
 
 After you install the app, GitHub takes you to Docturnal's settings page. You sign in with GitHub, and the page checks that you can access the installation. Each Docturnal pull request also ends with a **Change Docturnal settings** link to the same page.

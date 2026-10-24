@@ -15,6 +15,7 @@ const { commitAndPush, listFiles, prepareBranch } = require('./git');
 const { readTotalMemory, selectModels } = require('./models');
 const ollama = require('./ollama');
 const { updateReadme, writeReadme } = require('./readme');
+const { PullRequestError, openOrUpdatePullRequest } = require('./pulls');
 const { buildReport, proposalSummary } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState } = require('./state');
 
@@ -271,12 +272,21 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
   log(commit.committed
     ? `Docturnal: committed ${commit.sha.slice(0, 7)}${commit.pushed ? ' and pushed docturnal/update' : ' (PUSH=false, not pushed)'}`
     : 'Docturnal: nothing to commit.');
-  return { changed: commit.committed, processed, leftOver, docs: docsReport, commit };
+
+  // Docturnal for teams, without the app: the Action opens the pull request itself. In the
+  // default mode (open-pr false) the app does, and this API is never called.
+  let pullRequest = null;
+  if (config.openPr && commit.pushed) {
+    pullRequest = await openOrUpdatePullRequest({ root: cwd, base: branch.base, token: config.githubToken, env });
+    log(`Docturnal: ${pullRequest.action} pull request #${pullRequest.number}`);
+  }
+  return { changed: commit.committed, processed, leftOver, docs: docsReport, commit, pullRequest };
 }
 
 if (require.main === module) {
   run().catch((err) => {
-    console.error(`::error::${err instanceof ConfigError ? err.message : err.stack || err.message}`);
+    const plain = err instanceof ConfigError || err instanceof PullRequestError;
+    console.error(`::error::${plain ? err.message : err.stack || err.message}`);
     process.exitCode = 1;
   });
 }

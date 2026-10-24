@@ -29,6 +29,12 @@ function readPositiveInt(env, name, inputName, fallback) {
   return Number(raw);
 }
 
+function readBoolean(env, name, inputName, fallback) {
+  const raw = readInput(env, name, String(fallback)).toLowerCase();
+  if (raw !== 'true' && raw !== 'false') throw new ConfigError(`Invalid ${inputName} "${raw}". Use true or false.`);
+  return raw === 'true';
+}
+
 // Keeps paths inside the repo: no absolute paths and no ".." segments.
 function readRepoPath(env, name, inputName, fallback) {
   const raw = readInput(env, name, fallback);
@@ -61,6 +67,11 @@ function readConfig(env = process.env) {
     selectedDocsModel: readInput(env, 'SELECTED_DOCS_MODEL', null),
     docsMayFallback: readInput(env, 'DOCS_MAY_FALLBACK', 'false') === 'true',
     fallbackDocsModel: readInput(env, 'FALLBACK_DOCS_MODEL', null),
+    // Docturnal for teams, without the app: open the pull request from the Action.
+    openPr: readBoolean(env, 'OPEN_PR', 'open-pr', false),
+    githubToken: readInput(env, 'GITHUB_TOKEN', ''),
+    // Docturnal for teams: an Ollama server of your own instead of one on the runner.
+    ollamaUrl: readInput(env, 'OLLAMA_URL', ''),
   };
 }
 

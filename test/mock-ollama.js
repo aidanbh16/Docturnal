@@ -144,8 +144,11 @@ function defaultHandler({ oomModels = [] } = {}) {
   };
 }
 
-async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest } = {}) {
+// models: the names /api/tags lists. A POST to /api/pull adds the model to it, the way a
+// server pulls a model; pulls lists each one pulled.
+async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest, models = [] } = {}) {
   const requests = [];
+  const pulls = [];
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (chunk) => {
@@ -154,7 +157,21 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
     req.on('end', async () => {
       if (req.method === 'GET' && req.url === '/api/tags') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ models: [] }));
+        res.end(JSON.stringify({ models: models.map((name) => ({ name })) }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/pull') {
+        const { model } = JSON.parse(raw);
+        pulls.push(model);
+        if (/^missing-on-registry/.test(model)) {
+          res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+          res.end(`${JSON.stringify({ status: 'pulling manifest' })}\n${JSON.stringify({ error: 'pull model manifest: file does not exist' })}\n`);
+          return;
+        }
+        models.push(model);
+        res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+        res.end(['pulling manifest', 'downloading', 'downloading', 'verifying sha256 digest', 'success']
+          .map((status, i) => JSON.stringify(status === 'downloading' ? { status, completed: i * 10, total: 20 } : { status })).join('\n') + '\n');
         return;
       }
       if (req.method !== 'POST' || req.url !== '/api/chat') {
@@ -206,7 +223,10 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   return {
     host: `127.0.0.1:${server.address().port}`,
+    port: server.address().port,
     requests,
+    pulls,
+    models,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

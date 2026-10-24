@@ -39,13 +39,54 @@ inputs:
     required: false
     default: '90'
   model:
-    description: Internal override for the comment model. Leave as auto; Docturnal picks the model.
+    description: >-
+      The comment model. Leave as auto and Docturnal picks it. With ollama-url, set it to any
+      model your server can run.
     required: false
     default: auto
   docs-model:
-    description: Internal override for the documentation model. Leave as auto; Docturnal picks the model.
+    description: >-
+      The documentation model. Leave as auto and Docturnal picks it. With ollama-url, set it to
+      any model your server can run, such as a larger one on a GPU.
     required: false
     default: auto
+  # Docturnal for teams. With the defaults below, the Action behaves as it does with the app.
+  open-pr:
+    description: >-
+      Docturnal for teams: "true" makes the Action open or update the pull request itself,
+      for use without the Docturnal app. Needs pull-requests write permission.
+    required: false
+    default: 'false'
+  github-token:
+    description: The token the Action uses to open the pull request when open-pr is "true".
+    required: false
+    default: ${{ github.token }}
+  ollama-url:
+    description: >-
+      Docturnal for teams: the URL of an Ollama server of your own, such as
+      http://ollama.internal:11434. Your source code is sent to it, so it must be inside your
+      network: Docturnal refuses a host that resolves to a public address unless
+      allow-public-ollama is "true". When set, Docturnal does not install or start Ollama.
+    required: false
+    default: ''
+  allow-public-ollama:
+    description: >-
+      Only for ollama-url: "true" lets Docturnal send your source code to a server on a public
+      address. Leave it "false" unless you are sure that server is yours.
+    required: false
+    default: 'false'
+  pull-models:
+    description: >-
+      Only for ollama-url: "true" asks your server to pull missing models; "false" fails and
+      names the missing model instead.
+    required: false
+    default: 'true'
+  models-dir:
+    description: >-
+      Only for self-hosted runners without ollama-url: the folder that keeps the models between
+      runs. Defaults to ~/.docturnal/models.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -69,10 +110,13 @@ runs:
       env:
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_DOCS_MODEL: ${{ inputs.docs-model }}
+        INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
       run: node "$GITHUB_ACTION_PATH/src/models.js"
 
+    # Caches are for GitHub-hosted runners only, so a self-hosted runner never uploads models
+    # or Ollama to GitHub's cache. With ollama-url, nothing about Ollama runs on the runner.
     - name: Restore Ollama models cache
-      if: steps.precheck.outputs.changed == 'true'
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/docturnal-ollama-models
@@ -83,7 +127,7 @@ runs:
     # installer runs and nothing is cached.
     - name: Find the Ollama version
       id: ollama
-      if: steps.precheck.outputs.changed == 'true'
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
       shell: bash
       run: |
         version=$(curl -fsSI --max-time 20 https://github.com/ollama/ollama/releases/latest 2>/dev/null \
@@ -96,18 +140,19 @@ runs:
         fi
 
     - name: Restore Ollama install cache
-      if: steps.precheck.outputs.changed == 'true' && steps.ollama.outputs.version != ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted' && steps.ollama.outputs.version != ''
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/docturnal-ollama-install
         key: docturnal-ollama-install-${{ runner.os }}-${{ runner.arch }}-${{ steps.ollama.outputs.version }}
 
     - name: Install Ollama
-      if: steps.precheck.outputs.changed == 'true'
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
       shell: bash
       env:
         OLLAMA_VERSION: ${{ steps.ollama.outputs.version }}
         CACHED: ${{ runner.temp }}/docturnal-ollama-install
+        GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
         # A cache hit counts only with the binary and its CPU libraries, which Ollama loads
         # from ../lib/ollama next to the binary.
@@ -121,12 +166,17 @@ runs:
 
         if command -v ollama >/dev/null 2>&1; then
           echo "Ollama is already installed: $(ollama --version 2>/dev/null || echo unknown version)"
+        elif [ "$(uname -s)" != "Linux" ]; then
+          echo "::error::Docturnal installs Ollama only on Linux x64 and arm64 runners. Install Ollama on this runner yourself, or set ollama-url."
+          exit 1
         else
           # OLLAMA_VERSION pins the installer to the version the cache key names.
           curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
         fi
-        # The installer starts a system service on port 11434. Stop it so our own server can use the cached models folder.
-        if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+        # The installer starts a system service on port 11434. On a GitHub-hosted runner, stop it
+        # so our own server can use the cached models folder. A self-hosted runner's services
+        # are left alone; Docturnal starts its own server on a free port there.
+        if [ "$GITHUB_HOSTED" = "true" ] && command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
           sudo systemctl stop ollama || true
           sudo systemctl disable ollama || true
         fi
@@ -150,20 +200,35 @@ runs:
           echo "Saved Ollama $OLLAMA_VERSION for the next run ($(du -sh "$CACHED" | cut -f1))."
         fi
 
+    # GitHub-hosted runners use port 11434 and a models folder that is cached. Self-hosted
+    # runners use a free port, so they never clash with an Ollama service already on the
+    # machine, and a persistent models folder.
     - name: Start Ollama
-      if: steps.precheck.outputs.changed == 'true'
+      id: ollama-server
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
       shell: bash
       env:
-        OLLAMA_HOST: 127.0.0.1:11434
-        OLLAMA_MODELS: ${{ runner.temp }}/docturnal-ollama-models
+        GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
+        HOSTED_MODELS: ${{ runner.temp }}/docturnal-ollama-models
+        MODELS_DIR: ${{ inputs.models-dir }}
         OLLAMA_MAX_LOADED_MODELS: '1'
       run: |
+        if [ "$GITHUB_HOSTED" = "true" ]; then
+          export OLLAMA_HOST=127.0.0.1:11434
+          export OLLAMA_MODELS="$HOSTED_MODELS"
+        else
+          port=$(node -e "const s = require('net').createServer().listen(0, '127.0.0.1', () => { console.log(s.address().port); s.close(); })")
+          export OLLAMA_HOST="127.0.0.1:$port"
+          export OLLAMA_MODELS="${MODELS_DIR:-$HOME/.docturnal/models}"
+          echo "Models folder: $OLLAMA_MODELS"
+        fi
+        echo "host=$OLLAMA_HOST" >> "$GITHUB_OUTPUT"
         mkdir -p "$OLLAMA_MODELS"
         log="$RUNNER_TEMP/docturnal-ollama.log"
         nohup ollama serve >"$log" 2>&1 &
         pid=$!
         for _ in $(seq 1 60); do
-          if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+          if curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
             echo "Ollama is running (pid $pid)."
             exit 0
           fi
@@ -177,17 +242,41 @@ runs:
         exit 1
 
     - name: Pull models
-      if: steps.precheck.outputs.changed == 'true'
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
       shell: bash
       env:
-        OLLAMA_HOST: 127.0.0.1:11434
+        OLLAMA_HOST: ${{ steps.ollama-server.outputs.host }}
         COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
         DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
+        GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
-        ollama pull "$COMMENT_MODEL"
+        # A self-hosted runner pulls only models that are not in its models folder yet, so it
+        # contacts the model registry only for those. "ollama pull" checks the registry even for
+        # a model it has.
+        pull() {
+          if [ "$GITHUB_HOSTED" != "true" ] && ollama show "$1" >/dev/null 2>&1; then
+            echo "$1 is already in the models folder."
+          else
+            ollama pull "$1"
+          fi
+        }
+        pull "$COMMENT_MODEL"
         if [ "$DOCS_MODEL" != "$COMMENT_MODEL" ]; then
-          ollama pull "$DOCS_MODEL"
+          pull "$DOCS_MODEL"
         fi
+
+    # Docturnal for teams: checks the server in ollama-url before any code is sent to it, and
+    # has it pull missing models unless pull-models is "false".
+    - name: Check the Ollama server
+      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url != ''
+      shell: bash
+      env:
+        INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
+        INPUT_ALLOW_PUBLIC_OLLAMA: ${{ inputs.allow-public-ollama }}
+        INPUT_PULL_MODELS: ${{ inputs.pull-models }}
+        COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
+        DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
+      run: node "$GITHUB_ACTION_PATH/src/server.js"
 
     - name: Install dependencies
       if: steps.precheck.outputs.changed == 'true'
@@ -212,7 +301,11 @@ runs:
         INPUT_SELECTED_DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
         INPUT_DOCS_MAY_FALLBACK: ${{ steps.models.outputs.docs-may-fallback }}
         INPUT_FALLBACK_DOCS_MODEL: ${{ steps.models.outputs.fallback-docs-model }}
-        OLLAMA_HOST: 127.0.0.1:11434
+        INPUT_OPEN_PR: ${{ inputs.open-pr }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
+        INPUT_ALLOW_PUBLIC_OLLAMA: ${{ inputs.allow-public-ollama }}
+        OLLAMA_HOST: ${{ inputs.ollama-url || steps.ollama-server.outputs.host }}
         # The pre-check already moved the checkout to docturnal/update, so pass the base branch.
         BASE_BRANCH: ${{ steps.precheck.outputs.base }}
       run: node "$GITHUB_ACTION_PATH/src/main.js"

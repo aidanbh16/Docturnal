@@ -12,6 +12,8 @@ Core promises. Every design decision protects these:
 
 - **Free.** It runs only on GitHub's standard hosted runner, with no paid services.
 - **Private.** Code never leaves the GitHub runner. No outside model servers or AI APIs, and no telemetry.
+
+These promises describe the default mode, with the GitHub App. Docturnal for teams (see the section of that name) is an opt-in exception that a user turns on only in their own workflow file.
 - **Zero setup.** Installing the app is the only step. Users never configure models, tokens, or secrets. An optional settings page lets them choose the run time, time zone, and comment level; the defaults are midnight, America/New_York, and medium. While the settings are still the defaults, opening the page saves the browser's time zone right away, so closing it gives midnight in the user's own time zone.
 - **Safe.** The model never rewrites source files. A pull request is the only way changes reach the user's code, and a person always reviews it.
 
@@ -26,7 +28,7 @@ This is one public repo with three parts.
 - Installs Ollama, pulls the models, adds comments, writes documentation, and pushes the result to `docturnal/update`.
 - Caches between runs the Ollama models and the Ollama install. The install cache is keyed on the latest Ollama version, read from GitHub's release redirect, and holds only the binary and its CPU libraries. On a miss, or when the version cannot be read, the official installer runs.
 - Uses the current major versions of the actions it depends on (`actions/cache` in `action.yml`, `actions/checkout` in the workflow template), so runs show no runtime deprecation warnings.
-- **Never opens pull requests.** It only pushes a branch.
+- **Never opens pull requests.** It only pushes a branch. The one exception is Docturnal for teams, with `open-pr: "true"`.
 
 ### 2. GitHub App backend (`app/`)
 
@@ -133,11 +135,11 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 
 ## Model rules
 
-- Docturnal only ever uses Ollama on GitHub's standard hosted runner. Do not add support for paid or larger runners, self-hosted runners, outside model servers, or AI APIs, and do not add options for them.
+- Docturnal only ever uses Ollama on GitHub's standard hosted runner. Do not add support for paid or larger runners, self-hosted runners, outside model servers, or AI APIs, and do not add options for them. The only exceptions are the ones Docturnal for teams defines: self-hosted runners, and one Ollama server of the user's own on a private network. Never AI APIs.
 - Two roles:
   - **Comment model:** a small, fast code model, because it handles many calls.
   - **Docs model:** the largest model that fits the runner's available memory, because it handles few calls.
-- Model choice is automatic. The Action detects the available memory at run time and picks from a ranked candidate list in `src/`. Users never configure models.
+- Model choice is automatic. The Action detects the available memory at run time and picks from a ranked candidate list in `src/`. Users never configure models, except with `ollama-url` in Docturnal for teams, where `model` and `docs-model` are settings.
 - Ollama listens only on `127.0.0.1`. Use a fixed seed and low temperature for repeatable output.
 - Every call goes through `src/ollama.js`, which uses `node:http` with `stream: true`, not `fetch`. A large model on a CPU runner can take minutes to load and answer, so the client has no timeout of its own: the run's time budget is the only limit on a call. Every call uses the same `num_ctx`, so Ollama never reloads a model to change it.
 - Each call is logged with what it was for, the model, and its duration, and a failure also with its error and cause. Prompts, code, and replies are never logged.
@@ -179,6 +181,15 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 - The first run, with no state file, processes the whole repo, within runner time limits.
 - Write `.docturnal/last-run.md` as the pull request body. It lists comments added per file and whether a parser checked each file, a count per file of comments proposed, dropped by placement rules, anchor not found, dropped by the length limit or the density limit, inaccurate, restates the code, rejected by the safety check, and added, and of Docturnal's earlier comments kept, restyled, and removed (never comment text or code), files skipped and why, docs updated or removed, the README sections updated, polished, kept in your wording, and not re-added because you removed them (by heading only), comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
 
+## Docturnal for teams (opt-in)
+
+For organizations that cannot install third-party GitHub Apps or process code on GitHub-hosted runners. The app stays the default, and with these inputs at their defaults the Action behaves exactly as it does with the app. User documentation: `docs/teams.md`.
+
+- **Level 1, the Action without the app.** The user commits the workflow file. `open-pr: "true"` makes the Action open the pull request from `docturnal/update` after the push, or update the open one, with the `github-token` input and `.docturnal/last-run.md` as the body, and no settings link (`src/pulls.js`). A 403 because "Allow GitHub Actions to create and approve pull requests" is off, or because the token lacks `pull-requests: write`, fails the run with one line naming the setting; the pushed branch stays. With `open-pr` false, the pull request API is never called. Without the app nothing deletes branches, so the docs tell users to turn on "Automatically delete head branches". Settings come from the workflow file: the cron line and `comment-level`.
+- **Level 2, self-hosted runners.** Linux x64 and arm64. Without `ollama-url`, the Action uses the Ollama on the `PATH` or installs it, starts its own server on a free port, keeps models in `models-dir` (default `~/.docturnal/models`), and pulls only models that are missing there. `actions/cache` and the Ollama version check run only when `runner.environment` is `github-hosted`, so a self-hosted runner never uploads models or Ollama to GitHub's cache.
+- **`ollama-url`.** One Ollama server of the user's own (`src/server.js`). Nothing installs, starts, or caches Ollama, RAM-based model selection is skipped, and `model` and `docs-model` are settings. Before any code is sent, the host is resolved and allowed only if every address is loopback or private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10). Each request opens a new connection that checks the addresses again. A public address fails the run unless `allow-public-ollama` is "true". The log shows the host and its addresses, never code. Missing models are pulled through the server's `/api/pull`, or with `pull-models: "false"` the run fails and names the model. The runner contacts nothing about Ollama except that server. The default mode keeps the loopback-only rule.
+- **GitHub Enterprise Server.** All GitHub API calls use `GITHUB_API_URL` from the runner, and git uses the remote that `actions/checkout` set up. The API version header is sent only to `https://api.github.com`.
+
 ## Names
 
 | Thing | Name |
@@ -198,6 +209,7 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 | README block markers | `<!-- docturnal:layers -->`, `<!-- docturnal:scripts -->`, `<!-- docturnal:tree -->`, each closed by `<!-- /docturnal:NAME -->` |
 | PR body | `.docturnal/last-run.md` |
 | Ignore file | `.docturnalignore` at the repository root |
+| Teams inputs | `open-pr`, `github-token`, `ollama-url`, `allow-public-ollama`, `pull-models`, `models-dir` |
 | Doc marker (layer docs) | `<!-- Generated by Docturnal. Edits to this file are replaced the next time its layer changes. -->` |
 
 Do not rename these. Other parts and users' repos depend on them.
@@ -210,7 +222,7 @@ package.json        Runtime dependency: typescript only
 src/                Action code (Node 20+, plain CommonJS, no build step)
 app/                GitHub App backend (Cloudflare Worker)
 test/               Tests for the Action and app, including the mock Ollama server
-docs/               Docturnal's own documentation
+docs/               Docturnal's own documentation, such as docs/teams.md
 README.md           Project README
 .docturnalignore    Paths Docturnal skips in its own repository (test fixtures)
 CLAUDE.md           This file
