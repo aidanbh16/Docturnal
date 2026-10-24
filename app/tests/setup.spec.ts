@@ -8,7 +8,11 @@ import { createMockGitHub } from './mock-github.mjs';
 const ORIGIN = 'https://docturnal.example';
 const START = Date.parse('2026-10-22T12:00:00Z');
 
-function setup({ settings, clientSecret }: { settings?: Record<string, unknown>; clientSecret?: string } = {}) {
+// failExchanges: how many code exchanges fail before GitHub answers normally, with failWith
+// as the failure: an HTTP status, or 'network' for a request that never gets an answer.
+// hiddenChecks: how many times GitHub's list of the user's installations comes back without
+// any, as it might right after an install.
+function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hiddenChecks = 0 }: { settings?: Record<string, unknown>; clientSecret?: string; failExchanges?: number; failWith?: number | 'network'; hiddenChecks?: number } = {}) {
   const gh = createMockGitHub({
     oauth: {
       clientSecret,
@@ -35,7 +39,31 @@ function setup({ settings, clientSecret }: { settings?: Record<string, unknown>;
     GITHUB_API_URL: 'https://api.github.test',
     GITHUB_WEB_URL: 'https://github.test',
   } as Env;
-  const handle = createHandler({ fetch: gh.fetch, log: (line) => logs.push(line), now: () => now });
+  let failuresLeft = failExchanges;
+  let hiddenLeft = hiddenChecks;
+  const installationChecks: string[] = [];
+  const fetchWithFailures: typeof fetch = async (input, init) => {
+    if (String(input).endsWith('/login/oauth/access_token') && failuresLeft > 0) {
+      failuresLeft--;
+      if (failWith === 'network') throw new TypeError('fetch failed');
+      return new Response('upstream error', { status: failWith });
+    }
+    if (String(input).includes('/user/installations')) {
+      installationChecks.push(String(input));
+      if (hiddenLeft > 0) {
+        hiddenLeft--;
+        return new Response(JSON.stringify({ total_count: 0, installations: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    }
+    return gh.fetch(input, init);
+  };
+  // Waits are recorded and move the clock instead of sleeping.
+  const sleeps: number[] = [];
+  const sleep = async (ms: number) => {
+    sleeps.push(ms);
+    now += ms;
+  };
+  const handle = createHandler({ fetch: fetchWithFailures, log: (line) => logs.push(line), now: () => now, sleep });
 
   async function get(path: string, cookie?: string, headers: Record<string, string> = {}) {
     return handle(new Request(`${ORIGIN}${path}`, { headers: { ...(cookie ? { cookie } : {}), ...headers } }), env);
@@ -63,7 +91,7 @@ function setup({ settings, clientSecret }: { settings?: Record<string, unknown>;
     const csrf = form.match(/name="csrf" value="([^"]+)"/)![1];
     return { cookie, csrf, form };
   }
-  return { gh, kv, logs, env, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
+  return { gh, kv, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
 }
 
 const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy' };
@@ -102,7 +130,10 @@ describe('setup page sign-in', () => {
     expect(response.status).toBe(403);
     expect(response.headers.get('set-cookie')).toBeNull();
     expect(await response.text()).toContain('You can&#39;t change these settings.');
-    expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation']);
+    // After an install, GitHub gets three chances to list the installation, 2 seconds apart.
+    expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation (install, after 3 checks)']);
+    expect(t.installationChecks).toHaveLength(3);
+    expect(t.sleeps).toEqual([2000, 2000]);
     expect(t.kv.data.size).toBe(0);
   });
 
@@ -359,7 +390,7 @@ describe('sign-in codes from GitHub', () => {
     await t.get(INSTALL); // The code is now used.
     t.logs.length = 0;
     const state = authorizeState(await t.get(UPDATE));
-    expect(t.logs).toEqual(['setup 1: the sign-in code did not work (bad_verification_code), signing in again']);
+    expect(t.logs).toEqual(['setup 1 (update): the sign-in code did not work (bad_verification_code), signing in again']);
 
     const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
     expect(back.status).toBe(303);
@@ -367,20 +398,88 @@ describe('sign-in codes from GitHub', () => {
     expect(t.logs.at(-1)).toBe('setup 1: signed in for octo');
   });
 
-  it('shows the error only when the fresh sign-in fails too, without looping', async () => {
+  it('shows a friendly page, not an error, when the fresh sign-in after an update fails too, without looping', async () => {
     const t = setup();
     const state = authorizeState(await t.get('/setup?code=expired-code&installation_id=1&setup_action=update'));
     const back = await t.get(`/setup?code=also-expired&state=${encodeURIComponent(state)}`);
-    expect(back.status).toBe(403);
-    expect(await back.text()).toContain('GitHub sign-in did not work.');
-    expect(t.logs.at(-1)).toBe('setup 1: GitHub sign-in failed (bad_verification_code)');
+    expect(back.status).toBe(200);
+    const html = await back.text();
+    expect(html).toContain('<h1>Docturnal is installed</h1>');
+    expect(html).toContain('It keeps running every night with its current settings. You can change the settings any time from the link in each Docturnal pull request.');
+    expect(html).toContain('<a class="button" href="/setup?installation_id=1">Try signing in again</a>');
+    expect(html).not.toContain('class="error"');
+    expect(back.headers.get('set-cookie')).toBeNull();
+    expect(t.logs).toEqual([
+      'setup 1 (update): the sign-in code did not work (bad_verification_code), signing in again',
+      'setup 1 (update, second try): GitHub sign-in failed (bad_verification_code)',
+    ]);
+    // "Try signing in again" starts a new sign-in.
+    authorizeState(await t.get('/setup?installation_id=1'));
   });
 
-  it('shows the error at once when a new code would not help, such as a wrong client secret', async () => {
+  it('shows the configuration error at once for wrong client credentials, which a new code would not fix', async () => {
     const t = setup({ clientSecret: 'the-real-secret' });
     const response = await t.get(INSTALL);
-    expect(response.status).toBe(403);
-    expect(t.logs).toEqual(['setup 1: GitHub sign-in failed (incorrect_client_credentials)']);
+    expect(response.status).toBe(500);
+    const html = await response.text();
+    expect(html).toContain('Docturnal&#39;s GitHub sign-in is not set up correctly, so this page can&#39;t open. Docturnal is installed and runs every night with its current settings.');
+    expect(t.logs).toEqual(['setup 1 (install): GitHub sign-in failed (incorrect_client_credentials); check CLIENT_ID and CLIENT_SECRET']);
+    expect(t.gh.state.codeExchanges).toBe(1);
+  });
+
+  it('a stale session for another installation never blocks the sign-in after a fresh install', async () => {
+    const t = setup();
+    // The browser still has a valid session for an installation that was since removed.
+    const stale = `${SESSION_COOKIE}=${await createSession(t.env, { installationId: 174349041, account: 'octo', csrf: 'old' }, START)}`;
+    const response = await t.get(INSTALL, stale);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe('/setup');
+    // The new session replaces the stale one.
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    expect(cookie).not.toBe(stale);
+    const form = await (await t.get('/setup', cookie)).text();
+    expect(form).toContain('Docturnal settings');
+    expect(form).toContain('<strong>octo</strong>');
+    expect(t.gh.state.codeExchanges).toBe(1);
+    expect(t.logs).toEqual(['setup 1: signed in for octo']);
+  });
+
+  for (const failWith of [502, 'network'] as const) {
+    it(`any failure to exchange an install code (${failWith}) signs in again once, and then shows the form`, async () => {
+      const t = setup({ failExchanges: 1, failWith });
+      const state = authorizeState(await t.get(INSTALL));
+      const reason = failWith === 'network' ? 'request failed' : 'HTTP 502';
+      expect(t.logs).toEqual([`setup 1 (install): the sign-in code did not work (${reason}), signing in again`]);
+      const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
+      expect(back.status).toBe(303);
+      expect(await (await t.get('/setup', back.headers.get('set-cookie')!.split(';')[0])).text()).toContain('<strong>octo</strong>');
+    });
+  }
+
+  it('after an install, a second failure shows that Docturnal is installed with its default schedule', async () => {
+    const t = setup({ failExchanges: 2 });
+    const state = authorizeState(await t.get(INSTALL));
+    const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(200);
+    const html = await back.text();
+    expect(html).toContain('<h1>Docturnal is installed</h1>');
+    expect(html).toContain('It will run every night at 12 AM (midnight), America/New_York time, with medium comments. You can change the settings any time from the link in each Docturnal pull request.');
+    expect(html).toContain('Try signing in again');
+    expect(t.logs).toEqual([
+      'setup 1 (install): the sign-in code did not work (HTTP 502), signing in again',
+      'setup 1 (install, second try): GitHub sign-in failed (HTTP 502)',
+    ]);
+    // Logs name the error and the path, never a code or a token.
+    expect(t.logs.join('\n')).not.toMatch(/owner-code|fresh-code|token-owner/);
+  });
+
+  it('a failed sign-in from a pull request link shows the friendly page instead of redirecting again', async () => {
+    const t = setup({ failExchanges: 1 });
+    const state = authorizeState(await t.get('/setup?installation_id=1'));
+    const back = await t.get(`/setup?code=owner-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(200);
+    expect(await back.text()).toContain('It keeps running every night with its current settings.');
+    expect(t.logs).toEqual(['setup 1 (link): GitHub sign-in failed (HTTP 502)']);
   });
 
   it('does not spend the code twice when the same redirect is requested again', async () => {
@@ -413,6 +512,42 @@ describe('sign-in codes from GitHub', () => {
     // The session is for 99, so the code for installation 1 is checked with GitHub.
     const response = await t.get('/setup?code=other-code&installation_id=1&setup_action=update', cookie);
     expect(response.status).toBe(403);
+    expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation (update, after 3 checks)']);
+  });
+
+  it('checks again when GitHub does not list a new installation at first, and shows the form when it appears', async () => {
+    const t = setup({ hiddenChecks: 1 });
+    const response = await t.get(INSTALL);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe('/setup');
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    expect(await (await t.get('/setup', cookie)).text()).toContain('<strong>octo</strong>');
+    expect(t.installationChecks).toHaveLength(2);
+    expect(t.sleeps).toEqual([2000]);
+    expect(t.gh.state.codeExchanges).toBe(1);
+    expect(t.logs).toEqual([
+      'setup 1 (install): GitHub listed the installation on check 2',
+      'setup 1: signed in for octo',
+    ]);
+  });
+
+  it('checks again after an update redirect too, including on the fresh sign-in after a failed code', async () => {
+    const t = setup({ failExchanges: 1, hiddenChecks: 2 });
+    const state = authorizeState(await t.get(UPDATE));
+    const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(303);
+    expect(t.installationChecks).toHaveLength(3);
+    expect(t.logs).toContain('setup 1 (update): GitHub listed the installation on check 3');
+  });
+
+  it('checks a pull request link only once, without waiting', async () => {
+    const t = setup({ hiddenChecks: 1 });
+    const state = authorizeState(await t.get('/setup?installation_id=1'));
+    const back = await t.get(`/setup?code=owner-code&state=${encodeURIComponent(state)}`);
+    expect(back.status).toBe(403);
+    expect(await back.text()).toContain('You can&#39;t change these settings.');
+    expect(t.installationChecks).toHaveLength(1);
+    expect(t.sleeps).toEqual([]);
     expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation']);
   });
 });

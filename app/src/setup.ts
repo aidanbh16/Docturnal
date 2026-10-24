@@ -25,7 +25,13 @@ export interface SetupOptions {
   fetch: typeof fetch;
   log: (line: string) => void;
   now: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
+
+// Right after an install or an update, GitHub may not list the installation for the user yet,
+// so those sign-ins check up to ACCESS_CHECKS times, ACCESS_RETRY_MS apart.
+const ACCESS_CHECKS = 3;
+const ACCESS_RETRY_MS = 2000;
 
 interface Session {
   installationId: number;
@@ -62,9 +68,20 @@ async function exchangeCode(env: SetupEnv, options: SetupOptions, code: string):
   return { error: typeof data.error === 'string' && /^[a-z_]{1,64}$/.test(data.error) ? data.error : 'unexpected response' };
 }
 
-// Errors that a new code fixes. Anything else, such as wrong client credentials, would fail
-// again, so it is shown at once.
-const CODE_ERRORS = new Set(['bad_verification_code']);
+// The one error a new code cannot fix: the app's own client ID or secret is wrong. It is a
+// configuration problem, shown at once. Every other failure gets one fresh sign-in.
+const CONFIG_ERROR = 'incorrect_client_credentials';
+
+// How a sign-in started: GitHub's redirect after an install or an installation update, or
+// our own redirect from the settings link in a pull request. The logs name it.
+type SignInPath = 'install' | 'update' | 'link';
+
+interface SignInState {
+  installationId: number;
+  path?: SignInPath;
+  // True for the fresh sign-in after a failed exchange, so a second failure never loops.
+  retry?: boolean;
+}
 
 // Browsers announce speculative loads, which must not spend a single-use code.
 function isPrefetch(request: Request): boolean {
@@ -168,6 +185,19 @@ function errorPage(status: number, message: string): Response {
   return page(status, 'Something went wrong', `<h1>Docturnal settings</h1>\n<p class="error">${escape(message)}</p>`);
 }
 
+// Shown when GitHub sign-in fails twice, instead of an error: the install itself worked, and
+// Docturnal runs without anyone visiting this page. A new install has the default settings;
+// after an update or from a pull request link, the installation keeps the settings it has.
+function signInFailedPage(installationId: number, path: SignInPath): Response {
+  const schedule = path === 'install'
+    ? `It will run ${escape(describe(DEFAULT_SETTINGS))}.`
+    : 'It keeps running every night with its current settings.';
+  return page(200, 'Docturnal is installed', `<h1>Docturnal is installed</h1>
+<p>${schedule} You can change the settings any time from the link in each Docturnal pull request.</p>
+<p class="muted">GitHub sign-in did not finish this time, so the settings can't be shown yet.</p>
+<a class="button" href="/setup?installation_id=${installationId}">Try signing in again</a>`);
+}
+
 function formPage(session: Session, settings: Settings): Response {
   const hours = Array.from({ length: 24 }, (_, hour) =>
     `<option value="${hour}"${hour === settings.time ? ' selected' : ''}>${formatHour(hour)}</option>`).join('');
@@ -248,8 +278,8 @@ export function createSession(env: SetupEnv, session: Session, now: number): Pro
   return signToken(env.WEBHOOK_SECRET, 'session', session, now + SESSION_SECONDS * 1000);
 }
 
-async function signInRedirect(env: SetupEnv, origin: string, installationId: number, now: number): Promise<Response> {
-  const state = await signToken(env.WEBHOOK_SECRET, 'state', { installationId }, now + STATE_SECONDS * 1000);
+async function signInRedirect(env: SetupEnv, origin: string, installationId: number, now: number, extra: Omit<SignInState, 'installationId'> = {}): Promise<Response> {
+  const state = await signToken(env.WEBHOOK_SECRET, 'state', { installationId, ...extra } satisfies SignInState, now + STATE_SECONDS * 1000);
   const url = new URL(`${env.GITHUB_WEB_URL || 'https://github.com'}/login/oauth/authorize`);
   url.searchParams.set('client_id', env.CLIENT_ID);
   url.searchParams.set('redirect_uri', `${origin}/setup`);
@@ -270,38 +300,61 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
       return new Response('Not available for prefetch.\n', { status: 503, headers: { 'cache-control': 'no-store' } });
     }
     // GitHub sends installation_id after an install or an installation update; after our own
-    // sign-in redirect, the signed state carries it instead.
+    // sign-in redirect, the signed state carries it instead, with the path that started it.
     let installationId = requested;
+    let path: SignInPath = url.searchParams.get('setup_action') === 'update' ? 'update' : 'install';
+    let retry = false;
     const stateParam = url.searchParams.get('state');
     const fromOurRedirect = Boolean(stateParam) && !url.searchParams.has('installation_id');
     if (fromOurRedirect) {
-      const state = await verifyToken<{ installationId: number }>(env.WEBHOOK_SECRET, 'state', stateParam, now);
+      const state = await verifyToken<SignInState>(env.WEBHOOK_SECRET, 'state', stateParam, now);
       if (!state) return errorPage(400, 'This sign-in link expired. Open the settings link in a Docturnal pull request again.');
       installationId = state.installationId;
+      path = state.path ?? 'link';
+      retry = state.retry === true;
     }
     if (!Number.isInteger(installationId) || installationId <= 0) {
       return errorPage(400, 'This link is missing the installation. Open the settings link in a Docturnal pull request.');
     }
     // Already signed in for this installation, for example on a second visit or a repeated
-    // request: show the form without spending the code.
+    // request: show the form without spending the code. A session for any other
+    // installation, such as one the user uninstalled, is ignored, and the new sign-in
+    // replaces it.
     const existing = await readSession(request, env, now);
     if (existing && existing.installationId === installationId) {
       return new Response(null, { status: 303, headers: { location: '/setup', 'cache-control': 'no-store' } });
     }
     const exchanged = await exchangeCode(env, options, code);
     if ('error' in exchanged) {
-      // GitHub's own redirect brought a code that no longer works: sign in again, once. If
-      // the code came back from that fresh sign-in, show the error instead of looping.
-      if (!fromOurRedirect && CODE_ERRORS.has(exchanged.error)) {
-        options.log(`setup ${installationId}: the sign-in code did not work (${exchanged.error}), signing in again`);
-        return signInRedirect(env, url.origin, installationId, now);
+      const where = `setup ${installationId} (${path}${retry ? ', second try' : ''})`;
+      if (exchanged.error === CONFIG_ERROR) {
+        options.log(`${where}: GitHub sign-in failed (${exchanged.error}); check CLIENT_ID and CLIENT_SECRET`);
+        return errorPage(500, "Docturnal's GitHub sign-in is not set up correctly, so this page can't open. Docturnal is installed and runs every night with its current settings.");
       }
-      options.log(`setup ${installationId}: GitHub sign-in failed (${exchanged.error})`);
-      return errorPage(403, 'GitHub sign-in did not work. Open the settings link in a Docturnal pull request and try again.');
+      // A code from GitHub's install or update redirect that did not work: sign in again,
+      // once, so a new user never sees an error on the first page.
+      if (!fromOurRedirect) {
+        options.log(`${where}: the sign-in code did not work (${exchanged.error}), signing in again`);
+        return signInRedirect(env, url.origin, installationId, now, { path, retry: true });
+      }
+      // The fresh sign-in failed too, or a sign-in from a pull request link did: say what
+      // worked and offer another try, without looping.
+      options.log(`${where}: GitHub sign-in failed (${exchanged.error})`);
+      return signInFailedPage(installationId, path);
     }
-    const access = await findUserInstallation(env, options, exchanged.token, installationId);
+    // A pull request link is for an installation that exists already, so it is checked once.
+    const checks = path === 'link' ? 1 : ACCESS_CHECKS;
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    let access = await findUserInstallation(env, options, exchanged.token, installationId);
+    let check = 1;
+    while (!access && check < checks) {
+      await sleep(ACCESS_RETRY_MS);
+      check++;
+      access = await findUserInstallation(env, options, exchanged.token, installationId);
+    }
+    if (access && check > 1) options.log(`setup ${installationId} (${path}): GitHub listed the installation on check ${check}`);
     if (!access) {
-      options.log(`setup ${installationId}: rejected, the signed-in user cannot access this installation`);
+      options.log(`setup ${installationId}: rejected, the signed-in user cannot access this installation${checks > 1 ? ` (${path}, after ${checks} checks)` : ''}`);
       return errorPage(403, "You can't change these settings. Sign in with a GitHub account that can manage this Docturnal installation.");
     }
     const value = await createSession(env, { installationId, account: access.account, csrf: randomToken() }, now);

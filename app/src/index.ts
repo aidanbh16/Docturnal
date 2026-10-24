@@ -46,6 +46,8 @@ export interface Options {
   fetch?: typeof fetch;
   log?: (line: string) => void;
   now?: () => number;
+  // Waits between checks on the settings page; replaceable so tests need not wait.
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Secrets set through a pipe (echo, PowerShell) end with a newline, which would break the
@@ -189,7 +191,7 @@ export function createHandler(options: Options = {}) {
       // Workers require the global fetch to be called unbound; as a method of the options
       // object it throws "Illegal invocation".
       const doFetch: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
-      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now });
+      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now, sleep: options.sleep });
     }
     return new Response('Not found\n', { status: 404 });
   };
