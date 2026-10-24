@@ -58,7 +58,26 @@ function baseInfo(lines) {
     unsafeStart: false,
     isImport: false,
     isDeclaration: false,
+    // The name of a function, class, or component that starts on this line, if any.
+    symbol: null,
   }));
+}
+
+function setSymbol(entry, name) {
+  if (entry && name && !entry.symbol) entry.symbol = name.replace(/\s+/g, ' ').slice(0, 80);
+}
+
+// Names a declaration line in languages without a parser: the word after a keyword such as
+// "def" or "class", or else the identifier before the first "(" that is not a keyword.
+const NAMED_DECLARATION = /\b(?:class|struct|trait|object|record|protocol|actor|fn|func|fun|function|def|sub|procedure|filter)\s+([A-Za-z_$][\w$:.]*)/i;
+const CALL_NAME = /([A-Za-z_~$][\w$]*)\s*\(/g;
+const NOT_A_NAME = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'sizeof', 'typeof', 'new', 'func', 'function', 'fn', 'def']);
+
+function genericSymbol(trimmed) {
+  const named = trimmed.match(NAMED_DECLARATION);
+  if (named) return named[1];
+  for (const [, name] of trimmed.matchAll(CALL_NAME)) if (!NOT_A_NAME.has(name)) return name;
+  return null;
 }
 
 function unwrapExpression(node) {
@@ -71,11 +90,25 @@ function unwrapExpression(node) {
   return node;
 }
 
+// A call that wraps a function into a component: memo(...), React.memo(...), or
+// connect(...)(...). A method call on a value, such as items.reduce(...), computes a value instead.
+function isWrapperCallee(node) {
+  node = unwrapExpression(node);
+  if (ts.isIdentifier(node)) return true;
+  if (ts.isCallExpression(node)) return isWrapperCallee(node.expression);
+  if (ts.isPropertyAccessExpression(node)) {
+    let root = node.expression;
+    while (ts.isPropertyAccessExpression(root)) root = root.expression;
+    return ts.isIdentifier(root) && /^[A-Z]/.test(root.text);
+  }
+  return false;
+}
+
 // Functions, classes, and wrapped components such as memo(() => ...) or forwardRef(function ...).
 function isFunctionLike(node) {
   node = unwrapExpression(node);
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isClassExpression(node)) return true;
-  if (ts.isCallExpression(node)) return node.arguments.some(isFunctionLike);
+  if (ts.isCallExpression(node)) return isWrapperCallee(node.expression) && node.arguments.some(isFunctionLike);
   return false;
 }
 
@@ -90,6 +123,11 @@ const DECLARATION_KINDS = new Set([
   ts.SyntaxKind.Constructor, ts.SyntaxKind.GetAccessor, ts.SyntaxKind.SetAccessor,
   ts.SyntaxKind.InterfaceDeclaration, ts.SyntaxKind.TypeAliasDeclaration, ts.SyntaxKind.EnumDeclaration,
   ts.SyntaxKind.ModuleDeclaration,
+]);
+// Declarations that heavy level gives a block comment: functions, classes, and their members.
+const SYMBOL_KINDS = new Set([
+  ts.SyntaxKind.FunctionDeclaration, ts.SyntaxKind.ClassDeclaration, ts.SyntaxKind.MethodDeclaration,
+  ts.SyntaxKind.GetAccessor, ts.SyntaxKind.SetAccessor,
 ]);
 
 const UNSAFE_KINDS = new Set([
@@ -136,16 +174,23 @@ function analyzeTypeScript(text, lines, language) {
       info[l][field] = true;
     }
   };
-  const markDeclaration = (node) => {
-    info[lineOf(node.getStart(sf))].isDeclaration = true;
+  // symbol: the name to record for a function, class, or component; types and interfaces have none.
+  const markDeclaration = (node, symbol) => {
+    const entry = info[lineOf(node.getStart(sf))];
+    entry.isDeclaration = true;
+    setSymbol(entry, symbol);
   };
+  const nameOf = (node) => (node && node.name ? node.name.getText(sf) : null);
 
   const walk = (node) => {
     const kind = node.kind;
     if (UNSAFE_KINDS.has(kind)) {
       unsafeRanges.push([node.getStart(sf), node.end]);
     } else if (DECLARATION_KINDS.has(kind)) {
-      markDeclaration(node);
+      let symbol = null;
+      if (kind === ts.SyntaxKind.Constructor) symbol = 'constructor';
+      else if (SYMBOL_KINDS.has(kind)) symbol = nameOf(node) || 'default export';
+      markDeclaration(node, symbol);
     } else if (kind === ts.SyntaxKind.ImportDeclaration || kind === ts.SyntaxKind.ImportEqualsDeclaration) {
       markLines(node, 'isImport');
     } else if (kind === ts.SyntaxKind.ExportDeclaration && node.moduleSpecifier) {
@@ -153,18 +198,21 @@ function analyzeTypeScript(text, lines, language) {
     } else if (ts.isVariableStatement(node)) {
       const declarations = node.declarationList.declarations;
       if (declarations.some((d) => d.initializer && isRequireCall(d.initializer))) markLines(node, 'isImport');
-      else if (declarations.some((d) => d.initializer && isFunctionLike(d.initializer))) markDeclaration(node);
+      else {
+        const fn = declarations.find((d) => d.initializer && isFunctionLike(d.initializer));
+        if (fn) markDeclaration(node, nameOf(fn));
+      }
     } else if (ts.isExpressionStatement(node)) {
       const expr = node.expression;
       if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.EqualsToken && isFunctionLike(expr.right)) {
-        markDeclaration(node);
+        markDeclaration(node, expr.left.getText(sf));
       } else if (isRequireCall(expr)) {
         markLines(node, 'isImport');
       }
     } else if (ts.isExportAssignment(node) && isFunctionLike(node.expression)) {
-      markDeclaration(node);
+      markDeclaration(node, 'default export');
     } else if ((ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node)) && node.initializer && isFunctionLike(node.initializer)) {
-      markDeclaration(node);
+      markDeclaration(node, nameOf(node));
     }
 
     const decorators = ts.canHaveDecorators(node) ? ts.getDecorators(node) : undefined;
@@ -229,6 +277,7 @@ function analyzePythonLines(text, lines) {
   for (const n of result.comments) if (at(n)) at(n).hasComment = true;
   for (const n of result.imports) if (at(n)) at(n).isImport = true;
   for (const n of result.declarations) if (at(n)) at(n).isDeclaration = true;
+  for (const [n, name] of result.symbols || []) setSymbol(at(n), name);
   lines.forEach((line, l) => {
     info[l].commentOnly = !info[l].unsafeStart && line.text.trimStart().startsWith('#');
   });
@@ -371,7 +420,10 @@ function analyzeGeneric(lines, language) {
       }
     }
     if ((language.imports || []).some((re) => re.test(trimmed))) info[l].isImport = true;
-    else if ((language.declarations || []).some((re) => re.test(trimmed))) info[l].isDeclaration = true;
+    else if ((language.declarations || []).some((re) => re.test(trimmed))) {
+      info[l].isDeclaration = true;
+      setSymbol(info[l], genericSymbol(trimmed));
+    }
   });
 
   return { ok: true, info, decoratorTarget: new Map() };

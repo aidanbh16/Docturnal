@@ -348,18 +348,15 @@ const COMMENTED_JS = source([
   '}',
 ]);
 
+const COMMENTED_PROPOSALS = [
+  { line: 5, text: 'Duplicate.', kind: 'line' },
+  { line: 6, text: 'Splits only on the first equals sign.', kind: 'line' },
+  { line: 2, text: 'Another comment on the function.', kind: 'line' },
+  { line: 9, text: 'Callers mutate the returned object.', kind: 'line' },
+];
+
 test('existing comments count toward the level and block stacking', () => {
-  const result = applyProposals({
-    text: COMMENTED_JS,
-    language: lang('javascript'),
-    level: 'heavy',
-    proposals: [
-      { line: 5, text: 'Duplicate.', kind: 'line' },
-      { line: 6, text: 'Splits only on the first equals sign.', kind: 'line' },
-      { line: 2, text: 'Another comment on the function.', kind: 'line' },
-      { line: 9, text: 'Callers mutate the returned object.', kind: 'line' },
-    ],
-  });
+  const result = applyProposals({ text: COMMENTED_JS, language: lang('javascript'), level: 'medium', proposals: COMMENTED_PROPOSALS });
   assert.strictEqual(result.added, 0);
   assert.strictEqual(result.text, COMMENTED_JS);
   assert.deepStrictEqual(reasons(result), [
@@ -370,16 +367,36 @@ test('existing comments count toward the level and block stacking', () => {
   ]);
 });
 
-test('re-running on already commented output adds nothing', () => {
+test('heavy: an existing comment above a function does not count toward the level', () => {
+  const result = applyProposals({ text: COMMENTED_JS, language: lang('javascript'), level: 'heavy', proposals: COMMENTED_PROPOSALS });
+  assert.strictEqual(result.added, 1);
+  assert.match(result.text, /\n  \/\/ Callers mutate the returned object\.\n  return options;/);
+  assert.deepStrictEqual(reasons(result), [
+    '5: existing comment',
+    '6: previous line is a comment',
+    '2: previous line is a comment',
+  ]);
+});
+
+test('re-running on already commented output stays within the level', () => {
   const first = applyProposals({ text: RETRY_JS, language: lang('javascript'), level: 'heavy', proposals: RETRY_PROPOSALS });
-  const second = applyProposals({
-    text: first.text,
+  // first.text: the block is lines 1 to 5, "function retry" is line 6, and the loop is line 8.
+  const rerun = (text) => applyProposals({
+    text,
     language: lang('javascript'),
     level: 'heavy',
-    proposals: [{ line: 8, text: 'Loops once per attempt.', kind: 'line' }],
+    proposals: [
+      { line: 6, text: 'Another block on the function.', kind: 'block' },
+      { line: 8, text: 'Loops once per attempt.', kind: 'line' },
+      { line: 12, text: 'Keeps only the latest error.', kind: 'line' },
+    ],
   });
-  assert.strictEqual(second.added, 0);
-  assert.strictEqual(second.text, first.text);
+  const second = rerun(first.text);
+  assert.strictEqual(second.added, 1);
+  assert.deepStrictEqual(reasons(second), ['6: previous line is a comment', '12: level limit reached']);
+  const third = rerun(second.text);
+  assert.strictEqual(third.added, 0);
+  assert.strictEqual(third.text, second.text);
 });
 
 // --- Formatting and safety details ---

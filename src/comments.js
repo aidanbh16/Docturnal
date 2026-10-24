@@ -18,7 +18,7 @@ const LEVELS = {
 const LEVEL_GUIDANCE = {
   low: 'Comment level: low. Propose only a few comments, about one per 30 lines, on the most important or surprising code. Each comment is a single line of 10 words or fewer. Always use kind "line".',
   medium: 'Comment level: medium. Propose about one comment per 12 lines. Each comment is a single line of 25 words or fewer. Always use kind "line".',
-  heavy: 'Comment level: heavy. Propose about one comment per 5 lines. Use kind "block" directly above each function, class, and component to explain its purpose, inputs, and result in 80 words or fewer. Use kind "line" for non-obvious logic, in 30 words or fewer.',
+  heavy: 'Comment level: heavy. Give every function, class, and component a comment of kind "block" on its declaration line, explaining its purpose, inputs, and result in 80 words or fewer, without tags such as @param. Also propose about one comment of kind "line" per 5 lines on non-obvious logic: calculations, loops, edge cases, and magic numbers, each in 30 words or fewer.',
   off: 'Comment level: off. Return an empty comments list.',
 };
 
@@ -63,6 +63,30 @@ const RESPONSE_SCHEMA = {
   },
   required: ['summary', 'symbols', 'comments'],
 };
+
+// The heavy-level follow-up for functions, classes, and components the first pass left
+// without a comment.
+const BLOCK_PROMPT = `You write documentation comments for functions, classes, and components. You never rewrite code.
+
+Each code line is prefixed with its line number and "| ". Line numbers start at 1. For each declaration listed, return one comment with:
+- line: the declaration's line number, exactly as listed.
+- text: what the declaration is for, what it takes, and what it returns or does, in 80 words or fewer. Give the comment text only, without comment markers such as //, #, /*, or *, and without tags such as @param.
+- kind: "block".
+
+Write like a careful human engineer:
+- Explain intent, assumptions, and non-obvious behavior. Never restate the code.
+- Use plain, precise language in the present tense. No filler, jokes, or emojis.
+- Never mention yourself, AI, or that the comment was generated.
+- Never write tool directives such as eslint-disable, ts-ignore, noqa, or type: annotations.`;
+
+const BLOCK_SCHEMA = {
+  type: 'object',
+  properties: { comments: RESPONSE_SCHEMA.properties.comments },
+  required: ['comments'],
+};
+
+// Lines shown after each declaration in the follow-up, so the model sees what it documents.
+const BLOCK_CONTEXT_LINES = 30;
 
 // Token budget: what is left of the context after the instructions and the model's answer.
 const PROMPT_RESERVE_TOKENS = 1000;
@@ -231,8 +255,9 @@ function placementProblem(target, lines, analysis, protectedUntil) {
 // Where existing comments sit: a run of comment lines documents the line after it,
 // and a trailing comment documents its own line. A file header, a comment run before the
 // first code line and followed by a blank line, documents the file instead, so it does not
-// count toward the level or the gap between comments.
-function existingCommentPositions(info) {
+// count toward the level or the gap between comments. With exemptDeclarations (heavy level),
+// neither does a comment on a declaration, since block comments there are not limited.
+function existingCommentPositions(info, exemptDeclarations) {
   const positions = [];
   let start = 0;
   while (start < info.length && info[start].blank) start++;
@@ -254,7 +279,7 @@ function existingCommentPositions(info) {
       positions.push(i + 1);
     }
   }
-  return positions;
+  return exemptDeclarations ? positions.filter((pos) => !(info[pos - 1] && info[pos - 1].isDeclaration)) : positions;
 }
 
 function render(lines, insertions, eol, bom) {
@@ -292,13 +317,13 @@ function emptyStats(proposed) {
   return { proposed, added: 0, lineShift: 0, dropped: { placement: {}, length: {}, density: {}, safety: {}, off: {} } };
 }
 
-function result(text, added, rejections, stats) {
+function result(text, added, rejections, stats, undocumented = []) {
   for (const r of rejections) {
     const bucket = stats.dropped[r.category];
     bucket[r.reason] = (bucket[r.reason] || 0) + 1;
   }
   stats.added = added;
-  return { text, added, rejected: rejections.length, rejections, stats };
+  return { text, added, rejected: rejections.length, rejections, stats, undocumented };
 }
 
 function hasLine(proposal) {
@@ -337,7 +362,8 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
   };
 
   if (!rules) return rejectAll('comment level is off');
-  if (!all.length) return result(text, 0, rejections, stats);
+  // Heavy level still looks for undocumented functions when the model proposed nothing.
+  if (!all.length && !rules.blocks) return result(text, 0, rejections, stats);
 
   const { bom, body } = stripBom(text);
   const lines = splitLines(body);
@@ -379,9 +405,10 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
       reject(proposal, cleaned.reason);
       continue;
     }
-    const wantsBlock = proposal.kind === 'block' || cleaned.paragraphs.length > 1;
+    // At heavy level, every comment on a declaration is a block comment, whatever kind the
+    // model gave it.
     let kind = 'line';
-    if (rules.blocks && wantsBlock && analysis.info[target - 1].isDeclaration) {
+    if (rules.blocks && analysis.info[target - 1].isDeclaration) {
       kind = 'block';
       if (wordCount(cleaned.joined) > rules.maxBlockWords) {
         reject(proposal, `block comment longer than ${rules.maxBlockWords} words`);
@@ -405,11 +432,28 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
     });
   }
 
+  // Functions, classes, and components that heavy level wants a block comment on, and that
+  // have none yet. finish() reports the ones still without a comment after this pass.
+  const symbols = rules.blocks
+    ? analysis.info.flatMap((li, i) => {
+      if (!li.symbol) return [];
+      const target = resolveTarget(i + 1, lines, analysis, language);
+      return placementProblem(target, lines, analysis, protectedUntil) ? [] : [{ line: i + 1, target, name: li.symbol }];
+    })
+    : [];
+  const finish = (newText, kept) => {
+    const documented = new Set(kept.map((c) => c.target));
+    const undocumented = symbols.filter((s) => !documented.has(s.target)).map(({ line, name }) => ({ line, name }));
+    return result(newText, kept.length, rejections, stats, undocumented);
+  };
+
   // Existing comments count toward the level's limits, so re-runs do not pile up comments.
   // Every file may have at least one comment, so a short file with a function can get one.
+  // Only line comments are limited: a block comment above a declaration never counts toward
+  // the level or the gap, and is never dropped by them.
   const codeLines = analysis.info.filter((li) => !li.blank && !li.commentOnly).length;
   const allowed = Math.max(1, Math.round(codeLines / rules.linesPerComment));
-  const taken = existingCommentPositions(analysis.info);
+  const taken = existingCommentPositions(analysis.info, rules.blocks);
   let budget = allowed - taken.length;
   // Block comments first, then comments on functions and classes, then the rest, each in
   // file order, so a limited budget goes to declarations.
@@ -417,6 +461,10 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
   candidates.sort((a, b) => rank(a) - rank(b) || a.target - b.target);
   const accepted = [];
   for (const candidate of candidates) {
+    if (candidate.kind === 'block') {
+      accepted.push(candidate);
+      continue;
+    }
     if (budget <= 0) {
       reject(candidate.proposal, 'level limit reached');
       continue;
@@ -429,7 +477,7 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
     accepted.push(candidate);
     budget--;
   }
-  if (!accepted.length) return result(text, 0, rejections, stats);
+  if (!accepted.length) return finish(text, []);
 
   const eol = dominantEol(lines);
   const insertionFor = (c) => ({
@@ -439,7 +487,7 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
   const renderSet = (set) => render(lines, set.map(insertionFor), eol, bom);
 
   const full = renderSet(accepted);
-  if (verifyCandidates(language, text, [full])[0]) return result(full.text, accepted.length, rejections, stats);
+  if (verifyCandidates(language, text, [full])[0]) return finish(full.text, accepted);
 
   // The full set failed, so test each comment alone and keep only those that pass.
   const singles = accepted.map((c) => renderSet([c]));
@@ -448,13 +496,13 @@ function applyProposals({ text, language, level, proposals, groups = [proposals]
     if (!passed[i]) reject(c.proposal, 'verification failed');
     return passed[i];
   });
-  if (!kept.length) return result(text, 0, rejections, stats);
+  if (!kept.length) return finish(text, []);
   const combined = renderSet(kept);
   if (!verifyCandidates(language, text, [combined])[0]) {
     kept.forEach((c) => reject(c.proposal, 'verification failed in combination'));
-    return result(text, 0, rejections, stats);
+    return finish(text, []);
   }
-  return result(combined.text, kept.length, rejections, stats);
+  return finish(combined.text, kept);
 }
 
 function numberedLine(lines, i) {
@@ -496,6 +544,44 @@ function buildMessages({ path, language, level, lines, window, index, count }) {
     { role: 'system', content: `${SYSTEM_PROMPT}\n\n${LEVEL_GUIDANCE[level]}` },
     { role: 'user', content: `File: ${path}\nLanguage: ${language.name}\n${part}\n${numbered.join('\n')}` },
   ];
+}
+
+// The follow-up request: the declarations by name and line, and the code from each one on,
+// as many as fit the context budget.
+function buildBlockMessages({ path, language, lines, missing, contextTokens }) {
+  const budget = Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
+  const shown = new Set();
+  const asked = [];
+  let size = 0;
+  for (const declaration of missing) {
+    const extra = [];
+    for (let i = declaration.line - 1; i < Math.min(lines.length, declaration.line - 1 + BLOCK_CONTEXT_LINES); i++) {
+      if (!shown.has(i)) extra.push(i);
+    }
+    const length = extra.reduce((sum, i) => sum + numberedLine(lines, i).length + 1, 0);
+    if (asked.length && size + length > budget) break;
+    size += length;
+    extra.forEach((i) => shown.add(i));
+    asked.push(declaration);
+  }
+  const code = [];
+  let previous = -2;
+  for (const i of [...shown].sort((a, b) => a - b)) {
+    if (i !== previous + 1 && code.length) code.push('...');
+    code.push(numberedLine(lines, i));
+    previous = i;
+  }
+  const list = asked.map((d) => `- line ${d.line}: ${d.name}`).join('\n');
+  return {
+    asked,
+    messages: [
+      { role: 'system', content: BLOCK_PROMPT },
+      {
+        role: 'user',
+        content: `File: ${path}\nLanguage: ${language.name}\n\nWrite a block comment for each of these declarations:\n${list}\n\nCode:\n${code.join('\n')}`,
+      },
+    ],
+  };
 }
 
 function parseResponse(content) {
@@ -542,7 +628,25 @@ async function commentFile({ path, text, level = 'medium', model, contextTokens 
     }
   }
 
-  const applied = applyProposals({ text, language, level, groups });
+  let applied = applyProposals({ text, language, level, groups });
+  // Heavy level: one follow-up request for the functions, classes, and components that still
+  // have no comment above them. Skipped when the model answered nothing at all.
+  if (applied.undocumented.length && groups.length) {
+    const { messages } = buildBlockMessages({ path, language, lines, missing: applied.undocumented, contextTokens });
+    try {
+      const content = await chat({
+        model,
+        host,
+        messages,
+        format: BLOCK_SCHEMA,
+        options: { temperature: 0.2, seed: 42, num_ctx: contextTokens },
+      });
+      groups.push(parseResponse(content).comments);
+      applied = applyProposals({ text, language, level, groups });
+    } catch (err) {
+      base.errors.push(`block comments: ${err.message}`);
+    }
+  }
   return {
     ...base,
     summary: summaries.join(' ').slice(0, 1000),

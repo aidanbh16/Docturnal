@@ -30,6 +30,7 @@ def analyze(source):
 
     imports = set()
     declarations = []
+    symbols = []
     decorated = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -37,6 +38,7 @@ def analyze(source):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             first = min([d.lineno for d in node.decorator_list] + [node.lineno])
             declarations.append(first)
+            symbols.append([first, node.name])
             if first != node.lineno:
                 decorated.append([first, node.lineno])
 
@@ -46,6 +48,7 @@ def analyze(source):
         "comments": sorted(comments),
         "imports": sorted(imports),
         "declarations": sorted(declarations),
+        "symbols": sorted(symbols),
         "decorated": decorated,
     }
 

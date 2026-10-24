@@ -78,8 +78,10 @@ The default is `medium`. Users change the level on the app's settings page (`/se
 |---|---|
 | `low` | Sparse, single-line comments of a few words. |
 | `medium` | Single-line comments that can be longer, placed less sparsely. |
-| `heavy` | A mix of single-line and multiline comments. |
+| `heavy` | A block comment (JSDoc `/** */` in JavaScript and TypeScript) above every function, class, and component, plus single-line comments on non-obvious logic such as calculations, loops, edge cases, and magic numbers. |
 | `off` | No comments. Documentation only. |
+
+Only single-line comments are limited by the level's density limit and the minimum gap between comments. At `heavy`, a block comment above a function, class, or component never counts toward either limit and is never dropped by them, and neither does an existing comment there. After the model's first answer, the Action finds the functions, classes, and components that still have no comment directly above them (with the TypeScript parser for JavaScript and TypeScript, `ast` for Python, and the declaration patterns for other languages) and sends one follow-up request asking for a block comment for each, by name and line.
 
 Comments explain intent and non-obvious behavior. They do not restate the code. Docturnal never removes or changes existing comments, and never adds a comment where one already exists.
 

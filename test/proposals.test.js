@@ -84,7 +84,11 @@ for (const level of ['low', 'medium', 'heavy']) {
   test(`a 9-line file with two functions gets a comment at ${level}`, () => {
     const result = applyProposals({ text: MATH_JS, language: js, level, proposals: [line(5)] });
     assert.strictEqual(result.added, 1, JSON.stringify(result.rejections));
-    assert.match(result.text, /\/\/ Callers pass numbers; nothing here checks the types\.\nfunction multiply/);
+    // Heavy level writes a comment on a function as a block comment.
+    const expected = level === 'heavy'
+      ? /\/\*\*\n \* Callers pass numbers; nothing here checks the types\.\n \*\/\nfunction multiply/
+      : /\/\/ Callers pass numbers; nothing here checks the types\.\nfunction multiply/;
+    assert.match(result.text, expected);
   });
 }
 
@@ -123,7 +127,7 @@ test('a comment directly above code still counts, so re-runs do not pile up comm
 
 test('reads line numbers as zero-based when the model uses line 0', () => {
   // Zero-based: 0 is "function add" and 4 is "function multiply".
-  const result = applyProposals({ text: MATH_JS, language: js, level: 'heavy', proposals: [line(0), line(4)] });
+  const result = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(0), line(4)] });
   assert.strictEqual(result.stats.lineShift, 2);
   assert.strictEqual(result.added, 1);
   assert.match(result.text, /^\/\/ Callers pass numbers[^\n]*\nfunction add/);
@@ -135,19 +139,19 @@ test('reads line numbers as zero-based when the model uses line 0', () => {
 
 test('reads line numbers as zero-based when none fit as given and all fit one line down', () => {
   // Zero-based 4 and 8 are "function multiply" and "module.exports"; as given, both are blank lines.
-  const result = applyProposals({ text: MATH_JS, language: js, level: 'heavy', proposals: [line(4), line(8)] });
+  const result = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(4), line(8)] });
   assert.strictEqual(result.stats.lineShift, 2);
   assert.strictEqual(result.added, 1);
   assert.match(result.text, /\/\/ Callers pass numbers[^\n]*\nfunction multiply/);
 });
 
 test('keeps line numbers as given when some fit, or when there is only one', () => {
-  const mixed = applyProposals({ text: MATH_JS, language: js, level: 'heavy', proposals: [line(1), line(4)] });
+  const mixed = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(1), line(4)] });
   assert.strictEqual(mixed.stats.lineShift, 0);
   assert.deepStrictEqual(mixed.stats.dropped.placement, { 'blank line': 1 });
   assert.match(mixed.text, /^\/\/ Callers pass numbers[^\n]*\nfunction add/);
 
-  const single = applyProposals({ text: MATH_JS, language: js, level: 'heavy', proposals: [line(4)] });
+  const single = applyProposals({ text: MATH_JS, language: js, level: 'medium', proposals: [line(4)] });
   assert.strictEqual(single.stats.lineShift, 0);
   assert.strictEqual(single.added, 0);
 });

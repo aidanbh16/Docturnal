@@ -28,9 +28,10 @@ function promptOf(body) {
 
 function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
+  const prompt = promptOf(body);
+  if (prompt.includes('Write a block comment for each of these declarations')) return 'blocks';
   if (props.comments) return 'comments';
   if (props.layers) return 'layers';
-  const prompt = promptOf(body);
   if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
   if (/documentation page for the "/.test(prompt)) return 'layer-doc';
@@ -56,6 +57,16 @@ function commentsReply(body) {
     symbols: names,
     comments,
   };
+}
+
+// The heavy-level follow-up: one block comment per listed declaration.
+function blocksReply(body) {
+  const comments = [...promptOf(body).matchAll(/^- line (\d+): (.+)$/gm)].map(([, number, name]) => ({
+    line: Number(number),
+    text: `Explains what ${name} is for and what it returns.`,
+    kind: 'block',
+  }));
+  return { comments };
 }
 
 function layersReply(body) {
@@ -103,6 +114,7 @@ function defaultHandler({ oomModels = [] } = {}) {
     if (oomModels.includes(body.model)) throw new MockError(500, JSON.stringify({ error: OOM_MESSAGE }));
     switch (kindOf(body)) {
       case 'comments': return commentsReply(body);
+      case 'blocks': return blocksReply(body);
       case 'layers': return layersReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
@@ -173,4 +185,4 @@ if (require.main === module && process.argv.includes('--serve')) {
   });
 }
 
-module.exports = { OOM_MESSAGE, defaultHandler, kindOf, startMockOllama };
+module.exports = { OOM_MESSAGE, blocksReply, defaultHandler, kindOf, startMockOllama };
