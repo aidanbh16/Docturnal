@@ -9,8 +9,9 @@ inputs:
   comment-level:
     description: >-
       How many comments to add. One of: low (sparse, a few words each),
-      medium (longer single-line comments, less sparse), heavy (single-line and
-      multiline comments), or off (documentation only).
+      medium (longer single-line comments, less sparse), heavy (a block comment
+      above every function, class, and component, plus single-line comments), or
+      off (documentation only).
     required: false
     default: medium
   docs-dir:
@@ -72,24 +73,81 @@ runs:
 
     - name: Restore Ollama models cache
       if: steps.precheck.outputs.changed == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/docturnal-ollama-models
         key: docturnal-ollama-${{ runner.os }}-${{ steps.models.outputs.comment-model }}-${{ steps.models.outputs.docs-model }}
 
-    - name: Install Ollama
+    # The Ollama install is cached between runs, keyed on its version. The latest version comes
+    # from GitHub's release redirect, which needs no API token; when it cannot be read, the
+    # installer runs and nothing is cached.
+    - name: Find the Ollama version
+      id: ollama
       if: steps.precheck.outputs.changed == 'true'
       shell: bash
       run: |
+        version=$(curl -fsSI --max-time 20 https://github.com/ollama/ollama/releases/latest 2>/dev/null \
+          | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/tag/v\{0,1\}\([^/]*\)$|\1|p' | head -n 1)
+        if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*$'; then
+          echo "Latest Ollama release: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+        else
+          echo "Could not read the latest Ollama version, so the install is not cached this run."
+        fi
+
+    - name: Restore Ollama install cache
+      if: steps.precheck.outputs.changed == 'true' && steps.ollama.outputs.version != ''
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/docturnal-ollama-install
+        key: docturnal-ollama-install-${{ runner.os }}-${{ runner.arch }}-${{ steps.ollama.outputs.version }}
+
+    - name: Install Ollama
+      if: steps.precheck.outputs.changed == 'true'
+      shell: bash
+      env:
+        OLLAMA_VERSION: ${{ steps.ollama.outputs.version }}
+        CACHED: ${{ runner.temp }}/docturnal-ollama-install
+      run: |
+        # A cache hit counts only with the binary and its CPU libraries, which Ollama loads
+        # from ../lib/ollama next to the binary.
+        if [ -n "$OLLAMA_VERSION" ] && [ -x "$CACHED/bin/ollama" ] \
+          && ls "$CACHED"/lib/ollama/libggml-cpu* >/dev/null 2>&1 \
+          && "$CACHED/bin/ollama" --version >/dev/null 2>&1; then
+          echo "Using the cached Ollama $OLLAMA_VERSION."
+          echo "$CACHED/bin" >> "$GITHUB_PATH"
+          exit 0
+        fi
+
         if command -v ollama >/dev/null 2>&1; then
           echo "Ollama is already installed: $(ollama --version 2>/dev/null || echo unknown version)"
         else
-          curl -fsSL https://ollama.com/install.sh | sh
+          # OLLAMA_VERSION pins the installer to the version the cache key names.
+          curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
         fi
         # The installer starts a system service on port 11434. Stop it so our own server can use the cached models folder.
         if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
           sudo systemctl stop ollama || true
           sudo systemctl disable ollama || true
+        fi
+
+        # Keep what a CPU runner needs for the next run: the binary and the CPU libraries. The
+        # GPU libraries are most of the download and are never used here.
+        if [ -n "$OLLAMA_VERSION" ]; then
+          binary=$(readlink -f "$(command -v ollama)")
+          libraries="$(dirname "$(dirname "$binary")")/lib/ollama"
+          rm -rf "$CACHED"
+          mkdir -p "$CACHED/bin" "$CACHED/lib/ollama"
+          cp "$binary" "$CACHED/bin/ollama"
+          if [ -d "$libraries" ]; then
+            for item in "$libraries"/*; do
+              case "$(basename "$item")" in
+                cuda*|rocm*|vulkan*|*cuda*) ;;
+                *) cp -R "$item" "$CACHED/lib/ollama/" ;;
+              esac
+            done
+          fi
+          echo "Saved Ollama $OLLAMA_VERSION for the next run ($(du -sh "$CACHED" | cut -f1))."
         fi
 
     - name: Start Ollama

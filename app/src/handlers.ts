@@ -36,6 +36,20 @@ Merge this pull request to turn Docturnal on. The first run starts as soon as yo
 // Statuses of a run that has not finished. "pending" is a run waiting for the concurrency group.
 const ACTIVE_RUN_STATUSES = ['in_progress', 'queued', 'pending'] as const;
 
+// What each template version changed, for the update pull request.
+const VERSION_CHANGES: Record<number, string> = {
+  2: 'Lets only one Docturnal run happen at a time in this repository. If a run starts while another one is still going, for example a run you started by hand and the nightly run, the second one waits for the first to finish. Two runs then never push their changes at the same time.',
+  3: 'Uses version 7 of `actions/checkout`, which runs on Node.js 24. GitHub is retiring Node.js 20 for actions, and the older version adds a deprecation warning to every run.',
+};
+
+// The changes between version `from` and the current one: one paragraph, or a list.
+function changesSince(from: number): string {
+  const changes: string[] = [];
+  for (let v = from + 1; v <= WORKFLOW_VERSION; v++) if (VERSION_CHANGES[v]) changes.push(VERSION_CHANGES[v]);
+  if (changes.length === 1) return `The new version ${changes[0].charAt(0).toLowerCase()}${changes[0].slice(1)}`;
+  return `The new version makes these changes:\n\n${changes.map((c) => `- ${c}`).join('\n')}`;
+}
+
 // The pull request body for updating a workflow from `from` to the current version. A hidden
 // line records the version, so each version is proposed only once.
 export function workflowUpdateBody(from: number): string {
@@ -47,7 +61,7 @@ This pull request replaces \`${WORKFLOW_PATH}\` with the current version. The ne
 After you merge, Docturnal runs every night at the time in its settings: midnight, New York time, with medium comments, unless you change them.`
     : `This pull request updates \`${WORKFLOW_PATH}\` to version ${WORKFLOW_VERSION}.
 
-The new version lets only one Docturnal run happen at a time in this repository. If a run starts while another one is still going, for example a run you started by hand and the nightly run, the second one waits for the first to finish. Two runs then never push their changes at the same time.
+${changesSince(from)}
 
 Nothing else changes: Docturnal keeps the run time and comment level from its settings.`;
   return `${intro}\n\n<!-- docturnal-workflow-version: ${WORKFLOW_VERSION} -->`;

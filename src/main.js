@@ -47,7 +47,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
   log(`Docturnal: base ${branch.base} (${branch.baseSha.slice(0, 7)}), update branch ${branch.mode}`);
 
   const previous = readState(cwd);
-  const { current, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme } = findChanges(cwd, config, previous);
+  const { current, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme, ignoreHash } = findChanges(cwd, config, previous);
 
   const files = new Map(Object.entries(previous.files).filter(([file]) => current.has(file)));
   for (const e of changedDocsOnly) files.set(e.path, { hash: e.hash });
@@ -239,6 +239,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
   const next = {
     ...previous,
     commentLevel: config.commentLevel,
+    ignoreHash,
     files: Object.fromEntries(files),
     layers,
     docs: docSlugs,

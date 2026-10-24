@@ -4,6 +4,8 @@
 // calls the pull requests API; the GitHub App opens the pull request.
 
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const UPDATE_BRANCH = 'docturnal/update';
 const BOT_NAME = 'github-actions[bot]';
@@ -83,8 +85,17 @@ function prepareBranch(cwd, { base, branch = UPDATE_BRANCH } = {}) {
   return { base: baseName, baseSha, mode: 'fresh' };
 }
 
+// The paths in .docturnalignore, at the repository root, are never commented or documented.
+const IGNORE_FILE = '.docturnalignore';
+
+// The tracked files, without the ones .docturnalignore matches. git reads the patterns, so
+// they work exactly like .gitignore patterns.
 function listFiles(cwd) {
-  return git(cwd, ['ls-files', '-z']).split('\0').filter(Boolean);
+  const files = git(cwd, ['ls-files', '-z']).split('\0').filter(Boolean);
+  const ignoreFile = path.join(cwd, IGNORE_FILE);
+  if (!fs.existsSync(ignoreFile)) return files;
+  const ignored = new Set(git(cwd, ['ls-files', '-z', '--cached', '--ignored', `--exclude-from=${ignoreFile}`]).split('\0').filter(Boolean));
+  return files.filter((file) => !ignored.has(file));
 }
 
 // Stages only the given paths, commits, and force-pushes when `push` is true.
@@ -100,4 +111,4 @@ function commitAndPush(cwd, { paths, message, push = true, branch = UPDATE_BRANC
   return { committed: true, pushed: push, sha };
 }
 
-module.exports = { BOT_EMAIL, BOT_NAME, UPDATE_BRANCH, commitAndPush, listFiles, prepareBranch };
+module.exports = { BOT_EMAIL, BOT_NAME, IGNORE_FILE, UPDATE_BRANCH, commitAndPush, listFiles, prepareBranch };

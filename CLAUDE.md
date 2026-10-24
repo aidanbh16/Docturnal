@@ -24,6 +24,8 @@ This is one public repo with three parts.
 - A composite action. `action.yml` is at the repo root, and the code is in `src/`.
 - Runs nightly on GitHub's standard hosted runner (`ubuntu-latest`), started by the app through `workflow_dispatch`. The workflow file has no schedule.
 - Installs Ollama, pulls the models, adds comments, writes documentation, and pushes the result to `docturnal/update`.
+- Caches between runs the Ollama models and the Ollama install. The install cache is keyed on the latest Ollama version, read from GitHub's release redirect, and holds only the binary and its CPU libraries. On a miss, or when the version cannot be read, the official installer runs.
+- Uses the current major versions of the actions it depends on (`actions/cache` in `action.yml`, `actions/checkout` in the workflow template), so runs show no runtime deprecation warnings.
 - **Never opens pull requests.** It only pushes a branch.
 
 ### 2. GitHub App backend (`app/`)
@@ -32,7 +34,7 @@ This is one public repo with three parts.
 - On install, it queues each selected repo (Cloudflare Queue, one repo per message), commits `.github/workflows/docturnal.yml`, and starts the first run.
 - An hourly cron (minute 7) dispatches `docturnal.yml` for every installation whose chosen local hour has arrived, passing `comment-level` as a `workflow_dispatch` input. Daylight saving time is handled with `Intl.DateTimeFormat`. A repo is skipped that night if a Docturnal run is already queued, pending, or in progress. Every GitHub API call sends `X-GitHub-Api-Version: 2026-03-10`.
 - Serves the optional settings page at `/setup` (GitHub sign-in, then a check with `GET /user/installations` that the user can access the installation). Settings live in Cloudflare KV, and no key is ever read and written back: one empty key per repo, which webhooks create and delete, and one settings key with the time, time zone, and comment level, written only by the settings page (without it, the defaults apply). The cron finds each installation's repos by listing keys by prefix. Nothing else, and never code. Uninstalling deletes every key with the installation's prefix.
-- The workflow template carries a version line (`# Docturnal workflow version N.`), and its `concurrency` group lets only one run happen at a time per repo. A repo with an older version gets the current one through a pull request titled "Update Docturnal workflow", proposed once per version, at setup or before its nightly run. Raise `WORKFLOW_VERSION` in `app/src/workflow.ts` whenever the template changes.
+- The workflow template carries a version line (`# Docturnal workflow version N.`), and its `concurrency` group lets only one run happen at a time per repo. A repo with an older version gets the current one through a pull request titled "Update Docturnal workflow", proposed once per version, at setup or before its nightly run, and listing every change since the repo's version. Raise `WORKFLOW_VERSION` in `app/src/workflow.ts` whenever the template changes, and describe the change in `VERSION_CHANGES` in `app/src/handlers.ts`.
 - When the Action pushes `docturnal/update`, the app opens the pull request under its own name, or updates the open one.
 - When a pull request from one of Docturnal's branches (`docturnal/update`, `docturnal/setup`, `docturnal/workflow-update`) in the same repository closes, merged or not, the app deletes that branch. It keeps `docturnal/update` while a Docturnal run is queued, pending, or in progress, and the next closed pull request deletes it then. A branch that is already gone counts as deleted. The next run after a deletion starts fresh from the base branch.
 - Only makes GitHub API calls. It never reads, stores, or forwards source code.
@@ -154,6 +156,7 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
   - With Docturnal's recorded comments taken out, the file is byte-for-byte identical to the original with only those lines removed, and with the inserted lines removed, the result is byte-for-byte identical to that.
   - For JavaScript and TypeScript, parse the result with the `typescript` package and confirm it introduces no new syntax errors and the same tokens apart from comments.
   - If verification fails, discard all changes to that file.
+- Skip every path that `.docturnalignore` at the repository root matches. It uses `.gitignore` patterns, which git itself evaluates (`git ls-files --ignored --exclude-from`), and both the pre-check and the main run read it. A matched file is never commented and is left out of the documentation, and a change to the file counts as a change: its hash is in `.docturnal/state.json`.
 - Skip JavaScript, TypeScript, and Python files that do not parse before Docturnal touches them, and list them in `last-run.md` ("skipped, the file has syntax errors"). Skip files that are generated, vendored, binary, minified, very large, or covered by `.gitignore`, as well as anything under `.github/`, `.docturnal/`, and `docs/`, unless they are Docturnal-owned generated docs.
 - **Code never goes to an outside service.** The Action makes network calls only to install Ollama, pull models, and push to GitHub. The app backend never reads source code. It only makes GitHub API calls. It may read `.docturnal/last-run.md`, which the Action generates.
 - App permissions are the minimum needed, and no more:
@@ -194,6 +197,7 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 | README comment | `<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->` |
 | README block markers | `<!-- docturnal:layers -->`, `<!-- docturnal:scripts -->`, `<!-- docturnal:tree -->`, each closed by `<!-- /docturnal:NAME -->` |
 | PR body | `.docturnal/last-run.md` |
+| Ignore file | `.docturnalignore` at the repository root |
 | Doc marker (layer docs) | `<!-- Generated by Docturnal. Edits to this file are replaced the next time its layer changes. -->` |
 
 Do not rename these. Other parts and users' repos depend on them.
@@ -208,6 +212,7 @@ app/                GitHub App backend (Cloudflare Worker)
 test/               Tests for the Action and app, including the mock Ollama server
 docs/               Docturnal's own documentation
 README.md           Project README
+.docturnalignore    Paths Docturnal skips in its own repository (test fixtures)
 CLAUDE.md           This file
 ```
 

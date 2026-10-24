@@ -1,0 +1,6 @@
+# Paths Docturnal never comments or documents in this repository. The patterns work like
+# .gitignore patterns.
+
+# Test fixtures. Tests read these files and compare Docturnal's output with them byte for
+# byte, so a comment added to them would break the tests.
+test/fixtures/

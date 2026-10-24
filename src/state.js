@@ -14,7 +14,7 @@ const LAST_RUN_PATH = '.docturnal/last-run.md';
 const STATE_VERSION = 1;
 
 function emptyState() {
-  return { version: STATE_VERSION, updatedAt: null, commentLevel: null, files: {}, layers: [], docs: [], staleDocs: [] };
+  return { version: STATE_VERSION, updatedAt: null, commentLevel: null, ignoreHash: null, files: {}, layers: [], docs: [], staleDocs: [] };
 }
 
 function hashContent(buffer) {
@@ -33,6 +33,8 @@ function readState(root) {
   const state = emptyState();
   state.updatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : null;
   state.commentLevel = typeof data.commentLevel === 'string' ? data.commentLevel : null;
+  // A hash of .docturnalignore, or null when there was none, so a change to it is a change.
+  state.ignoreHash = typeof data.ignoreHash === 'string' ? data.ignoreHash : null;
   if (data.files && typeof data.files === 'object') {
     for (const [file, entry] of Object.entries(data.files)) {
       if (!entry || typeof entry.hash !== 'string') continue;

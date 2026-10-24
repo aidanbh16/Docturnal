@@ -183,6 +183,42 @@ describe('pre-check', () => {
     assert.match(result.log, /a generated doc is missing/);
   });
 
+  it('reads .docturnalignore: a change to it runs, and ignored files are left alone after that', async () => {
+    // Settle the doc removed by the previous case first.
+    let result = precheck();
+    if (result.outputs.changed === 'true') await runMain(result.cwd, result.outputs.base);
+    git(seed, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'docturnal/update');
+    git(seed, 'push', '-q', 'origin', 'main');
+    assert.strictEqual(precheck().outputs.changed, 'false');
+
+    fs.writeFileSync(path.join(seed, '.docturnalignore'), 'src/api/orders.js\n');
+    pushSeed('Ignore orders.js');
+    result = precheck();
+    assert.strictEqual(result.outputs.changed, 'true');
+    assert.match(result.log, /1 file deleted/);
+    assert.match(result.log, /\.docturnalignore changed/);
+    await runMain(result.cwd, result.outputs.base);
+    const state = JSON.parse(git(remote, 'show', 'docturnal/update:.docturnal/state.json'));
+    assert.ok(!('src/api/orders.js' in state.files));
+    assert.match(state.ignoreHash, /^sha256-/);
+    assert.strictEqual(precheck().outputs.changed, 'false');
+
+    // An edit to an ignored file is not a change.
+    git(seed, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'docturnal/update');
+    fs.appendFileSync(path.join(seed, 'src/api/orders.js'), '\nexport const LIMIT = 10;\n');
+    pushSeed('Edit an ignored file');
+    assert.strictEqual(precheck().outputs.changed, 'false');
+
+    // A comment added to .docturnalignore is.
+    fs.writeFileSync(path.join(seed, '.docturnalignore'), '# Orders are generated.\nsrc/api/orders.js\n');
+    pushSeed('Explain the ignore');
+    result = precheck();
+    assert.strictEqual(result.outputs.changed, 'true');
+    assert.match(result.log, /^Docturnal: \.docturnalignore changed \(/);
+    await runMain(result.cwd, result.outputs.base);
+    assert.strictEqual(precheck().outputs.changed, 'false');
+  });
+
   it('loads nothing from node_modules, so it can run before npm install', () => {
     const loaded = execFileSync(process.execPath, ['-e', `
       require(${JSON.stringify(path.join(ROOT, 'src/precheck.js'))});

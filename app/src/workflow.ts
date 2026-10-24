@@ -9,7 +9,8 @@ export const WORKFLOW_FILE = 'docturnal.yml';
 // - 0: the earliest template, started by its own schedule.
 // - 1: started by the app, with the comment-level input. It has no version line.
 // - 2: adds the concurrency group, so a second run waits for the first.
-export const WORKFLOW_VERSION = 2;
+// - 3: actions/checkout v7, which runs on Node.js 24 instead of the deprecated Node.js 20.
+export const WORKFLOW_VERSION = 3;
 const VERSION_LINE = /^# Docturnal workflow version (\d+)\.?\s*$/m;
 
 export function workflowYaml(actionRepository: string): string {
@@ -42,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ${actionRepository}@v1

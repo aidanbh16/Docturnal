@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { hasMarker } = require('./docs');
-const { listFiles } = require('./git');
+const { IGNORE_FILE, listFiles } = require('./git');
 const { classifyFile, MAX_FILE_BYTES } = require('./languages');
 const { readCurrentReadme, readReadmeState } = require('./readme');
 const { hashContent } = require('./state');
@@ -33,6 +33,15 @@ function readCandidates(cwd, config) {
     entries.push({ path: file, action: classified.action, language: classified.language, buffer, hash: hashContent(buffer) });
   }
   return entries;
+}
+
+// A hash of .docturnalignore, or null when the repository has none.
+function ignoreHash(cwd) {
+  try {
+    return hashContent(fs.readFileSync(path.join(cwd, IGNORE_FILE)));
+  } catch {
+    return null;
+  }
 }
 
 function docExists(cwd, docPath) {
@@ -64,7 +73,11 @@ function findChanges(cwd, config, previous) {
   const readmeChanged = readmeState ? readCurrentReadme(cwd) !== readmeState.text : previous.commentLevel !== null;
   // Earlier versions wrote the main document to docs/README.md; it moves to README.md.
   const legacyReadme = docExists(cwd, `${config.docsDir}/README.md`);
-  return { entries, current, levelChanged, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme };
+  // Files .docturnalignore now matches show up as deleted, and ones it no longer matches as
+  // new. A change to the file itself counts too, even when no file moves in or out.
+  const currentIgnoreHash = ignoreHash(cwd);
+  const ignoreChanged = previous.commentLevel !== null && currentIgnoreHash !== previous.ignoreHash;
+  return { entries, current, levelChanged, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme, ignoreHash: currentIgnoreHash, ignoreChanged };
 }
 
-module.exports = { docExists, findChanges, readCandidates };
+module.exports = { docExists, findChanges, ignoreHash, readCandidates };
