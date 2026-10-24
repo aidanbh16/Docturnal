@@ -31,6 +31,7 @@ function kindOf(body) {
   if (props.comments) return 'comments';
   if (props.layers) return 'layers';
   const prompt = promptOf(body);
+  if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
   if (/documentation page for the "/.test(prompt)) return 'layer-doc';
   return 'unknown';
@@ -85,6 +86,18 @@ function readmeReply() {
   return '# Project\n\nThis project is a sample.\n\n## Overview\n\nIt has a few modules.\n\n## Architecture\n\nThe layers call each other.\n\n## Getting started\n\nInstall the dependencies.';
 }
 
+// A careful edit: drops the filler word "basically" and keeps everything else.
+function dropFiller(text) {
+  return text.replace(/\bbasically,? (\w)/gi, (match, next, offset) => {
+    const startsSentence = offset === 0 || /[.!?]\s*$|\n\s*$/.test(text.slice(0, offset));
+    return startsSentence ? next.toUpperCase() : next;
+  }).replace(/,? basically\b/gi, '');
+}
+
+function polishReply(body) {
+  return dropFiller(promptOf(body).split('Section body:\n').pop());
+}
+
 function defaultHandler({ oomModels = [] } = {}) {
   return (body) => {
     if (oomModels.includes(body.model)) throw new MockError(500, JSON.stringify({ error: OOM_MESSAGE }));
@@ -93,6 +106,7 @@ function defaultHandler({ oomModels = [] } = {}) {
       case 'layers': return layersReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
+      case 'polish': return polishReply(body);
       default: throw new MockError(400, JSON.stringify({ error: 'unknown prompt' }));
     }
   };

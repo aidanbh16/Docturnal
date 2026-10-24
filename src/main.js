@@ -9,9 +9,10 @@ const path = require('path');
 const { docExists, findChanges } = require('./changes');
 const { commentFile } = require('./comments');
 const { readConfig, ConfigError } = require('./config');
-const { generateDocs, writeDocs } = require('./docs');
+const { createCaller, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, prepareBranch } = require('./git');
 const { readTotalMemory, selectModels } = require('./models');
+const { updateReadme, writeReadme } = require('./readme');
 const { buildReport, proposalSummary } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, hashContent, readState, sameState, writeState } = require('./state');
 
@@ -37,7 +38,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
   log(`Docturnal: base ${branch.base} (${branch.baseSha.slice(0, 7)}), update branch ${branch.mode}`);
 
   const previous = readState(cwd);
-  const { current, toComment, changedDocsOnly, deleted, docsMissing } = findChanges(cwd, config, previous);
+  const { current, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme } = findChanges(cwd, config, previous);
 
   const files = new Map(Object.entries(previous.files).filter(([file]) => current.has(file)));
   for (const e of changedDocsOnly) files.set(e.path, { hash: e.hash });
@@ -94,41 +95,61 @@ async function run({ cwd = process.cwd(), env = process.env, chat, now = Date.no
     .map(([file, entry]) => ({ path: file, summary: entry.summary, symbols: entry.symbols }));
   const changedFiles = new Set([...processed.map((p) => p.path), ...deleted, ...changedDocsOnly.map((e) => e.path)]);
   const docsNeeded = (summarized.length > 0 || previous.layers.length > 0) &&
-    (changedFiles.size > 0 || previous.staleDocs.length > 0 || docsMissing || previous.layers.length === 0);
+    (changedFiles.size > 0 || previous.staleDocs.length > 0 || docsMissing || previous.layers.length === 0 || readmeChanged || legacyReadme);
 
   let layers = previous.layers;
   let docSlugs = previous.docs;
   let staleDocs = previous.staleDocs;
-  const docsReport = { updated: [], removed: [], pending: [] };
+  const docsReport = { updated: [], removed: [], pending: [], readme: null };
   let fallbackUsed = false;
   const writtenDocs = { written: [], deleted: [] };
   if (docsNeeded) {
+    const caller = createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
+    const deadline = started + config.timeBudgetMinutes * 60000;
+    const allFiles = listFiles(cwd);
     const result = await generateDocs({
       files: summarized,
-      allFiles: listFiles(cwd),
+      allFiles,
       root: cwd,
       docsDir,
-      model: models.docs,
-      fallbackModel: models.comment !== models.docs ? models.comment : null,
       contextTokens: config.contextTokens,
-      chat,
+      caller,
       previousLayers: previous.layers,
       changedFiles: previous.layers.length ? changedFiles : null,
       staleSlugs: previous.staleDocs,
-      deadline: started + config.timeBudgetMinutes * 60000,
+      deadline,
       now,
       projectName: env.GITHUB_REPOSITORY ? env.GITHUB_REPOSITORY.split('/').pop() : undefined,
     });
-    for (const error of result.errors) log(`Docs: ${error}`);
     const write = writeDocs({ root: cwd, docs: result.docs, removed: result.removed });
-    writtenDocs.written = write.written;
+
+    // The main document: README.md at the repository root, shared with people.
+    const readme = await updateReadme({
+      root: cwd,
+      caller,
+      layers: result.layers,
+      facts: result.facts,
+      projectName: result.projectName,
+      docsDir,
+      allFiles,
+      regenerate: result.readmeNeeded,
+      contextTokens: config.contextTokens,
+      deadline,
+      now,
+    });
+    readme.errors.forEach((error) => result.errors.push(error));
+    writtenDocs.written.push(...writeReadme(cwd, readme));
+    if (readme.pending) result.pending.push({ path: 'README.md', slug: 'README', reason: readme.pending });
+    docsReport.readme = readme.report;
+    for (const error of result.errors) log(`Docs: ${error}`);
+    writtenDocs.written.push(...write.written);
     writtenDocs.deleted = write.deleted;
     for (const skipped of [...result.skipped, ...write.skipped]) log(`${skipped.path}: not written, ${skipped.reason}`);
 
     layers = result.layers;
     docSlugs = layers.map((l) => l.slug).filter((slug) => docExists(cwd, `${docsDir}/${slug}.md`));
     staleDocs = result.pending.map((p) => p.slug);
-    fallbackUsed = result.fallbackUsed;
+    fallbackUsed = caller.fallbackUsed;
     docsReport.updated = result.docs.filter((d) => write.written.includes(d.path)).map((d) => ({ path: d.path, fallback: d.fallback }));
     docsReport.removed = write.deleted;
     docsReport.pending = result.pending.map((p) => ({ path: p.path, reason: p.reason }));

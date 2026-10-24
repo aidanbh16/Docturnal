@@ -31,6 +31,8 @@ function precheck({ cwd = process.cwd(), env = process.env, log = console.log } 
   if (changedFiles && !changes.levelChanged) reasons.push(`${plural(changedFiles, 'file')} new or changed`);
   if (changes.deleted.length) reasons.push(`${plural(changes.deleted.length, 'file')} deleted`);
   if (changes.docsMissing) reasons.push('a generated doc is missing');
+  if (changes.readmeChanged && previous.commentLevel !== null) reasons.push('README.md changed');
+  if (changes.legacyReadme) reasons.push('docs/README.md moves to README.md');
   if (previous.staleDocs.length) reasons.push(`${plural(previous.staleDocs.length, 'doc')} left from the last run`);
 
   const changed = reasons.length > 0;

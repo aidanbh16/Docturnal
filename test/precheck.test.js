@@ -135,6 +135,19 @@ describe('pre-check', () => {
     assert.strictEqual(precheck().outputs.changed, 'false');
   });
 
+  it('runs when a person edits README.md, so their section gets polished', async () => {
+    git(seed, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'docturnal/update');
+    git(seed, 'push', '-q', 'origin', 'main');
+    assert.strictEqual(precheck().outputs.changed, 'false');
+    fs.appendFileSync(path.join(seed, 'README.md'), '\n## Support\n\nOpen an issue on GitHub and we answer within two days.\n');
+    pushSeed('Add a support section');
+    const result = precheck();
+    assert.strictEqual(result.outputs.changed, 'true');
+    assert.match(result.log, /README\.md changed/);
+    await runMain(result.cwd, result.outputs.base);
+    assert.strictEqual(precheck().outputs.changed, 'false');
+  });
+
   it('runs when a generated doc is missing', () => {
     const cwd = clone();
     git(cwd, 'checkout', '-q', 'docturnal/update');

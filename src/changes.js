@@ -9,6 +9,7 @@ const path = require('path');
 const { hasMarker } = require('./docs');
 const { listFiles } = require('./git');
 const { classifyFile, MAX_FILE_BYTES } = require('./languages');
+const { readCurrentReadme, readReadmeState } = require('./readme');
 const { hashContent } = require('./state');
 
 function readCandidates(cwd, config) {
@@ -52,13 +53,18 @@ function findChanges(cwd, config, previous) {
     (levelChanged || !previous.files[e.path] || previous.files[e.path].hash !== e.hash));
   const changedDocsOnly = entries.filter((e) => e.action === 'docs' && (!previous.files[e.path] || previous.files[e.path].hash !== e.hash));
   const deleted = Object.keys(previous.files).filter((file) => !current.has(file));
-  // A generated doc is missing when a recorded doc or the main document is gone, or when files
-  // were summarized but no docs were ever written for them.
+  // A generated doc is missing when a recorded layer doc is gone, or when files were
+  // summarized but no docs were ever written for them.
   const summarized = Object.values(previous.files).some((entry) => typeof entry.summary === 'string');
   const docsMissing = previous.docs.some((slug) => !docExists(cwd, `${config.docsDir}/${slug}.md`)) ||
-    (previous.layers.length > 0 && !docExists(cwd, `${config.docsDir}/README.md`)) ||
     (previous.layers.length === 0 && summarized);
-  return { entries, current, levelChanged, toComment, changedDocsOnly, deleted, docsMissing };
+  // A person editing README.md is a change, so their section gets polished. An earlier run
+  // that has no saved README yet counts too, so the README gets set up once.
+  const readmeState = readReadmeState(cwd);
+  const readmeChanged = readmeState ? readCurrentReadme(cwd) !== readmeState.text : previous.commentLevel !== null;
+  // Earlier versions wrote the main document to docs/README.md; it moves to README.md.
+  const legacyReadme = docExists(cwd, `${config.docsDir}/README.md`);
+  return { entries, current, levelChanged, toComment, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme };
 }
 
 module.exports = { docExists, findChanges, readCandidates };

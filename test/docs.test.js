@@ -193,7 +193,8 @@ test('layer doc has the sections in order with generated tables and links', () =
   assert.match(doc, /\| \[`src\/api\/orders\.js`\]\(\.\.\/src\/api\/orders\.js\) \| Defines order routes\. \| `listOrders`, `createOrder` \|/);
   assert.match(doc, /\| Defines user routes \\\| admin only\. \| `getUser` \|/);
   assert.match(doc, /## How it works\n\nEach route validates input first\.\n\n### Error handling\n\nErrors become JSON responses\./);
-  assert.match(doc, /## Related layers\n\n- \[Data Access\]\(data-access\.md\): Talks to the database\.\n$/);
+  // Layer docs link to each other within docs/, and back to the main document at the root.
+  assert.match(doc, /## Related layers\n\n- \[Project README\]\(\.\.\/README\.md\): the overview of the whole project and every layer\.\n- \[Data Access\]\(data-access\.md\): Talks to the database\.\n$/);
   assert.doesNotMatch(doc, /made up by the model/);
 });
 
@@ -232,33 +233,6 @@ test('collects project facts without .env values', () => {
   assert.doesNotMatch(JSON.stringify(facts), /secret|abc123/);
 });
 
-test('main doc has the sections in order with layers, scripts, and the tree', () => {
-  const facts = docs.collectProjectFacts(repoRead(REPO), Object.keys(REPO));
-  const raw = [
-    '# Shop',
-    'Shopfront is an online store.',
-    '## Getting Started',
-    'Install dependencies with `yarn install`.',
-    '### Available Scripts',
-    '- made up list',
-    '## Architecture',
-    'Handlers call the data layer.',
-    '## Overview',
-    'It sells things.',
-    '## Project Structure',
-    'made up tree',
-  ].join('\n');
-  const doc = docs.buildReadme(raw, { projectName: 'shopfront', layers: LAYERS, facts, allFiles: Object.keys(REPO) });
-
-  assert.ok(doc.startsWith(`${MARKER}\n\n# shopfront\n\nShopfront is an online store.\n\n## Overview`));
-  assert.deepStrictEqual(h2s(doc), ['Overview', 'Architecture', 'Getting started', 'Project structure']);
-  assert.match(doc, /Handlers call the data layer\.\n\n\| Layer \| Description \|\n\| --- \| --- \|\n\| \[Request Handlers\]\(request-handlers\.md\) \| Handles HTTP requests\. \|/);
-  assert.match(doc, /### Available scripts\n\n\| Command \| Runs \|\n\| --- \| --- \|\n\| `yarn dev` \| `vite` \|\n\| `yarn test` \| `vitest run` \|/);
-  assert.match(doc, /### Environment variables\n\n`\.env\.example` lists these variables:\n\n- `DATABASE_URL`\n- `API_KEY`/);
-  assert.match(doc, /```text\n\.\n├── src\/\n│   ├── api\/\n│   └── db\/\n├── \.env\.example\n├── README\.md\n├── package\.json\n└── yarn\.lock\n```/);
-  assert.doesNotMatch(doc, /made up/);
-});
-
 // --- End to end ---
 
 function mockHandler(body) {
@@ -289,7 +263,10 @@ test('generateDocs plans layers, writes docs, respects human docs, and regenerat
 
     assert.deepStrictEqual(first.errors, []);
     assert.deepStrictEqual(first.layers.map((l) => l.slug), ['api-2', 'data-access']);
-    assert.deepStrictEqual(first.docs.map((d) => d.path), ['docs/api-2.md', 'docs/data-access.md', 'docs/README.md']);
+    // Only layer docs go in docs/; the main document is README.md, planned by readme.js.
+    assert.deepStrictEqual(first.docs.map((d) => d.path), ['docs/api-2.md', 'docs/data-access.md']);
+    assert.strictEqual(first.readmeNeeded, true);
+    assert.strictEqual(first.projectName, 'shopfront');
     for (const doc of first.docs) assert.ok(docs.hasMarker(doc.content), doc.path);
     assert.strictEqual(mock.requests[0].model, 'docs');
     assert.match(mock.requests[0].messages[0].content, /Never invent APIs/);
@@ -307,16 +284,19 @@ test('generateDocs plans layers, writes docs, respects human docs, and regenerat
       previousLayers: first.layers,
       changedFiles: new Set(['src/db/client.js']),
     });
-    assert.deepStrictEqual(second.docs.map((d) => d.path), ['docs/data-access.md', 'docs/README.md']);
+    assert.deepStrictEqual(second.docs.map((d) => d.path), ['docs/data-access.md']);
     // The set of files is the same, so the layers are reused without asking the model.
     assert.strictEqual(second.replanned, false);
-    assert.strictEqual(mock.requests.length - before, 2);
+    assert.strictEqual(mock.requests.length - before, 1);
 
-    // A person wrote the main doc, so it is left alone.
-    store['docs/README.md'] = '# Our own README\n';
+    // An earlier version's docs/README.md is removed only when it has the marker.
+    store['docs/README.md'] = `${MARKER}\n\n# Shopfront\n`;
     const third = await docs.generateDocs({ files, allFiles: Object.keys(store), readFile: repoRead(store), model: 'docs', host: mock.host });
-    assert.ok(!third.docs.some((d) => d.path === 'docs/README.md'));
-    assert.deepStrictEqual(third.skipped, [{ path: 'docs/README.md', reason: 'written by a person (no Docturnal marker)' }]);
+    assert.deepStrictEqual(third.removed, ['docs/README.md']);
+    store['docs/README.md'] = '# Our own docs index\n';
+    const fourth = await docs.generateDocs({ files, allFiles: Object.keys(store), readFile: repoRead(store), model: 'docs', host: mock.host });
+    assert.deepStrictEqual(fourth.removed, []);
+    assert.ok(!fourth.docs.some((d) => d.path === 'docs/README.md'));
   } finally {
     await mock.close();
   }

@@ -1,8 +1,9 @@
 'use strict';
 
-// The docs generator. The docs model groups files into layers and writes the prose.
-// Everything that can be computed (tables, links, the directory tree) is built here, and
-// everything the model writes is cleaned before it is saved.
+// The docs generator for the layer docs in docs/. The docs model groups files into layers
+// and writes the prose. Everything that can be computed (tables, links, the directory tree)
+// is built here, and everything the model writes is cleaned before it is saved. The main
+// document is the repository's README.md; see readme.js.
 
 const fs = require('fs');
 const path = require('path');
@@ -359,8 +360,9 @@ function relatedLayers(layer, layers) {
     .join('\n');
 }
 
-function layersTable(layers) {
-  const rows = layers.map((layer) => `| [${tableCell(layer.name)}](${layer.slug}.md) | ${tableCell(layer.description)} |`);
+// `base` is the path from the linking document to the docs folder, such as "docs/".
+function layersTable(layers, base = '') {
+  const rows = layers.map((layer) => `| [${tableCell(layer.name)}](${base}${layer.slug}.md) | ${tableCell(layer.description)} |`);
   return ['| Layer | Description |', '| --- | --- |', ...rows].join('\n');
 }
 
@@ -705,6 +707,29 @@ async function planLayers({ files, fileInfo, previousLayers = [], call, contextT
   return normalizeLayers(raw, files, { previous: previousLayers, fileInfo, isTaken });
 }
 
+// Calls the docs model, switching to the fallback model for the rest of the run once the
+// docs model cannot load. `lastUsedFallback` says whether the latest reply came from the
+// fallback model. Errors about the switch go to `errors`.
+function createCaller({ chat = ollama.chat, model, fallbackModel = null, host, errors = [] }) {
+  const caller = { model, activeModel: model, fallbackUsed: false, lastUsedFallback: false, errors };
+  caller.call = async (label, request) => {
+    try {
+      const content = await chat({ ...request, model: caller.activeModel, host });
+      caller.lastUsedFallback = caller.activeModel !== model;
+      return content;
+    } catch (err) {
+      if (!fallbackModel || caller.activeModel === fallbackModel || !isLoadError(err)) throw err;
+      errors.push(`${label}: the docs model ${model} could not load (${err.message.slice(0, 200)}); switched to ${fallbackModel}`);
+      caller.activeModel = fallbackModel;
+      caller.fallbackUsed = true;
+      const content = await chat({ ...request, model: caller.activeModel, host });
+      caller.lastUsedFallback = true;
+      return content;
+    }
+  };
+  return caller;
+}
+
 // Errors where Ollama could not load or run the model, usually because the runner is out of memory.
 const LOAD_ERROR = /out of memory|requires more system memory|not enough memory|insufficient memory|failed to load|unable to load|error loading model|llama runner process (has )?terminated|signal: killed|cudaMalloc|\bOOM\b/i;
 
@@ -792,82 +817,15 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, docsDir = 'docs', existin
   const responsibilities = bodies.get('responsibilities')
     || layer.files.map((f) => firstSentence((fileInfo.get(f) || {}).summary)).filter((s) => s !== '').map((s) => `- ${s}`).join('\n');
   const configuration = bodies.get('configuration');
-  const related = relatedLayers(layer, layers);
+  const backLink = `- [Project README](${linkPath(docsDir, 'README.md')}): the overview of the whole project and every layer.`;
+  const related = [backLink, relatedLayers(layer, layers)].filter(Boolean).join('\n');
 
   const parts = [`# ${layer.name}`, first || layer.description, '## Overview', overview];
   if (responsibilities) parts.push('## Responsibilities', responsibilities);
   parts.push('## Key components', componentsTable(layer, fileInfo, docsDir));
   if (bodies.get('how')) parts.push('## How it works', bodies.get('how'));
   if (configuration && !saysNone(configuration)) parts.push('## Configuration', configuration);
-  if (related) parts.push('## Related layers', related);
-  return finalizeDoc(parts.join('\n\n'));
-}
-
-// --- Main doc ---
-
-function readmePrompt({ projectName, layers, facts, contextTokens }) {
-  const layerList = layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n');
-  let content = `Write the main documentation page for ${projectName}.
-
-Use exactly this structure:
-
-# ${projectName}
-
-One paragraph that says what the project is and who it is for.
-
-## Overview
-
-## Architecture
-
-One or two paragraphs on how the layers below work together. A table of layers is added separately.
-
-## Getting started
-
-Prerequisites, installation, and how to run the project, using only the commands and settings in the project facts. A table of scripts and a list of environment variables are added separately.
-
-Do not add other sections. A project structure section is added separately.
-
-Layers:
-${layerList}
-
-Project facts:
-${describeFacts(facts)}
-`;
-  if (facts.rootReadme) {
-    const room = Math.max(0, charBudget(contextTokens) - content.length - 100);
-    content += `\nThe project's existing README:\n${facts.rootReadme.slice(0, room)}\n`;
-  }
-  return [
-    { role: 'system', content: `You write developer documentation.\n\n${STYLE_RULES}` },
-    { role: 'user', content },
-  ];
-}
-
-function buildReadme(raw, { projectName, layers, facts, allFiles, docsDir = 'docs', existingPaths = null }) {
-  const cleaned = cleanMarkdown(raw, { title: projectName, docPath: `${docsDir}/README.md`, existingPaths });
-  const { intro, sections } = splitSections(cleaned);
-  const bodies = arrangeSections(sections, README_SECTIONS, { extrasInto: 'overview', generated: README_GENERATED });
-  const { first, rest } = splitIntro(intro);
-
-  const overview = [rest, bodies.get('overview')].filter(Boolean).join('\n\n');
-  const start = removeSubsections(bodies.get('start') || '', ['available scripts', 'scripts', 'environment variables']);
-  const scripts = scriptsTable(facts);
-
-  const parts = [`# ${projectName}`];
-  if (first || facts.description) parts.push(first || facts.description);
-  if (overview) parts.push('## Overview', overview);
-  parts.push('## Architecture');
-  if (bodies.get('architecture')) parts.push(bodies.get('architecture'));
-  parts.push(layersTable(layers));
-  if (start || scripts || facts.envVars.length) {
-    parts.push('## Getting started');
-    if (start) parts.push(start);
-    if (scripts) parts.push('### Available scripts', scripts);
-    if (facts.envVars.length) {
-      parts.push('### Environment variables', '`.env.example` lists these variables:', facts.envVars.map((v) => `- \`${v}\``).join('\n'));
-    }
-  }
-  parts.push('## Project structure', `\`\`\`text\n${directoryTree(allFiles)}\n\`\`\``);
+  parts.push('## Related layers', related);
   return finalizeDoc(parts.join('\n\n'));
 }
 
@@ -907,14 +865,16 @@ function sameFileSet(layers, paths) {
   return previous.length === current.length && previous.every((f, i) => f === current[i]);
 }
 
-// Plans and writes the content of all docs. Nothing is written to disk here; see writeDocs.
+// Plans the content of the layer docs. Nothing is written to disk here; see writeDocs.
 // files: [{ path, summary, symbols, text? }] for every documented source file.
 // changedFiles: a Set of changed paths, or null to regenerate everything.
 // staleSlugs: docs that a previous run could not write ("README" for the main doc).
-// fallbackModel: used when the docs model cannot load, for example when it runs out of memory.
+// caller: from createCaller; otherwise one is made from chat, model, fallbackModel, and host.
 // deadline: a time in ms after which no new doc is started.
 // Returns { layers, replanned, docs: [{ path, content, fallback }], pending: [{ path, slug, reason }],
-//   skipped: [{ path, reason }], removed: [path], errors, fallbackUsed }.
+//   skipped: [{ path, reason }], removed: [path], errors, fallbackUsed, facts, projectName,
+//   readmeNeeded }. readmeNeeded says whether the README's Docturnal sections need new prose.
+// A docs/README.md with the marker, the main doc of earlier versions, is removed.
 async function generateDocs({
   files,
   allFiles,
@@ -932,6 +892,7 @@ async function generateDocs({
   deadline = Infinity,
   now = Date.now,
   projectName,
+  caller: givenCaller,
 }) {
   const read = readFile || fsReader(root || '.');
   const repoFiles = allFiles || files.map((f) => f.path);
@@ -942,35 +903,26 @@ async function generateDocs({
     const existing = read(docPath);
     return existing !== null && !hasMarker(existing);
   };
+  // Once the docs model fails to load, the rest of the run uses the fallback model.
+  const caller = givenCaller || createCaller({ chat, model, fallbackModel, host });
+  const call = caller.call;
   const result = {
-    layers: [], replanned: false, docs: [], pending: [], skipped: [], removed: [], errors: [], fallbackUsed: false,
+    layers: [], replanned: false, docs: [], pending: [], skipped: [], removed: [], errors: caller.errors, fallbackUsed: false,
+    facts: null, projectName: '', readmeNeeded: false,
   };
   const stale = new Set(staleSlugs);
-
-  // Once the docs model fails to load, the rest of the run uses the fallback model.
-  let activeModel = model;
-  let usedFallback = false;
-  const call = async (label, request) => {
-    try {
-      return await chat({ ...request, model: activeModel, host });
-    } catch (err) {
-      if (!fallbackModel || activeModel === fallbackModel || !isLoadError(err)) throw err;
-      result.errors.push(`${label}: the docs model ${model} could not load (${err.message.slice(0, 200)}); switched to ${fallbackModel}`);
-      activeModel = fallbackModel;
-      result.fallbackUsed = true;
-      return chat({ ...request, model: activeModel, host });
-    }
-  };
-  const callDoc = async (label, request) => {
-    const content = await call(label, request);
-    usedFallback = activeModel !== model;
-    return content;
-  };
+  const facts = collectProjectFacts(read, repoFiles);
+  result.facts = facts;
+  result.projectName = facts.name || projectName || path.basename(path.resolve(root || '.'));
+  // The main document is README.md at the repository root now.
+  const legacyReadme = `${docsDir}/README.md`;
+  if (hasMarker(read(legacyReadme))) result.removed.push(legacyReadme);
 
   if (!sourcePaths.length) {
     for (const old of previousLayers) {
       if (hasMarker(read(docPathFor(old.slug)))) result.removed.push(docPathFor(old.slug));
     }
+    result.readmeNeeded = previousLayers.length > 0;
     return result;
   }
 
@@ -984,9 +936,8 @@ async function generateDocs({
   }
   result.layers = layers;
 
-  const facts = collectProjectFacts(read, repoFiles);
-  const name = facts.name || projectName || path.basename(path.resolve(root || '.'));
-  const existingPaths = pathsWithDirs([...repoFiles, `${docsDir}/README.md`, ...layers.map((l) => docPathFor(l.slug))]);
+  const name = result.projectName;
+  const existingPaths = pathsWithDirs([...repoFiles, 'README.md', ...layers.map((l) => docPathFor(l.slug))]);
   const readSource = (file) => {
     const info = fileInfo.get(file);
     return info && typeof info.text === 'string' ? info.text : read(file);
@@ -1007,11 +958,11 @@ async function generateDocs({
       continue;
     }
     try {
-      const content = await callDoc(docPath, {
+      const content = await call(docPath, {
         messages: layerDocPrompt({ layer, layers, fileInfo, facts, readSource, contextTokens, projectName: name }),
         options: docOptions,
       });
-      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, docsDir, existingPaths }), fallback: usedFallback });
+      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, docsDir, existingPaths }), fallback: caller.lastUsedFallback });
       anyLayerWritten = true;
     } catch (err) {
       result.errors.push(`${docPath}: ${err.message}`);
@@ -1019,37 +970,17 @@ async function generateDocs({
     }
   }
 
-  const readmePath = `${docsDir}/README.md`;
-  const factFiles = ['package.json', 'requirements.txt', 'pyproject.toml', '.env.example', 'README.md'];
+  const factFiles = ['package.json', 'requirements.txt', 'pyproject.toml', '.env.example'];
   const layerSetChanged = layers.length !== previousLayers.length || layers.some((l) => !sameLayer(l, previousBySlug.get(l.slug)));
-  const readmeNeeded = changedFiles === null || stale.has('README') || anyLayerWritten || layerSetChanged ||
-    factFiles.some((f) => changedFiles.has(f)) || read(readmePath) === null;
-  if (humanWritten(readmePath)) {
-    result.skipped.push({ path: readmePath, reason: 'written by a person (no Docturnal marker)' });
-  } else if (readmeNeeded && now() > deadline) {
-    result.pending.push({ path: readmePath, slug: 'README', reason: 'time budget' });
-  } else if (readmeNeeded) {
-    try {
-      const content = await callDoc(readmePath, {
-        messages: readmePrompt({ projectName: name, layers, facts, contextTokens }),
-        options: docOptions,
-      });
-      result.docs.push({
-        path: readmePath,
-        content: buildReadme(content, { projectName: name, layers, facts, allFiles: repoFiles, docsDir, existingPaths }),
-        fallback: usedFallback,
-      });
-    } catch (err) {
-      result.errors.push(`${readmePath}: ${err.message}`);
-      result.pending.push({ path: readmePath, slug: 'README', reason: 'the model did not respond' });
-    }
-  }
+  result.readmeNeeded = changedFiles === null || stale.has('README') || anyLayerWritten || layerSetChanged ||
+    factFiles.some((f) => changedFiles.has(f));
 
   const currentSlugs = new Set(layers.map((l) => l.slug));
   for (const old of previousLayers) {
     const docPath = docPathFor(old.slug);
     if (!currentSlugs.has(old.slug) && hasMarker(read(docPath))) result.removed.push(docPath);
   }
+  result.fallbackUsed = caller.fallbackUsed;
   return result;
 }
 
@@ -1091,18 +1022,30 @@ function writeDocs({ root, docs = [], removed = [] }) {
 
 module.exports = {
   MARKER,
+  README_GENERATED,
+  README_SECTIONS,
   STYLE_RULES,
+  arrangeSections,
   buildLayerDoc,
-  buildReadme,
+  charBudget,
   cleanDoc,
   cleanMarkdown,
   collectProjectFacts,
+  createCaller,
+  describeFacts,
   directoryTree,
   generateDocs,
   hasMarker,
   isLoadError,
+  layersTable,
   normalizeLayers,
+  pathsWithDirs,
+  removeSubsections,
+  scriptsTable,
   sentenceCase,
+  splitIntro,
+  splitSections,
   titleCase,
+  trimChatter,
   writeDocs,
 };

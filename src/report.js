@@ -46,7 +46,8 @@ function proposalSummary(stats, { reasons = false } = {}) {
 }
 
 // processed: [{ path, verifier, added, rejections, stats }]
-// docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }] }
+// docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }],
+//   readme: { updated, polished, kept, notReadded, fallback } with section headings, or null }
 // leftOver: [{ path, reason }]
 // models: { comment, docs, fallback, fallbackUsed, level }
 function buildReport({ processed = [], docs = { updated: [], removed: [], pending: [] }, leftOver = [], models }) {
@@ -56,6 +57,7 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   const summary = [];
   if (added) summary.push(`adds ${plural(added, 'comment')} to ${plural(commented, 'file')}`);
   if (docs.updated.length) summary.push(`updates ${plural(docs.updated.length, 'doc')}`);
+  if (docs.readme && (docs.readme.updated.length || docs.readme.polished.length)) summary.push('updates the README');
   if (docs.removed.length) summary.push(`removes ${plural(docs.removed.length, 'doc')}`);
   const what = summary.length ? `This pull request ${summary.join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : 'This pull request updates Docturnal\'s records of your code.';
   const lines = ['# Docturnal update', '', `${what} Review the changes, then merge the pull request to keep them.`];
@@ -71,7 +73,22 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   if (docs.updated.length || docs.removed.length) {
     lines.push('', '## Docs', '');
     for (const doc of docs.updated) lines.push(`- Updated \`${doc.path}\`${doc.fallback ? ' (written with the fallback model)' : ''}`);
-    for (const doc of docs.removed) lines.push(`- Removed \`${doc}\` because its layer no longer exists`);
+    for (const doc of docs.removed) {
+      lines.push(/(^|\/)README\.md$/.test(doc)
+        ? `- Removed \`${doc}\` because the main document is now \`README.md\` at the repository root`
+        : `- Removed \`${doc}\` because its layer no longer exists`);
+    }
+  }
+
+  // The README lists sections by heading only, never their text.
+  const readme = docs.readme;
+  if (readme && (readme.updated.length || readme.polished.length || readme.kept.length || readme.notReadded.length)) {
+    const list = (items) => items.map((h) => `"${cell(h)}"`).join(', ');
+    lines.push('', '## README', '');
+    if (readme.updated.length) lines.push(`- Updated: ${list(readme.updated)}${readme.fallback ? ' (written with the fallback model)' : ''}`);
+    if (readme.polished.length) lines.push(`- Polished for clarity: ${list(readme.polished)}`);
+    if (readme.kept.length) lines.push(`- Kept in your wording: ${list(readme.kept)}`);
+    if (readme.notReadded.length) lines.push(`- Not re-added because you removed them: ${list(readme.notReadded)}`);
   }
 
   // The proposed-comments column covers placement, length, and density. This section lists
