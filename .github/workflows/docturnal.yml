@@ -1,0 +1,35 @@
+# Docturnal adds comments to your code and updates your docs, then opens a pull request
+# for you to review. The Docturnal app starts this workflow every night at the time you
+# choose in Docturnal's settings. The settings link is in each Docturnal pull request.
+# Docturnal workflow version 2.
+name: Docturnal
+
+on:
+  workflow_dispatch:
+    inputs:
+      comment-level:
+        description: "How many comments to add: low, medium, heavy, or off (docs only)."
+        type: choice
+        options: ["low", "medium", "heavy", "off"]
+        default: "medium"
+
+permissions:
+  contents: write
+
+# One run at a time: a run that starts while another is going waits for it, so two runs
+# never push docturnal/update at once.
+concurrency:
+  group: docturnal
+  cancel-in-progress: false
+
+jobs:
+  docturnal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: aidanbh16/Docturnal@v1
+        with:
+          comment-level: ${{ inputs['comment-level'] || 'medium' }}
