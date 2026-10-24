@@ -427,19 +427,93 @@ describe('setup pull request', () => {
     pull_request: { number: 1, merged, head: { ref, repo: { full_name: 'octo/hello' } }, base: { ref: 'main' } },
   });
 
-  it('starts the first run when the setup pull request is merged', async () => {
-    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW } });
+  it('starts the first run when the setup pull request is merged, and deletes its branch', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW }, branches: ['docturnal/setup'] });
     await t.deliver('pull_request', closed(true));
-    expect(t.logs).toEqual(['setup octo/hello: setup pull request #1 merged, first run queued']);
+    expect(t.logs).toEqual([
+      'setup octo/hello: setup pull request #1 merged, first run queued',
+      'pull request octo/hello#1: deleted docturnal/setup',
+    ]);
     await t.drain();
     expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
   });
 
-  it('does nothing when the setup pull request is closed without merging, or for other branches', async () => {
-    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: 'x' } });
+  it('starts no run when the setup pull request is closed without merging, and does nothing for other branches', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: 'x' }, branches: ['docturnal/setup'] });
     await t.deliver('pull_request', closed(false));
     await t.deliver('pull_request', closed(true, 'feature'));
     expect(t.queue.pending).toEqual([]);
+    // Only the closed setup pull request's branch is deleted.
+    expect(t.gh.state.calls.filter((c: string) => c.includes('/repos/'))).toEqual(['DELETE /repos/octo/hello/git/refs/heads/docturnal/setup']);
+  });
+});
+
+describe('branch cleanup when a Docturnal pull request closes', () => {
+  const closed = ({ merged = true, ref = 'docturnal/update', headRepo = 'octo/hello' as string | null } = {}) => ({
+    action: 'closed',
+    installation: { id: 1 },
+    repository: REPO,
+    pull_request: { number: 7, merged, head: { ref, repo: headRepo ? { full_name: headRepo } : null }, base: { ref: 'main' } },
+  });
+  const branchesOf = (t: ReturnType<typeof setup>) => [...t.gh.state.repos.get('octo/hello').branches.keys()];
+  const ALL = ['docturnal/update', 'docturnal/setup', 'docturnal/workflow-update'];
+
+  for (const ref of ALL) {
+    it(`deletes ${ref} when its pull request is merged`, async () => {
+      const t = setup({ branches: ALL });
+      expect(await t.deliver('pull_request', closed({ ref }))).toBe(200);
+      expect(branchesOf(t)).toEqual(['main', ...ALL.filter((b) => b !== ref)]);
+      expect(t.gh.state.calls).toContain(`DELETE /repos/octo/hello/git/refs/heads/${ref}`);
+      expect(t.logs).toContain(`pull request octo/hello#7: deleted ${ref}`);
+    });
+  }
+
+  it('deletes docturnal/update when its pull request is closed without merging', async () => {
+    const t = setup({ branches: ['docturnal/update'] });
+    await t.deliver('pull_request', closed({ merged: false }));
+    expect(branchesOf(t)).toEqual(['main']);
+    expect(t.logs).toEqual(['pull request octo/hello#7: deleted docturnal/update']);
+  });
+
+  for (const status of ['in_progress', 'queued', 'pending']) {
+    it(`keeps docturnal/update while a Docturnal run is ${status}`, async () => {
+      const t = setup({ branches: ['docturnal/update'], runs: [{ repo: 'octo/hello', status }] });
+      expect(await t.deliver('pull_request', closed())).toBe(200);
+      expect(branchesOf(t)).toEqual(['main', 'docturnal/update']);
+      expect(t.gh.state.calls.filter((c: string) => c.startsWith('DELETE'))).toEqual([]);
+      expect(t.gh.state.calls).toContain('GET /repos/octo/hello/actions/workflows/docturnal.yml/runs');
+      expect(t.logs).toEqual(['pull request octo/hello#7: kept docturnal/update, a Docturnal run is queued or in progress; the next closed pull request deletes it']);
+    });
+  }
+
+  it('deletes the setup and workflow update branches without checking for runs, since runs never push to them', async () => {
+    const t = setup({ branches: ALL, runs: [{ repo: 'octo/hello', status: 'in_progress' }] });
+    await t.deliver('pull_request', closed({ ref: 'docturnal/workflow-update' }));
+    expect(branchesOf(t)).toEqual(['main', 'docturnal/update', 'docturnal/setup']);
+    expect(t.gh.state.calls.filter((c: string) => c.includes('/repos/'))).toEqual(['DELETE /repos/octo/hello/git/refs/heads/docturnal/workflow-update']);
+  });
+
+  it('treats a branch that is already gone as deleted', async () => {
+    const t = setup();
+    expect(await t.deliver('pull_request', closed())).toBe(200);
+    expect(t.logs).toEqual(['pull request octo/hello#7: docturnal/update was already deleted']);
+  });
+
+  it('ignores a pull request from a fork, from a deleted fork, or from a branch that is not Docturnal\'s', async () => {
+    const t = setup({ branches: [...ALL, 'feature'] });
+    await t.deliver('pull_request', closed({ headRepo: 'someone/hello' }));
+    await t.deliver('pull_request', closed({ headRepo: null }));
+    await t.deliver('pull_request', closed({ ref: 'feature' }));
+    await t.deliver('pull_request', closed({ ref: 'docturnal/update-old' }));
+    expect(t.gh.state.calls).toEqual([]);
+    expect(branchesOf(t)).toEqual(['main', ...ALL, 'feature']);
+    expect(t.logs).toEqual([]);
+  });
+
+  it('ignores a closed pull request without an installation', async () => {
+    const t = setup({ branches: ['docturnal/update'] });
+    const { installation: _, ...payload } = closed();
+    await t.deliver('pull_request', payload);
     expect(t.gh.state.calls).toEqual([]);
   });
 });

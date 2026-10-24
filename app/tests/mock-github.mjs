@@ -12,6 +12,8 @@ export function createMockGitHub({
   defaultBranch = 'main',
   protectedBranches = [],
   files = {},
+  // Branches besides the default branch, in every repository.
+  branches = [],
   dispatchNotFound = 0,
   failPulls = false,
   failPuts = 0,
@@ -36,7 +38,7 @@ export function createMockGitHub({
     state.repos.set(fullName, {
       defaultBranch,
       protected: new Set(protectedBranches),
-      branches: new Map([[defaultBranch, 'sha-base']]),
+      branches: new Map([[defaultBranch, 'sha-base'], ...branches.map((b) => [b, 'sha-branch'])]),
       files: new Map(Object.entries(files)),
     });
   }
@@ -137,6 +139,11 @@ export function createMockGitHub({
       return json(200, { ref: `refs/heads/${branch}`, object: { sha: repo.branches.get(branch), type: 'commit' } });
     }
     const resetRef = rest.match(/^\/git\/refs\/heads\/(.+)$/);
+    if (method === 'DELETE' && resetRef) {
+      // Like GitHub, deleting a branch that does not exist answers 422.
+      if (!repo.branches.delete(resetRef[1])) return json(422, { message: 'Reference does not exist' });
+      return json(204, null);
+    }
     if (method === 'PATCH' && resetRef) {
       const branch = resetRef[1];
       if (!repo.branches.has(branch)) return json(422, { message: 'Reference does not exist' });

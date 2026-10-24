@@ -237,7 +237,7 @@ The install works if you see the workflow commit, the pull request, and the sett
 1. In another throwaway repository, add a branch ruleset or branch protection rule on `main` that requires a pull request before merging.
 2. Add that repository to the installation (**Settings > Applications > Docturnal > Configure > Repository access**).
 3. The log shows `setup you/docturnal-protected: main is protected, opened setup pull request #1`, and the repository has a pull request titled "Set up Docturnal".
-4. Merge it. The log shows `setup pull request #1 merged, first run queued`, then `started the first run on main`.
+4. Merge it. The log shows `setup pull request #1 merged, first run queued` and `pull request you/docturnal-protected#1: deleted docturnal/setup`, then `started the first run on main`. The repository no longer has a `docturnal/setup` branch.
 
 ### Clean up
 

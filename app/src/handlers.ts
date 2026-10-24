@@ -285,6 +285,42 @@ export async function onSetupMerged(payload: any, deps: Deps): Promise<void> {
   deps.log(`setup ${fullName}: setup pull request #${pr.number} merged, first run queued`);
 }
 
+// The branches Docturnal creates for its pull requests.
+export const DOCTURNAL_BRANCHES: readonly string[] = [UPDATE_BRANCH, SETUP_BRANCH, WORKFLOW_UPDATE_BRANCH];
+
+// Deletes a Docturnal branch once its pull request is closed, merged or not, so repositories
+// do not collect stale branches. docturnal/update is kept while a Docturnal run is queued,
+// pending, or in progress, since that run pushes to it; the next closed pull request deletes
+// it. A branch that is already gone counts as deleted. Failures are logged, never retried.
+export async function onPullRequestClosed(octokit: Octokit, payload: any, deps: Deps): Promise<void> {
+  const fullName = payload.repository.full_name;
+  const pr = payload.pull_request;
+  const branch = pr.head.ref;
+  // A pull request from a fork names a branch in someone else's repository.
+  if (!DOCTURNAL_BRANCHES.includes(branch) || pr.head.repo?.full_name !== fullName) return;
+  const owner = payload.repository.owner.login ?? payload.repository.owner.name;
+  const repo = payload.repository.name;
+  const label = `pull request ${fullName}#${pr.number}`;
+  try {
+    if (branch === UPDATE_BRANCH && (await hasActiveRun(octokit, { owner, repo }))) {
+      deps.log(`${label}: kept ${branch}, a Docturnal run is queued or in progress; the next closed pull request deletes it`);
+      return;
+    }
+    try {
+      // The branch is one of ours, so its name is sent as it is, with its slash.
+      await octokit.request(`DELETE /repos/{owner}/{repo}/git/refs/heads/${branch}` as 'GET /', { owner, repo });
+    } catch (err) {
+      const status = errorStatus(err);
+      if (status !== 404 && status !== 422) throw err;
+      deps.log(`${label}: ${branch} was already deleted`);
+      return;
+    }
+    deps.log(`${label}: deleted ${branch}`);
+  } catch (err) {
+    deps.log(`${label}: could not delete ${branch}, ${errorMessage(err)}`);
+  }
+}
+
 // Opens or updates the pull request for docturnal/update, using last-run.md as its body.
 export async function onUpdatePush(octokit: Octokit, payload: any, deps: Deps): Promise<void> {
   const fullName = payload.repository.full_name;

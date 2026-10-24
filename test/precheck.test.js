@@ -148,6 +148,27 @@ describe('pre-check', () => {
     assert.strictEqual(precheck().outputs.changed, 'false');
   });
 
+  it('starts fresh from the base when the app deleted docturnal/update after its pull request merged', async () => {
+    git(seed, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'docturnal/update');
+    git(seed, 'push', '-q', 'origin', 'main');
+    git(seed, 'push', '-q', 'origin', '--delete', 'docturnal/update');
+    assert.throws(() => git(remote, 'rev-parse', '--verify', 'refs/heads/docturnal/update'));
+    // The merged state on the base means nothing is left to do.
+    assert.strictEqual(precheck().outputs.changed, 'false');
+
+    fs.appendFileSync(path.join(seed, 'src/api/users.js'), '\nexport function renameUser(db, id, name) {\n  return db.update(id, { name });\n}\n');
+    pushSeed('Add renameUser');
+    const result = precheck();
+    assert.strictEqual(result.outputs.changed, 'true');
+    assert.match(result.log, /1 file new or changed/);
+    await runMain(result.cwd, result.outputs.base);
+    // The branch is created again from the base, with only the new change on top.
+    const commits = git(remote, 'rev-list', '--count', 'main..docturnal/update');
+    assert.strictEqual(commits, '1');
+    assert.strictEqual(git(remote, 'merge-base', 'main', 'docturnal/update'), git(remote, 'rev-parse', 'main'));
+    assert.strictEqual(precheck().outputs.changed, 'false');
+  });
+
   it('runs when a generated doc is missing', () => {
     const cwd = clone();
     git(cwd, 'checkout', '-q', 'docturnal/update');

@@ -14,6 +14,7 @@ import {
   failure,
   onInstallationDeleted,
   onRepositoriesRemoved,
+  onPullRequestClosed,
   onSetupMerged,
   onUpdatePush,
   queueSetups,
@@ -148,8 +149,10 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
   app.webhooks.on('installation_repositories.removed', async ({ payload: p }) => {
     await onRepositoriesRemoved(p.installation.id, p.repositories_removed.map((r) => r.full_name), deps);
   });
-  app.webhooks.on('pull_request.closed', async ({ payload: p }) => {
-    if (p.installation) await onSetupMerged(p, deps);
+  app.webhooks.on('pull_request.closed', async ({ octokit, payload: p }) => {
+    if (!p.installation) return;
+    await onSetupMerged(p, deps);
+    await onPullRequestClosed(octokit, p, deps);
   });
   app.webhooks.on('push', async ({ octokit, payload: p }) => {
     // Without an installation the app cannot act on this repository.
