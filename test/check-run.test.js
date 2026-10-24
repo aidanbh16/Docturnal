@@ -138,4 +138,19 @@ describe('the accuracy check in a run', () => {
     assert.strictEqual(git(remote, 'rev-parse', 'refs/heads/docturnal/update'), before);
     assert.match(fs.readFileSync(path.join(cwd, 'src/payroll.js'), 'utf8'), /const HOLIDAY_RATE = 2;\n$/);
   });
+
+  it('skips a file with syntax errors and says so in the log and in last-run.md', async () => {
+    onCheck = () => undefined;
+    const broken = 'export function payStub(entry) {\n  return grossPay(entry.hours, entry.rate;\n}\n';
+    fs.writeFileSync(path.join(seed, 'src/stub.js'), broken);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-qm', 'Add a broken file');
+    git(seed, 'push', '-q', 'origin', 'main');
+    const { log } = await runMain();
+    assert.match(log, /^src\/stub\.js: skipped, the file has syntax errors$/m);
+    assert.ok(!mock.requests.some((r) => (r.messages || []).some((m) => m.content.includes('File: src/stub.js'))));
+    const lastRun = git(remote, 'show', 'docturnal/update:.docturnal/last-run.md');
+    assert.match(lastRun, /## Files skipped\n\n- `src\/stub\.js`: skipped, the file has syntax errors\n/);
+    assert.strictEqual(git(remote, 'show', 'docturnal/update:src/stub.js') + '\n', broken);
+  });
 });

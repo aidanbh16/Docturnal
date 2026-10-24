@@ -116,7 +116,7 @@ test('a "no" verdict from the accuracy check drops the comment', async () => {
   const items = [];
   for (const check of checks) {
     assert.strictEqual(check.model, 'docs-model');
-    assert.strictEqual(check.options.num_predict, 256);
+    assert.strictEqual(check.options.num_predict, 384);
     assert.strictEqual(check.options.num_ctx, 8192);
     const prompt = check.messages[1].content;
     const ids = [...prompt.matchAll(/^Item (\d+)$/gm)].map((m) => Number(m[1]));

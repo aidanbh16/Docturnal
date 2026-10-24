@@ -74,11 +74,17 @@ function blocksReply(body) {
   return { comments };
 }
 
-// The accuracy check: every comment is accurate unless isAccurate says otherwise.
-// isAccurate receives the comment text and the code lines under it.
-function accuracyReply(body, isAccurate = () => true) {
-  const items = [...promptOf(body).matchAll(/^Item (\d+)\nComment: (.*)\nCode:\n((?:\d+\| .*(?:\n|$))+)/gm)];
-  return { verdicts: items.map(([, id, comment, code]) => ({ id: Number(id), accurate: isAccurate(comment, code) })) };
+// The accuracy check: every comment is accurate and useful and repeats nothing, unless judge
+// says otherwise. judge(comment, code, functionComment) returns true or false for accurate,
+// or an object with any of accurate, useful, and repeats.
+function accuracyReply(body, judge = () => true) {
+  const items = [...promptOf(body).matchAll(/^Item (\d+)\nComment: (.*)\n(?:Function comment: (.*)\n)?Code:\n((?:\d+\| .*(?:\n|$))+)/gm)];
+  return {
+    verdicts: items.map(([, id, comment, functionComment, code]) => {
+      const answer = judge(comment, code, functionComment);
+      return { id: Number(id), accurate: true, useful: true, repeats: false, ...(typeof answer === 'boolean' ? { accurate: answer } : answer) };
+    }),
+  };
 }
 
 function layersReply(body) {

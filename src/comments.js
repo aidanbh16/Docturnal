@@ -111,12 +111,14 @@ const OUTPUT_RESERVE_TOKENS = 1500;
 const CHARS_PER_TOKEN = 3;
 const MAX_PROMPT_LINE_CHARS = 500;
 
+const SYNTAX_ERRORS = 'the file has syntax errors';
+
 const MODEL_OPTIONS = (contextTokens) => ({ temperature: 0.2, seed: 42, num_ctx: contextTokens });
 
-// The accuracy check sends at most this many comments per request. Its answer is only a
-// verdict per comment, so it may be short.
+// The accuracy check sends at most this many comments per request. Its answer is only a few
+// yes or no verdicts per comment, so it may be short.
 const ACCURACY_BATCH = 8;
-const ACCURACY_PREDICT_TOKENS = 256;
+const ACCURACY_PREDICT_TOKENS = 384;
 
 function promptBudget(contextTokens) {
   return Math.max(2000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
@@ -197,7 +199,22 @@ function cleanText(raw, language) {
   return { paragraphs, joined };
 }
 
+// Wraps text at width, then narrows the width as far as the line count allows, so the lines
+// come out even and the last one is not left with a single short word.
 function wrap(text, width) {
+  const greedy = wrapGreedy(text, width);
+  if (greedy.length < 2) return greedy;
+  let lo = 1;
+  let hi = width;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (wrapGreedy(text, mid).length <= greedy.length) hi = mid;
+    else lo = mid + 1;
+  }
+  return wrapGreedy(text, lo);
+}
+
+function wrapGreedy(text, width) {
   const lines = [];
   let current = '';
   for (const word of text.split(' ')) {
@@ -337,6 +354,7 @@ const CATEGORY = {
   length: /^(longer than|block comment longer than)/,
   density: /^(level limit reached|within \d+ lines of another comment)/,
   inaccurate: /^inaccurate/,
+  restates: /^(restates the code|repeats the function comment)/,
   off: /^comment level is off/,
 };
 
@@ -352,7 +370,7 @@ function emptyStats(proposed) {
   return {
     proposed,
     added: 0,
-    dropped: { placement: {}, anchor: {}, length: {}, density: {}, inaccurate: {}, safety: {}, off: {} },
+    dropped: { placement: {}, anchor: {}, length: {}, density: {}, inaccurate: {}, restates: {}, safety: {}, off: {} },
     earlier: { kept: 0, restyled: 0, removed: {} },
   };
 }
@@ -415,6 +433,8 @@ function prepareFile({ text, language, level, records = [] }) {
   if (!LEVELS[level] && !records.length) return ctx;
   if (language.phpTags && !phpIsSafe(original)) return { ...ctx, error: 'PHP file mixes code with HTML' };
   const analysis = analyzeFile(body, original, language);
+  // A file the parser cannot read is never commented: verification could not prove anything.
+  if (analysis.syntaxErrors) return { ...ctx, error: SYNTAX_ERRORS, syntaxError: true };
   if (!analysis.ok) return { ...ctx, error: `cannot analyze file: ${analysis.error}` };
   ctx.analysis = analysis;
   const owned = records.length ? findOwned(original, analysis.info, records) : [];
@@ -552,9 +572,17 @@ function selectComments(ctx, built, verdicts, drop) {
   const unique = [];
   const earlierFirst = [...built.candidates].sort((a, b) => (a.source === 'earlier' ? 0 : 1) - (b.source === 'earlier' ? 0 : 1));
   for (const c of earlierFirst) {
-    const verdict = verdicts.get(c);
-    if (verdict === false) {
+    const verdict = verdicts.get(c) || {};
+    // Only a new line comment is dropped for adding nothing. A comment already in the file,
+    // Docturnal's or a person's, stays, and a block comment is what heavy level promises
+    // every function.
+    const judged = c.source === 'model' && c.kind === 'line';
+    if (verdict.accurate === false) {
       drop(c, 'inaccurate');
+    } else if (judged && verdict.useful === false) {
+      drop(c, 'restates the code');
+    } else if (judged && verdict.repeats === true && c.functionComment) {
+      drop(c, 'repeats the function comment');
     } else if (firstAt.has(c.target)) {
       drop(c, firstAt.get(c.target) === 'earlier' ? 'kept the earlier comment' : 'duplicate line');
     } else {
@@ -627,7 +655,7 @@ function renderComments(ctx, accepted, drop) {
 }
 
 // Selects, inserts, and verifies, and counts what happened. verdicts: Map from candidate to
-// the accuracy check's answer (true or false); a candidate without one stays.
+// the check's answers ({ accurate, useful, repeats }); a candidate without them stays.
 // Returns { text, added, rejected, rejections, stats, records, undocumented }, where stats
 // never holds comment text, and records lists every Docturnal comment now in the file.
 function finishFile(ctx, built, verdicts = new Map()) {
@@ -775,6 +803,7 @@ async function planComments({ path, text, level = 'medium', model, contextTokens
   if (isMinified(splitLines(stripBom(text).body))) return { ...plan, skipped: 'minified' };
 
   const ctx = prepareFile({ text, language, level, records });
+  if (ctx.syntaxError) return { ...plan, skipped: SYNTAX_ERRORS };
   const { lines } = ctx;
   const windows = buildWindows(lines, contextTokens);
   const summaries = [];
@@ -830,7 +859,15 @@ function needsCheck(plan) {
 // Throws when the check gets no usable answer.
 async function checkComments(plan, { chat = ollama.chat, model, host, contextTokens = 8192 }) {
   if (!needsCheck(plan)) return plan;
-  const items = [...plan.built.candidates].sort(byRank).map((c) => ({ candidate: c, comment: c.paragraphs.join(' '), target: c.target }));
+  for (const c of plan.built.candidates) {
+    if (c.source === 'model' && c.kind === 'line') c.functionComment = functionCommentFor(plan.ctx, plan.built, c.target);
+  }
+  const items = [...plan.built.candidates].sort(byRank).map((c) => ({
+    candidate: c,
+    comment: c.paragraphs.join(' '),
+    target: c.target,
+    functionComment: c.functionComment,
+  }));
   const verdicts = new Map();
   const batches = Math.ceil(items.length / ACCURACY_BATCH);
   for (let b = 0; b < batches; b++) {
@@ -852,6 +889,29 @@ async function checkComments(plan, { chat = ollama.chat, model, host, contextTok
   }
   plan.verdicts = verdicts;
   return plan;
+}
+
+// The comment of the innermost function, class, or component around a line: the block
+// comment proposed for it (an earlier one first), or else the comment already above it.
+// Null when the line is in none, or the enclosing one has no comment.
+function functionCommentFor(ctx, built, target) {
+  const info = ctx.analysis.info;
+  let start = -1;
+  for (let i = target - 2; i >= 0; i--) {
+    if (info[i].symbol && info[i].symbolEnd !== null && info[i].symbolEnd >= target - 1) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  const declaration = resolveTarget(start + 1, ctx.lines, ctx.analysis, ctx.language);
+  const blocks = built.candidates.filter((c) => c.kind === 'block' && c.target === declaration);
+  const block = blocks.find((c) => c.source === 'earlier') || blocks[0];
+  if (block) return block.paragraphs.join(' ');
+  const above = [];
+  for (let i = declaration - 2; i >= 0 && info[i].commentOnly; i--) above.unshift(stripMarkers(ctx.lines[i].text));
+  const text = above.filter(Boolean).join(' ');
+  return text || null;
 }
 
 // Step 3 of 3, without a model: selects, inserts, and verifies.

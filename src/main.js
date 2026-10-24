@@ -60,6 +60,8 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
   const processed = [];
   const leftOver = [];
   const writtenSources = [];
+  // Files that were not commented, with the reason, for the log and last-run.md.
+  const skipped = [];
   const plans = [];
   // A file left for the next run keeps its old state, so the next run processes it again.
   const defer = (file, reason, detail = reason) => {
@@ -74,6 +76,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     const text = entry.buffer.toString('utf8');
     if (!Buffer.from(text, 'utf8').equals(entry.buffer)) {
       files.set(entry.path, { hash: entry.hash });
+      skipped.push({ path: entry.path, reason: 'not UTF-8' });
       log(`${entry.path}: skipped, not UTF-8`);
       continue;
     }
@@ -151,6 +154,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     }
     if (result.skipped) {
       files.set(entry.path, { hash: hashContent(finalBuffer) });
+      skipped.push({ path: entry.path, reason: result.skipped });
       log(`${entry.path}: skipped, ${result.skipped}`);
       continue;
     }
@@ -250,6 +254,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     processed,
     docs: docsReport,
     leftOver,
+    skipped,
     models: { comment: models.comment, docs: models.docs, fallback: models.comment, fallbackUsed, level: config.commentLevel },
   });
   fs.writeFileSync(path.join(cwd, LAST_RUN_PATH), report);

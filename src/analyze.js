@@ -60,8 +60,10 @@ function baseInfo(lines) {
     isDeclaration: false,
     // A top-level constant, which heavy level gives a short line comment.
     isConstant: false,
-    // The name of a function, class, or component that starts on this line, if any.
+    // The name of a function, class, or component that starts on this line, if any, and
+    // the index of its last line, where the parser knows it.
     symbol: null,
+    symbolEnd: null,
   }));
 }
 
@@ -184,6 +186,7 @@ function analyzeTypeScript(text, lines, language) {
     const entry = info[lineOf(node.getStart(sf))];
     entry.isDeclaration = true;
     setSymbol(entry, symbol);
+    if (symbol && entry.symbolEnd === null) entry.symbolEnd = lineOf(Math.max(node.getStart(sf), node.end - 1));
   };
   const nameOf = (node) => (node && node.name ? node.name.getText(sf) : null);
 
@@ -262,7 +265,7 @@ function analyzeTypeScript(text, lines, language) {
     info[l].commentOnly = inComment(first) && inComment(last);
   });
 
-  return { ok: true, info, decoratorTarget, parseErrors: sf.parseDiagnostics.length };
+  return { ok: true, info, decoratorTarget, syntaxErrors: sf.parseDiagnostics.length };
 }
 
 function analyzePythonLines(text, lines) {
@@ -275,7 +278,7 @@ function analyzePythonLines(text, lines) {
   } catch (err) {
     return { ok: false, error: err.message };
   }
-  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.ok) return { ok: false, error: result.error, syntaxErrors: result.syntax_error ? 1 : 0 };
 
   const info = baseInfo(lines);
   const at = (lineNumber) => info[lineNumber - 1];
@@ -283,7 +286,10 @@ function analyzePythonLines(text, lines) {
   for (const n of result.comments) if (at(n)) at(n).hasComment = true;
   for (const n of result.imports) if (at(n)) at(n).isImport = true;
   for (const n of result.declarations) if (at(n)) at(n).isDeclaration = true;
-  for (const [n, name] of result.symbols || []) setSymbol(at(n), name);
+  for (const [n, name, end] of result.symbols || []) {
+    setSymbol(at(n), name);
+    if (at(n) && at(n).symbolEnd === null && Number.isInteger(end)) at(n).symbolEnd = end - 1;
+  }
   for (const n of result.constants || []) if (at(n)) at(n).isConstant = true;
   lines.forEach((line, l) => {
     info[l].commentOnly = !info[l].unsafeStart && line.text.trimStart().startsWith('#');

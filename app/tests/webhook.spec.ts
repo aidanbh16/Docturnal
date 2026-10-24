@@ -438,6 +438,18 @@ describe('setup pull request', () => {
     expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
   });
 
+  it('starts no run and deletes nothing for a merged docturnal/setup pull request from a fork', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW }, branches: ['docturnal/setup'] });
+    const fromFork = closed(true);
+    fromFork.pull_request.head.repo = { full_name: 'someone/hello' };
+    expect(await t.deliver('pull_request', fromFork)).toBe(200);
+    expect(t.queue.pending).toEqual([]);
+    await t.drain();
+    expect(t.gh.state.dispatches).toEqual([]);
+    expect(t.gh.state.calls).toEqual([]);
+    expect(t.logs).toEqual([]);
+  });
+
   it('starts no run when the setup pull request is closed without merging, and does nothing for other branches', async () => {
     const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: 'x' }, branches: ['docturnal/setup'] });
     await t.deliver('pull_request', closed(false));

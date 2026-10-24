@@ -55,6 +55,7 @@ test('counts proposals, each drop category with its reasons, and added comments'
       length: { 'longer than 25 words': 1 },
       density: { 'level limit reached': 2 },
       inaccurate: {},
+      restates: {},
       safety: { 'tool directive': 1 },
       off: {},
     },

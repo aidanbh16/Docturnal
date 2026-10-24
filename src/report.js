@@ -11,6 +11,7 @@ const DROP_LABELS = {
   length: 'dropped by the length limit',
   density: 'dropped by the density limit',
   inaccurate: 'inaccurate',
+  restates: 'restates the code',
   safety: 'rejected by the safety check',
   off: 'skipped because the comment level is off',
 };
@@ -58,8 +59,9 @@ function proposalSummary(stats, { reasons = false } = {}) {
 // docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }],
 //   readme: { updated, polished, kept, notReadded, fallback } with section headings, or null }
 // leftOver: [{ path, reason }]
+// skipped: [{ path, reason }], files that were not commented, such as ones with syntax errors
 // models: { comment, docs, fallback, fallbackUsed, level }
-function buildReport({ processed = [], docs = { updated: [], removed: [], pending: [] }, leftOver = [], models }) {
+function buildReport({ processed = [], docs = { updated: [], removed: [], pending: [] }, leftOver = [], skipped = [], models }) {
   const added = processed.reduce((sum, f) => sum + f.added, 0);
   const commented = processed.filter((f) => f.added > 0).length;
 
@@ -114,6 +116,11 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
       lines.push(`| \`${cell(r.path)}\` | ${Number.isInteger(r.line) ? r.line : '-'} | ${cell(r.reason)} |`);
     }
     if (rejected.length > MAX_REJECTION_ROWS) lines.push('', `${rejected.length - MAX_REJECTION_ROWS} more are not shown.`);
+  }
+
+  if (skipped.length) {
+    lines.push('', '## Files skipped', '');
+    for (const item of skipped) lines.push(`- \`${item.path}\`: skipped, ${item.reason}`);
   }
 
   const waiting = [...leftOver, ...docs.pending];

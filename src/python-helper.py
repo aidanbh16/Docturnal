@@ -38,7 +38,7 @@ def analyze(source):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             first = min([d.lineno for d in node.decorator_list] + [node.lineno])
             declarations.append(first)
-            symbols.append([first, node.name])
+            symbols.append([first, node.name, node.end_lineno or node.lineno])
             if first != node.lineno:
                 decorated.append([first, node.lineno])
 
@@ -80,7 +80,11 @@ def main():
         try:
             response = analyze(request["source"])
         except Exception as err:  # Any failure means the file cannot be commented safely.
-            response = {"ok": False, "error": f"{type(err).__name__}: {err}"}
+            response = {
+                "ok": False,
+                "error": f"{type(err).__name__}: {err}",
+                "syntax_error": isinstance(err, SyntaxError),
+            }
     elif mode == "verify":
         response = {"results": verify(request["original"], request["candidates"])}
     else:
