@@ -246,16 +246,17 @@ test('a layer doc\'s Configuration section is the computed one: the model\'s, ev
   for (const said of ['Set `DATABASE_URL` to the connection string.', 'This layer has no configuration.']) {
     const raw = `# X\nIntro.\n## Overview\nO.\n## Configuration\n${said}`;
     const without = docs.buildLayerDoc(raw, { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO });
-    assert.deepStrictEqual(h2s(without), ['Overview', 'Responsibilities', 'Key components', 'Related layers']);
+    // Nothing the model wrote is grounded, so the doc keeps only the description and what is computed.
+    assert.deepStrictEqual(h2s(without), ['Key components', 'Related layers']);
     assert.doesNotMatch(without, /DATABASE_URL|no configuration/);
     const computed = '- Environment variables: `PGHOST`, `PGPORT`.';
     const withConfig = docs.buildLayerDoc(raw, { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO, configuration: computed });
-    assert.deepStrictEqual(h2s(withConfig), ['Overview', 'Responsibilities', 'Key components', 'Configuration', 'Related layers']);
+    assert.deepStrictEqual(h2s(withConfig), ['Key components', 'Configuration', 'Related layers']);
     assert.match(withConfig, /## Configuration\n\n- Environment variables: `PGHOST`, `PGPORT`\./);
   }
-  // With no responsibilities from the model, they come from the file summaries.
+  // With no responsibilities from the model, the section is left out: it never lists file purposes.
   const doc = docs.buildLayerDoc('# X\nIntro.', { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO });
-  assert.match(doc, /## Responsibilities\n\n- Opens the database pool\./);
+  assert.doesNotMatch(doc, /## Responsibilities|- Opens the database pool\./);
 });
 
 test('the Configuration section lists the environment variables, action inputs, and configuration files the code reads', () => {

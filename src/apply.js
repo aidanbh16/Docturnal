@@ -144,6 +144,9 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     });
     readmeMs = now() - readmeStarted;
     docTimings = result.timings || docTimings;
+    if (linkStats.cutReplies) log(`Docturnal: ${linkStats.cutReplies} ${linkStats.cutReplies === 1 ? 'reply' : 'replies'} for the docs reached the length limit, so each was cut back to its last complete sentence`);
+    if (linkStats.repeated) log(`Docturnal: dropped ${linkStats.repeated} ${linkStats.repeated === 1 ? 'sentence' : 'sentences'} that repeated another in the same doc`);
+    if (linkStats.purposeItems) log(`Docturnal: dropped ${linkStats.purposeItems} Responsibilities ${linkStats.purposeItems === 1 ? 'item' : 'items'} that only repeated one file's purpose`);
     if (linkStats.droppedTables) log(`Docturnal: dropped ${linkStats.droppedTables} ${linkStats.droppedTables === 1 ? 'table' : 'tables'} the model wrote into the docs`);
     if (linkStats.ungrounded) log(`Docturnal: dropped ${linkStats.ungrounded} ${linkStats.ungrounded === 1 ? 'sentence' : 'sentences'} from the layer docs that their files do not support`);
     if (linkStats.droppedLinks) log(`Docturnal: dropped ${linkStats.droppedLinks} ${linkStats.droppedLinks === 1 ? 'link or HTML tag' : 'links or HTML tags'} from the docs that the repository does not have`);

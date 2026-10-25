@@ -14,6 +14,10 @@ const fs = require('fs');
 const http = require('http');
 
 const OOM_MESSAGE = 'model requires more system memory (5.6 GiB) than is available (3.9 GiB)';
+// A handler reply made with cutOff(text) ends with done_reason "length", as when a reply
+// reaches num_predict.
+const CUT_OFF = Symbol('cut off');
+const cutOff = (content) => ({ [CUT_OFF]: true, content });
 
 class MockError extends Error {
   constructor(status, body) {
@@ -179,11 +183,17 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
       let status = 200;
       let content;
       let payload;
+      let doneReason = null;
       try {
         // A request without messages only loads the model, as in Ollama. The handler may
         // still fail it, for example for a model that does not fit in memory.
         const reply = await handler(body, requests.length - 1);
-        content = !(body.messages || []).length ? '' : typeof reply === 'string' ? reply : JSON.stringify(reply);
+        if (reply && reply[CUT_OFF]) {
+          doneReason = 'length';
+          content = reply.content;
+        } else {
+          content = !(body.messages || []).length ? '' : typeof reply === 'string' ? reply : JSON.stringify(reply);
+        }
       } catch (err) {
         status = err.status || 500;
         payload = err.message;
@@ -212,7 +222,7 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
       for (let i = 0; i < content.length; i += size) {
         res.write(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: content.slice(i, i + size) }, done: false })}\n`);
       }
-      res.end(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: content ? 'stop' : 'load' })}\n`);
+      res.end(`${JSON.stringify({ model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: doneReason || (content ? 'stop' : 'load') })}\n`);
     });
   });
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
@@ -243,4 +253,4 @@ if (require.main === module && process.argv.includes('--serve')) {
   });
 }
 
-module.exports = { OOM_MESSAGE, accuracyReply, blocksReply, defaultHandler, kindOf, startMockOllama };
+module.exports = { OOM_MESSAGE, accuracyReply, blocksReply, cutOff, defaultHandler, kindOf, startMockOllama };

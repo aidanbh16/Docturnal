@@ -109,13 +109,16 @@ function request({ method = 'POST', path, payload, host, deadline, onLine }) {
 
 // Sends one /api/chat request and returns the reply's text. With no messages, Ollama only
 // loads the model. keepAlive: how long Ollama keeps the model loaded afterward, such as "30m".
-async function chat({ model, messages, format, options, host, keepAlive, deadline }) {
+// withReason: return { content, doneReason } instead, where doneReason is Ollama's done_reason,
+// such as "stop", or "length" when the reply reached num_predict and was cut off.
+async function chat({ model, messages, format, options, host, keepAlive, deadline, withReason = false }) {
   const payload = { model, messages, stream: true };
   if (format !== undefined) payload.format = format;
   if (options !== undefined) payload.options = options;
   if (keepAlive !== undefined) payload.keep_alive = keepAlive;
   let content = '';
   let done = false;
+  let doneReason = null;
   await request({
     path: '/api/chat',
     payload,
@@ -123,11 +126,14 @@ async function chat({ model, messages, format, options, host, keepAlive, deadlin
     deadline,
     onLine: (chunk) => {
       if (chunk.message && typeof chunk.message.content === 'string') content += chunk.message.content;
-      if (chunk.done) done = true;
+      if (chunk.done) {
+        done = true;
+        if (typeof chunk.done_reason === 'string') doneReason = chunk.done_reason;
+      }
     },
   });
   if (!done) throw new Error('Ollama closed the reply before it finished');
-  return content;
+  return withReason ? { content, doneReason } : content;
 }
 
 // What went wrong, with the underlying cause when there is one, such as ECONNRESET.
@@ -150,7 +156,8 @@ function loggedChat(chatFn, { log = console.log, now = Date.now, deadline } = {}
     const seconds = () => `${((now() - started) / 1000).toFixed(1)} s`;
     try {
       const content = await chatFn({ ...req, deadline: req.deadline !== undefined ? req.deadline : deadline });
-      log(`Ollama: ${what}, ${seconds()}`);
+      const cut = content && typeof content === 'object' && content.doneReason === 'length';
+      log(`Ollama: ${what}, ${seconds()}${cut ? ', stopped at its length limit' : ''}`);
       return content;
     } catch (err) {
       log(`Ollama: ${what} failed after ${seconds()}: ${describeError(err)}`);

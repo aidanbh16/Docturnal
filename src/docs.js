@@ -12,7 +12,7 @@ const links = require('./links');
 const grounding = require('./grounding');
 const { isPlainPath } = require('./safe-path');
 const { configurationSection, layerConfiguration } = require('./configuration');
-const { planGroundedLayers } = require('./layers');
+const { copiesPurpose, planGroundedLayers } = require('./layers');
 const ollama = require('./ollama');
 const { SKIP_DIRS } = require('./languages');
 
@@ -26,6 +26,8 @@ const RESERVED_SLUGS = new Set(['readme', 'index']);
 const DOC_PROMPT_CHARS = 4000;
 // The longest answer for each document, in tokens, sized to the sections it writes.
 const LAYER_DOC_TOKENS = 450;
+// Responsibilities has at most this many items.
+const MAX_RESPONSIBILITIES = 6;
 // A short excerpt of source, only for a layer whose files have no description at all.
 const EXCERPT_LINES = 40;
 const PROMPT_RESERVE_TOKENS = 1500;
@@ -206,7 +208,58 @@ function fixLinks(line, docPath, existingPaths) {
 }
 
 // A table's separator row, such as "| --- | :---: |" or "---|---".
-const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+// The end of a sentence in a line: a period, question mark, or exclamation mark, with any
+// closing quotes, brackets, or emphasis, before a space or the end. "e.g." and "i.e." are not.
+const SENTENCE_END = /(?<!\b(?:e\.g|i\.e|etc|vs))[.!?]["'”’)\]`*_]*(?=\s|$)/g;
+const FENCE = /^\s*(```|~~~)/;
+const LIST_MARKER = /^\s*([-*+]|\d+[.)])\s+/;
+
+function lastSentenceEnd(line) {
+  let end = -1;
+  for (const m of line.matchAll(SENTENCE_END)) end = m.index + m[0].length;
+  return end;
+}
+
+// A reply the model stopped at its output limit (Ollama's done_reason "length"), cut back to
+// its last complete sentence or list item: never a partial sentence, list item, heading, or
+// code block. An open code block goes whole, a heading with nothing after it goes, and a line
+// that ends mid-sentence keeps only its complete sentences; a list item with none goes whole.
+function cutToComplete(text) {
+  const lines = String(text || '').split('\n');
+  let open = -1;
+  lines.forEach((line, i) => {
+    if (FENCE.test(line)) open = open === -1 ? i : -1;
+  });
+  if (open !== -1) lines.splice(open);
+  while (lines.length) {
+    const last = lines[lines.length - 1];
+    if (!last.trim() || /^#{1,6}\s/.test(last)) {
+      lines.pop();
+      continue;
+    }
+    if (FENCE.test(last) || TABLE_ROW.test(last)) break;
+    const end = lastSentenceEnd(last.trimEnd());
+    if (end === last.trimEnd().length) break;
+    const marker = (LIST_MARKER.exec(last) || [''])[0];
+    if (end > marker.length) {
+      lines[lines.length - 1] = last.slice(0, end);
+      break;
+    }
+    lines.pop();
+  }
+  return lines.join('\n');
+}
+
+// The text of a reply from a call made withReason, cut back when it stopped at its length limit.
+// stats.cutReplies counts those. A plain string, as from a test's chat, is used as it is.
+function completeReply(reply, stats = {}) {
+  if (!reply || typeof reply !== 'object') return String(reply || '');
+  if (reply.doneReason !== 'length') return String(reply.content || '');
+  stats.cutReplies = (stats.cutReplies || 0) + 1;
+  return cutToComplete(reply.content);
+}
+
+const TABLE_SEPARATOR =/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 
 // The lines without any Markdown table outside code blocks: tables come only from the computed
@@ -641,14 +694,34 @@ function assignSlugs(layers, isTaken = () => false) {
   }
 }
 
+// The folders whose files more than one layer holds, such as src/ split into its parts.
+function sharedFolders(layers) {
+  const owners = new Map();
+  for (const layer of layers) {
+    for (const file of layer.files) {
+      const dir = path.posix.dirname(file);
+      if (!owners.has(dir)) owners.set(dir, new Set());
+      owners.get(dir).add(layer);
+    }
+  }
+  return new Set([...owners].filter(([, set]) => set.size > 1).map(([dir]) => dir));
+}
+
 // A layer's description when the plan gives none: from the summaries of its folders, largest
-// first, never from one file's purpose.
-function folderDescription(layer, folders) {
+// first, never from one file's purpose. A folder other layers share says more than this layer,
+// so a layer with only part of its folders names its files instead.
+function folderDescription(layer, folders, shared = new Set()) {
   const counts = new Map();
   for (const file of layer.files) counts.set(path.posix.dirname(file), (counts.get(path.posix.dirname(file)) || 0) + 1);
   const dirs = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([dir]) => dir);
-  const summary = dirs.map((dir) => folders.get(dir)).find(Boolean);
+  const summary = dirs.filter((dir) => !shared.has(dir)).map((dir) => folders.get(dir)).find(Boolean);
   if (summary) return firstSentence(summary);
+  if (dirs.some((dir) => shared.has(dir))) {
+    const names = layer.files.slice(0, 3).map((f) => `\`${path.posix.basename(f)}\``);
+    const more = layer.files.length - names.length;
+    const list = more ? `${names.join(', ')}, and ${more} more ${more === 1 ? 'file' : 'files'}` : names.join(', ');
+    return `Holds ${list} in ${dirs.slice(0, 3).map((d) => `\`${d}/\``).join(', ')}.`;
+  }
   return `The code in ${dirs.slice(0, 3).map((d) => `\`${d}\``).join(', ')}.`;
 }
 
@@ -669,9 +742,10 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), fold
   for (const file of [...known].sort()) {
     if (!assigned.has(file)) closestLayer(file, layers).files.push(file);
   }
+  const shared = sharedFolders(layers);
   for (const layer of layers) {
     layer.files.sort();
-    if (!layer.description) layer.description = folderDescription(layer, folders);
+    if (!layer.description) layer.description = folderDescription(layer, folders, shared);
   }
   assignSlugs(layers, isTaken);
   return layers.map(({ name, slug, description, files: layerFiles }) => ({ name, slug, description, files: layerFiles }));
@@ -825,7 +899,7 @@ One paragraph that says what this layer is for.
 
 ## Responsibilities
 
-A bulleted list.
+A bulleted list of at most ${MAX_RESPONSIBILITIES} items. Each item sums up what a group of files does together; never one file's purpose.
 
 ## How it works
 
@@ -861,8 +935,10 @@ Files in this layer:
 // configuration: the computed Configuration section's Markdown, or '' for none (see
 // configuration.js). A Configuration section in the model's reply is dropped. The model's
 // prose keeps only sentences grounded in the layer's material (see grounding.js):
-// linkStats.ungrounded counts the ones dropped. An Overview with too little left is built from
-// the folder summaries, and Responsibilities from the file purposes.
+// linkStats.ungrounded counts the ones dropped. A sentence that repeats an earlier one in the doc
+// goes (linkStats.repeated). An Overview with too little left is built from the summaries of the
+// folders the layer holds whole. Responsibilities keeps at most MAX_RESPONSIBILITIES items, none
+// that repeats one file's purpose (linkStats.purposeItems), and is left out when none is left.
 function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docsDir = 'docs', existingPaths = null, knownUrls, linkStats = {}, configuration = '' }) {
   const docPath = `${docsDir}/${layer.slug}.md`;
   const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
@@ -871,18 +947,37 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
   const material = grounding.layerMaterial(layer, fileInfo, folders);
   const ground = (text) => grounding.groundSection(text, material, linkStats);
   const split = splitIntro(intro);
-  const first = ground(split.first);
-  const rest = ground(split.rest);
+  // Each thing is said once: a sentence that repeats an earlier one goes.
+  const seen = [];
+  const once = (text) => grounding.withoutRepeats(text, seen, linkStats);
+  const first = once(ground(split.first) || layer.description);
 
-  let overview = [rest, ground(bodies.get('overview'))].filter(Boolean).join('\n\n');
-  if (grounding.wordCount(overview) < grounding.MIN_OVERVIEW_WORDS) overview = grounding.folderOverview(layer, folders) || overview || layer.description;
-  const responsibilities = ground(bodies.get('responsibilities'))
-    || layer.files.map((f) => firstSentence((fileInfo.get(f) || {}).summary)).filter((s) => s !== '').map((s) => `- ${s}`).join('\n');
-  const how = ground(bodies.get('how'));
+  const mark = seen.length;
+  let overview = once([ground(split.rest), ground(bodies.get('overview'))].filter(Boolean).join('\n\n'));
+  if (grounding.wordCount(overview) < grounding.MIN_OVERVIEW_WORDS) {
+    const short = seen.splice(mark);
+    const fromFolders = once(grounding.folderOverview(layer, folders, sharedFolders(layers)));
+    if (fromFolders) overview = fromFolders;
+    else seen.push(...short);
+  }
+  const purposes = [...fileInfo.values()].map((info) => info.summary).filter(Boolean);
+  const fresh = grounding.isNew(seen, linkStats);
+  let items = 0;
+  const responsibilities = grounding.filterSection(ground(bodies.get('responsibilities')), (s) => {
+    if (layer.files.length > 1 && copiesPurpose(s, purposes)) {
+      linkStats.purposeItems = (linkStats.purposeItems || 0) + 1;
+      return false;
+    }
+    if (items >= MAX_RESPONSIBILITIES || !fresh(s)) return false;
+    items++;
+    return true;
+  });
+  const how = once(ground(bodies.get('how')));
   const backLink = `- [Project README](${linkPath(docsDir, 'README.md')}): the overview of the whole project and every layer.`;
   const related = [backLink, relatedLayers(layer, layers)].filter(Boolean).join('\n');
 
-  const parts = [`# ${layer.name}`, first || layer.description, '## Overview', overview];
+  const parts = [`# ${layer.name}`, first || layer.description];
+  if (overview) parts.push('## Overview', overview);
   if (responsibilities) parts.push('## Responsibilities', responsibilities);
   parts.push('## Key components', componentsTable(layer, fileInfo, docsDir));
   if (how) parts.push('## How it works', how);
@@ -1038,10 +1133,11 @@ async function generateDocs({
       continue;
     }
     try {
-      const content = await call(docPath, {
+      const content = completeReply(await call(docPath, {
         messages: layerDocPrompt({ layer, layers, fileInfo, facts, readSource, projectName: name, folders }),
         options: docOptions,
-      });
+        withReason: true,
+      }), linkStats);
       result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, folders, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats, configuration: configurationSection(layerConfiguration(layer.files, read, repoFiles)) }), fallback: caller.lastUsedFallback });
       anyLayerWritten = true;
     } catch (err) {
@@ -1117,6 +1213,8 @@ module.exports = {
   charBudget,
   cleanDoc,
   cleanMarkdown,
+  completeReply,
+  cutToComplete,
   layerDocPrompt,
   collectProjectFacts,
   createCaller,

@@ -494,7 +494,7 @@ async function updateReadme({ root, caller, layers, facts, projectName, docsDir 
     deadline,
     now,
     generate: async (personText) => {
-      const raw = await caller.call(README_PATH, { messages: readmePrompt({ projectName, layers, facts, personText }), options: docOptions });
+      const raw = docs.completeReply(await caller.call(README_PATH, { messages: readmePrompt({ projectName, layers, facts, personText }), options: docOptions, withReason: true }), linkStats);
       return { prose: readmeBodies(raw, { projectName, facts, existingPaths, knownUrls: links.knownUrls(root), linkStats }), fallback: caller.lastUsedFallback };
     },
   });
