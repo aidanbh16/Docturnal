@@ -144,6 +144,8 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     });
     readmeMs = now() - readmeStarted;
     docTimings = result.timings || docTimings;
+    if (linkStats.droppedTables) log(`Docturnal: dropped ${linkStats.droppedTables} ${linkStats.droppedTables === 1 ? 'table' : 'tables'} the model wrote into the docs`);
+    if (linkStats.ungrounded) log(`Docturnal: dropped ${linkStats.ungrounded} ${linkStats.ungrounded === 1 ? 'sentence' : 'sentences'} from the layer docs that their files do not support`);
     if (linkStats.droppedLinks) log(`Docturnal: dropped ${linkStats.droppedLinks} ${linkStats.droppedLinks === 1 ? 'link or HTML tag' : 'links or HTML tags'} from the docs that the repository does not have`);
     if (readme.linked) log('README.md is a symbolic link, so Docturnal leaves it alone.');
     readme.errors.forEach((error) => result.errors.push(error));

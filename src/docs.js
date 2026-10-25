@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const links = require('./links');
+const grounding = require('./grounding');
 const { isPlainPath } = require('./safe-path');
 const { configurationSection, layerConfiguration } = require('./configuration');
 const { planGroundedLayers } = require('./layers');
@@ -24,7 +25,7 @@ const RESERVED_SLUGS = new Set(['readme', 'index']);
 // spends most of its time reading the prompt. About 1,300 tokens.
 const DOC_PROMPT_CHARS = 4000;
 // The longest answer for each document, in tokens, sized to the sections it writes.
-const LAYER_DOC_TOKENS = 320;
+const LAYER_DOC_TOKENS = 450;
 // A short excerpt of source, only for a layer whose files have no description at all.
 const EXCERPT_LINES = 40;
 const PROMPT_RESERVE_TOKENS = 1500;
@@ -204,12 +205,43 @@ function fixLinks(line, docPath, existingPaths) {
   });
 }
 
+// A table's separator row, such as "| --- | :---: |" or "---|---".
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+
+// The lines without any Markdown table outside code blocks: tables come only from the computed
+// blocks, never from the model. stats.droppedTables counts the tables dropped.
+function dropTables(lines, stats = {}) {
+  const drop = new Set();
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const fenceMatch = lines[i].match(/^\s*(```|~~~)/);
+    if (fenceMatch) {
+      if (!fence) fence = fenceMatch[1];
+      else if (lines[i].trim().startsWith(fence)) fence = null;
+      continue;
+    }
+    if (fence || drop.has(i)) continue;
+    const separated = TABLE_SEPARATOR.test(lines[i]) && i > 0 && lines[i - 1].includes('|') && !drop.has(i - 1);
+    // Rows that start and end with a pipe, two or more together, are a table too.
+    const piped = TABLE_ROW.test(lines[i]) && i + 1 < lines.length && TABLE_ROW.test(lines[i + 1]);
+    if (!separated && !piped) continue;
+    let start = separated ? i - 1 : i;
+    let end = i;
+    while (end + 1 < lines.length && lines[end + 1].trim() && lines[end + 1].includes('|')) end++;
+    for (let j = start; j <= end; j++) drop.add(j);
+    stats.droppedTables = (stats.droppedTables || 0) + 1;
+    i = end;
+  }
+  return lines.filter((_, i) => !drop.has(i));
+}
+
 // Cleans one model reply and gives it exactly one H1: `title`. Web links survive only when
 // the repository already has the URL (knownUrls; none by default), and raw HTML never does.
-// linkStats.droppedLinks counts what was dropped.
+// Tables are dropped. linkStats.droppedLinks and droppedTables count what was dropped.
 function cleanMarkdown(raw, { title, docPath = '', existingPaths = null, knownUrls = new Set(), linkStats = {} } = {}) {
   const text = unwrapWholeFence(String(raw || '').replace(/\r\n?/g, '\n').trim());
-  const lines = trimChatter(text.split('\n'));
+  const lines = dropTables(trimChatter(text.split('\n')), linkStats);
 
   const out = [];
   let fence = null;
@@ -609,9 +641,20 @@ function assignSlugs(layers, isTaken = () => false) {
   }
 }
 
+// A layer's description when the plan gives none: from the summaries of its folders, largest
+// first, never from one file's purpose.
+function folderDescription(layer, folders) {
+  const counts = new Map();
+  for (const file of layer.files) counts.set(path.posix.dirname(file), (counts.get(path.posix.dirname(file)) || 0) + 1);
+  const dirs = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([dir]) => dir);
+  const summary = dirs.map((dir) => folders.get(dir)).find(Boolean);
+  if (summary) return firstSentence(summary);
+  return `The code in ${dirs.slice(0, 3).map((d) => `\`${d}\``).join(', ')}.`;
+}
+
 // Validates the model's layers: known files only, each file in exactly one layer, at most
 // seven layers, unique slugs, and missed files placed by the closest shared directory.
-function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), isTaken } = {}) {
+function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), folders = new Map(), isTaken } = {}) {
   const known = new Set(files.map(normalizeFilePath).filter(Boolean));
   if (!known.size) return [];
   let layers = layersFromEntries(raw && raw.layers, known);
@@ -628,10 +671,7 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), isTa
   }
   for (const layer of layers) {
     layer.files.sort();
-    if (!layer.description) {
-      const summary = layer.files.map((f) => (fileInfo.get(f) || {}).summary).find(Boolean);
-      layer.description = summary ? firstSentence(summary) : `Files in the ${layer.name} layer.`;
-    }
+    if (!layer.description) layer.description = folderDescription(layer, folders);
   }
   assignSlugs(layers, isTaken);
   return layers.map(({ name, slug, description, files: layerFiles }) => ({ name, slug, description, files: layerFiles }));
@@ -670,7 +710,7 @@ function folderListing(files, folders, budget) {
 // `call` sends one request to the docs model and returns the reply text.
 async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], folders = new Map(), readSource = () => null }) {
   const raw = await planGroundedLayers({ files, fileInfo, folders, readSource, call, contextTokens, promptChars: DOC_PROMPT_CHARS, styleRules: STYLE_RULES, errors });
-  return normalizeLayers(raw, files, { previous: previousLayers, fileInfo, isTaken });
+  return normalizeLayers(raw, files, { previous: previousLayers, fileInfo, folders, isTaken });
 }
 
 // Calls the docs model, switching to the fallback model for the rest of the run once the
@@ -724,18 +764,50 @@ function within(text, budget) {
   return `${text.slice(0, cut > 0 ? cut : Math.max(0, budget))}\n...`;
 }
 
-// The files of a layer, for its doc prompt, within half the budget: each file with its
-// summary and names, then each with its summary only, then its folders with their summaries.
+// The files of a layer, for its doc prompt, within the budget, every file with its purpose:
+// each with its purpose and names; then under its folder by file name, with its first three
+// names; then with its purpose only; then with its purpose shortened evenly to fit. Only a
+// layer too large to list that way gets its folders and their summaries instead.
 function layerFileListing(layer, fileInfo, folders, budget) {
+  const purpose = (file) => firstSentence((fileInfo.get(file) || {}).summary) || 'no description';
+  const names = (file, count) => (fileInfo.get(file) || {}).symbols ? fileInfo.get(file).symbols.slice(0, count).join(', ') : '';
   const full = layer.files.map((file) => {
-    const info = fileInfo.get(file) || {};
-    const symbols = (info.symbols || []).join(', ');
-    return `- ${file}: ${String(info.summary || '').trim()}${symbols ? ` (Defines: ${symbols})` : ''}`;
+    const symbols = names(file, 8);
+    return `- ${file}: ${String((fileInfo.get(file) || {}).summary || '').trim()}${symbols ? ` (Defines: ${symbols})` : ''}`;
   }).join('\n');
   if (full.length <= budget) return full;
-  const short = layer.files.map((file) => `- ${file}: ${firstSentence((fileInfo.get(file) || {}).summary)}`).join('\n');
-  if (short.length <= budget) return short;
+  const byFolder = new Map();
+  for (const file of layer.files) {
+    const dir = path.posix.dirname(file);
+    if (!byFolder.has(dir)) byFolder.set(dir, []);
+    byFolder.get(dir).push(file);
+  }
+  const grouped = (line) => [...byFolder].map(([dir, files]) => `In ${dir}/:\n${files.map(line).join('\n')}`).join('\n');
+  const base = (file) => path.posix.basename(file);
+  const withNames = grouped((file) => {
+    const symbols = names(file, 3);
+    return `- ${base(file)}: ${purpose(file)}${symbols ? ` (${symbols})` : ''}`;
+  });
+  if (withNames.length <= budget) return withNames;
+  const purposes = grouped((file) => `- ${base(file)}: ${purpose(file)}`);
+  if (purposes.length <= budget) return purposes;
+  const frame = grouped((file) => `- ${base(file)}: `).length;
+  const each = Math.floor((budget - frame) / layer.files.length) - 3;
+  if (each >= 20) {
+    return grouped((file) => {
+      const text = purpose(file);
+      if (text.length <= each) return `- ${base(file)}: ${text}`;
+      const cut = text.lastIndexOf(' ', each);
+      return `- ${base(file)}: ${text.slice(0, cut > 0 ? cut : each)}...`;
+    });
+  }
   return folderListing(layer.files, folders, budget);
+}
+
+// The summaries of a layer's folders, one line each.
+function folderSummaries(layer, folders) {
+  const dirs = [...new Set(layer.files.map((f) => path.posix.dirname(f)))].sort();
+  return dirs.map((dir) => `- ${dir}: ${folders.get(dir) || 'no summary'}`).join('\n');
 }
 
 function layerDocPrompt({ layer, layers, fileInfo, facts, readSource, projectName, folders = new Map() }) {
@@ -757,9 +829,14 @@ A bulleted list.
 
 ## How it works
 
-Do not add other sections, and do not write about configuration: a table of files, the configuration, and the related layers are added separately. Use only what the material below shows.
+Do not add other sections or tables, and do not write about configuration: a table of files, the configuration, and the related layers are added separately.
+
+Describe only what the folder summaries, file purposes, and definitions below state. Never add a capability, feature, or behavior they do not state. In "How it works", say how the files work together, using their names.
 
 Layer description: ${layer.description}
+
+Folder summaries:
+${within(folderSummaries(layer, folders), 600)}
 
 Other layers:
 ${others}
@@ -782,24 +859,33 @@ Files in this layer:
 
 // Assembles a layer doc from the model's reply and the generated parts.
 // configuration: the computed Configuration section's Markdown, or '' for none (see
-// configuration.js). A Configuration section in the model's reply is dropped.
-function buildLayerDoc(raw, { layer, layers, fileInfo, docsDir = 'docs', existingPaths = null, knownUrls, linkStats, configuration = '' }) {
+// configuration.js). A Configuration section in the model's reply is dropped. The model's
+// prose keeps only sentences grounded in the layer's material (see grounding.js):
+// linkStats.ungrounded counts the ones dropped. An Overview with too little left is built from
+// the folder summaries, and Responsibilities from the file purposes.
+function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docsDir = 'docs', existingPaths = null, knownUrls, linkStats = {}, configuration = '' }) {
   const docPath = `${docsDir}/${layer.slug}.md`;
   const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
   const { intro, sections } = splitSections(cleaned);
   const bodies = arrangeSections(sections, LAYER_SECTIONS, { extrasInto: 'how', generated: LAYER_GENERATED });
-  const { first, rest } = splitIntro(intro);
+  const material = grounding.layerMaterial(layer, fileInfo, folders);
+  const ground = (text) => grounding.groundSection(text, material, linkStats);
+  const split = splitIntro(intro);
+  const first = ground(split.first);
+  const rest = ground(split.rest);
 
-  const overview = [rest, bodies.get('overview')].filter(Boolean).join('\n\n') || layer.description;
-  const responsibilities = bodies.get('responsibilities')
+  let overview = [rest, ground(bodies.get('overview'))].filter(Boolean).join('\n\n');
+  if (grounding.wordCount(overview) < grounding.MIN_OVERVIEW_WORDS) overview = grounding.folderOverview(layer, folders) || overview || layer.description;
+  const responsibilities = ground(bodies.get('responsibilities'))
     || layer.files.map((f) => firstSentence((fileInfo.get(f) || {}).summary)).filter((s) => s !== '').map((s) => `- ${s}`).join('\n');
+  const how = ground(bodies.get('how'));
   const backLink = `- [Project README](${linkPath(docsDir, 'README.md')}): the overview of the whole project and every layer.`;
   const related = [backLink, relatedLayers(layer, layers)].filter(Boolean).join('\n');
 
   const parts = [`# ${layer.name}`, first || layer.description, '## Overview', overview];
   if (responsibilities) parts.push('## Responsibilities', responsibilities);
   parts.push('## Key components', componentsTable(layer, fileInfo, docsDir));
-  if (bodies.get('how')) parts.push('## How it works', bodies.get('how'));
+  if (how) parts.push('## How it works', how);
   if (configuration) parts.push('## Configuration', configuration);
   parts.push('## Related layers', related);
   return finalizeDoc(parts.join('\n\n'));
@@ -918,7 +1004,7 @@ async function generateDocs({
   const isTaken = (slug) => humanWritten(docPathFor(slug));
   let layers;
   if (previousLayers.length && sameFileSet(previousLayers, sourcePaths)) {
-    layers = normalizeLayers({ layers: previousLayers }, sourcePaths, { previous: previousLayers, fileInfo, isTaken });
+    layers = normalizeLayers({ layers: previousLayers }, sourcePaths, { previous: previousLayers, fileInfo, folders, isTaken });
   } else {
     result.replanned = true;
     const planStarted = now();
@@ -956,7 +1042,7 @@ async function generateDocs({
         messages: layerDocPrompt({ layer, layers, fileInfo, facts, readSource, projectName: name, folders }),
         options: docOptions,
       });
-      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats, configuration: configurationSection(layerConfiguration(layer.files, read, repoFiles)) }), fallback: caller.lastUsedFallback });
+      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, folders, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats, configuration: configurationSection(layerConfiguration(layer.files, read, repoFiles)) }), fallback: caller.lastUsedFallback });
       anyLayerWritten = true;
     } catch (err) {
       result.errors.push(`${docPath}: ${err.message}`);
@@ -1042,6 +1128,7 @@ module.exports = {
   layersTable,
   normalizeLayers,
   pathsWithDirs,
+  planLayers,
   removeSubsections,
   scriptsTable,
   sentenceCase,

@@ -68,6 +68,31 @@ def dump(source):
         return None
 
 
+def _dotted(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def env_names(source):
+    """The environment variables the code reads: os.environ.get("X"), os.environ["X"], and
+    os.getenv("X"), with a constant name. Comments and other strings are never read."""
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            if _dotted(node.func) in ("os.environ.get", "environ.get", "os.getenv", "getenv"):
+                names.add(node.args[0].value)
+        elif isinstance(node, ast.Subscript) and _dotted(node.value) in ("os.environ", "environ"):
+            key = node.slice.value if isinstance(node.slice, ast.Index) else node.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                names.add(key.value)
+    return sorted(names)
+
+
 def verify(original, candidates):
     expected = dump(original)
     return [expected is not None and dump(candidate) == expected for candidate in candidates]
@@ -85,6 +110,11 @@ def main():
                 "error": f"{type(err).__name__}: {err}",
                 "syntax_error": isinstance(err, SyntaxError),
             }
+    elif mode == "env":
+        try:
+            response = {"ok": True, "names": env_names(request["source"])}
+        except Exception as err:
+            response = {"ok": False, "error": f"{type(err).__name__}: {err}"}
     elif mode == "verify":
         response = {"results": verify(request["original"], request["candidates"])}
     else:

@@ -49,8 +49,14 @@ function analyzePython(source) {
   return runHelper({ mode: 'analyze', source });
 }
 
+// The environment variables Python code reads, from its syntax tree; null when it cannot be read.
+function pythonEnvNames(source) {
+  const result = runHelper({ mode: 'env', source });
+  return result.ok ? result.names : null;
+}
+
 function verifyPython(original, candidates) {
   return runHelper({ mode: 'verify', original, candidates }).results;
 }
 
-module.exports = { analyzePython, findPython, verifyPython };
+module.exports = { analyzePython, findPython, pythonEnvNames, verifyPython };

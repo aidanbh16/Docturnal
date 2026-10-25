@@ -1,0 +1,821 @@
+{
+  "note": "From the second real first run on the Docturnal repository (docturnal/update at 6bb6d20): the folder summaries, file purposes, the layers, and the model replies that showed the bugs.",
+  "folders": {
+    "app/scripts": "This folder contains scripts for handling PKCS#1 to PKCS#8 conversions and serving the app registration page.",
+    "app/src": "Manages GitHub API version, handles requests, schedules tasks, manages session tokens, and configures workflows for GitHub installations.",
+    "app/tests": "This folder contains test files for various components of the app, including in-memory data structures, mock services, and unit tests for specific features.",
+    "scripts": "This folder contains scripts for managing Ollama releases and models, including hashing archive files, updating model pinning, and computing checksums.",
+    "src": "This folder contains various modules and utilities that support the core functionality of the software project, including parsing, analyzing, and processing code comments, managing configurations, and interacting with Git repositories.",
+    "test": "This folder contains test files that define and evaluate various aspects of the project, including action steps, checks, comments, configurations, and end-to-end tests."
+  },
+  "files": {
+    "app/package.json": {
+      "symbols": []
+    },
+    "app/scripts/pkcs8.mjs": {
+      "summary": "Converts PKCS#1 to PKCS#8 for WebCrypto",
+      "symbols": [
+        "toPkcs8Pem",
+        "checkPkcs8",
+        "derLength",
+        "der",
+        "pemBody",
+        "toPem"
+      ]
+    },
+    "app/scripts/register.mjs": {
+      "summary": "Serves the app registration page on http://localhost:8790.",
+      "symbols": []
+    },
+    "app/src/github.ts": {
+      "summary": "The GitHub REST API version the app uses.",
+      "symbols": [
+        "GITHUB_API_VERSION",
+        "withApiVersion"
+      ]
+    },
+    "app/src/handlers.ts": {
+      "summary": "Webhook and queue handlers.",
+      "symbols": [
+        "UPDATE_BRANCH",
+        "SETUP_BRANCH",
+        "WORKFLOW_UPDATE_BRANCH",
+        "LAST_RUN_PATH",
+        "BOT_LOGIN",
+        "UPDATE_PR_TITLE"
+      ]
+    },
+    "app/src/index.ts": {
+      "summary": "The Docturnal GitHub App backend.",
+      "symbols": [
+        "Env",
+        "Options",
+        "createHandler",
+        "createQueueHandler",
+        "createScheduledHandler",
+        "default"
+      ]
+    },
+    "app/src/scheduler.ts": {
+      "summary": "The hourly cron.",
+      "symbols": [
+        "localHour",
+        "isDue",
+        "ScheduleEnv",
+        "runSchedule"
+      ]
+    },
+    "app/src/session.ts": {
+      "summary": "Signed, short-lived tokens for the setup page: the session cookie and the OAuth state.",
+      "symbols": [
+        "TokenPurpose",
+        "signToken",
+        "verifyToken",
+        "randomToken",
+        "sameToken",
+        "base64url"
+      ]
+    },
+    "app/src/settings.ts": {
+      "summary": "Per-installation settings in Cloudflare KV.",
+      "symbols": [
+        "COMMENT_LEVELS",
+        "CommentLevel",
+        "EXISTING_CODE",
+        "ExistingCode",
+        "Settings",
+        "Choices"
+      ]
+    },
+    "app/src/setup.ts": {
+      "summary": "The optional settings page at /setup.",
+      "symbols": [
+        "SESSION_COOKIE",
+        "SetupEnv",
+        "SetupOptions",
+        "formatHour",
+        "contentSecurityPolicy",
+        "readSession"
+      ]
+    },
+    "app/src/workflow.ts": {
+      "summary": "The workflow file the app commits to each repository.",
+      "symbols": [
+        "WORKFLOW_PATH",
+        "WORKFLOW_FILE",
+        "WORKFLOW_VERSION",
+        "workflowYaml",
+        "isOldTemplate",
+        "templateVersion"
+      ]
+    },
+    "app/tests/fake-kv.ts": {
+      "summary": "An in-memory Workers KV namespace for tests, with key metadata and paged listing.",
+      "symbols": [
+        "FakeKV"
+      ]
+    },
+    "app/tests/fake-queue.ts": {
+      "summary": "An in-memory Cloudflare Queue for tests.",
+      "symbols": [
+        "FakeQueue"
+      ]
+    },
+    "app/tests/mock-github.mjs": {
+      "summary": "An in-memory stand-in for the GitHub REST API calls the app makes.",
+      "symbols": [
+        "createMockGitHub",
+        "argValue"
+      ]
+    },
+    "app/tests/pkcs8.spec.ts": {
+      "summary": "Tests PKCS#1 to PKCS#8 conversion",
+      "symbols": []
+    },
+    "app/tests/scheduler.spec.ts": {
+      "summary": "Tests local time and date functions",
+      "symbols": [
+        "localTime",
+        "localDate",
+        "runs"
+      ]
+    },
+    "app/tests/setup.spec.ts": {
+      "summary": "Tests setup and page script",
+      "symbols": [
+        "setup",
+        "runPageScript"
+      ]
+    },
+    "app/tests/webhook.spec.ts": {
+      "summary": "Tests webhook functionality",
+      "symbols": [
+        "sign",
+        "setup",
+        "installation",
+        "pushToUpdate"
+      ]
+    },
+    "app/tsconfig.json": {
+      "symbols": []
+    },
+    "package.json": {
+      "symbols": []
+    },
+    "scripts/archive-hashes.js": {
+      "summary": "Lists files in an Ollama release archive",
+      "symbols": [
+        "hashArchive",
+        "hashTar",
+        "wanted",
+        "field"
+      ]
+    },
+    "scripts/update-models.js": {
+      "summary": "Records model pinning digests",
+      "symbols": [
+        "fetchPin",
+        "manifestUrl",
+        "pinFromManifest",
+        "main"
+      ]
+    },
+    "scripts/update-ollama.sh": {
+      "summary": "Computes release and model digests",
+      "symbols": []
+    },
+    "src/accuracy.js": {
+      "summary": "Checks the accuracy of comments and provides messages.",
+      "symbols": [
+        "ACCURACY_SCHEMA",
+        "attachedCode",
+        "buildAccuracyMessages",
+        "codeUnder",
+        "parseVerdicts"
+      ]
+    },
+    "src/analyze.js": {
+      "summary": "Analyzes lines of code to determine facts needed by the comment engine.",
+      "symbols": [
+        "analyzeLines",
+        "lineStarts",
+        "splitLines",
+        "lineIndexAt",
+        "baseInfo",
+        "setSymbol"
+      ]
+    },
+    "src/apply.js": {
+      "summary": "Applies the results of a run and merges the state.",
+      "symbols": [
+        "applyRun"
+      ]
+    },
+    "src/changes.js": {
+      "summary": "Manages changes and determines what needs to be covered.",
+      "symbols": [
+        "docExists",
+        "docsDone",
+        "findChanges",
+        "ignoreHash",
+        "needsComments",
+        "nothingToCover"
+      ]
+    },
+    "src/comments.js": {
+      "summary": "The comment engine.",
+      "symbols": [
+        "CATEGORY",
+        "LEVELS",
+        "RESPONSE_SCHEMA",
+        "applyProposals",
+        "buildWindows",
+        "checkComments"
+      ]
+    },
+    "src/config.js": {
+      "summary": "Reads the action inputs from INPUT_* environment variables and validates them.",
+      "symbols": [
+        "COMMENT_LEVELS",
+        "EXISTING_CODE",
+        "ConfigError",
+        "readConfig",
+        "readInput",
+        "readList"
+      ]
+    },
+    "src/configuration.js": {
+      "summary": "Computes layer configurations from code.",
+      "symbols": [
+        "actionInputs",
+        "configurationSection",
+        "layerConfiguration"
+      ]
+    },
+    "src/docs.js": {
+      "summary": "The docs generator for the layer docs in docs/.",
+      "symbols": [
+        "DOC_PROMPT_CHARS",
+        "MARKER",
+        "README_GENERATED",
+        "README_SECTIONS",
+        "STYLE_RULES",
+        "arrangeSections"
+      ]
+    },
+    "src/folders.js": {
+      "summary": "Manages folder structures and purposes.",
+      "symbols": [
+        "FOLDER_SCHEMA",
+        "MAX_FILES_PER_CALL",
+        "callLabel",
+        "callTokens",
+        "dirOf",
+        "digestLine"
+      ]
+    },
+    "src/git.js": {
+      "summary": "Git operations for the Action.",
+      "symbols": [
+        "BaseBranchError",
+        "BOT_EMAIL",
+        "BOT_NAME",
+        "defaultBranch",
+        "IGNORE_FILE",
+        "UPDATE_BRANCH"
+      ]
+    },
+    "src/importance.js": {
+      "summary": "Orders existing code by importance.",
+      "symbols": [
+        "complexity",
+        "importSpecifiers",
+        "isEntryPoint",
+        "packageEntries",
+        "rankFiles",
+        "resolveImport"
+      ]
+    },
+    "src/install-ollama.js": {
+      "summary": "Installs the Ollama release.",
+      "symbols": [
+        "InstallError",
+        "checkInstall",
+        "installOllama",
+        "pinnedArchive",
+        "readPins",
+        "download"
+      ]
+    },
+    "src/languages.js": {
+      "summary": "The language table, plus the rules that decide whether a file is commented, only read for docs, or skipped.",
+      "symbols": [
+        "LANGUAGES",
+        "LOCKFILES",
+        "MAX_FILE_BYTES",
+        "SKIP_DIRS",
+        "classifyFile",
+        "languageById"
+      ]
+    },
+    "src/layers.js": {
+      "summary": "Architecture layers grounded in the project's real folders.",
+      "symbols": [
+        "GENERIC_NAMES",
+        "LAYERS_SCHEMA",
+        "MAX_LAYERS",
+        "folderName",
+        "groupFiles",
+        "layersPrompt"
+      ]
+    },
+    "src/links.js": {
+      "summary": "Generates links and normalizes URLs.",
+      "symbols": [
+        "cleanProseLine",
+        "forgetKnownUrls",
+        "hasUnknownUrl",
+        "keepCodeLine",
+        "knownUrls",
+        "normalizeUrl"
+      ]
+    },
+    "src/main.js": {
+      "summary": "Action entry point.",
+      "symbols": [
+        "TIMEOUT_MARGIN_MINUTES",
+        "run",
+        "resolveModels",
+        "backlogRanker",
+        "makePlan"
+      ]
+    },
+    "src/models.js": {
+      "summary": "Picks the Ollama models for this run.",
+      "symbols": [
+        "COMMENT_MODEL",
+        "DOCS_MODEL",
+        "FALLBACK_DOCS_MODEL",
+        "DOCS_MODEL_MIN_GIB",
+        "parseMemTotal",
+        "readTotalMemory"
+      ]
+    },
+    "src/ollama.js": {
+      "summary": "Minimal client for the Ollama server on the runner.",
+      "symbols": [
+        "DEFAULT_HOST",
+        "baseUrl",
+        "chat",
+        "describeError",
+        "loggedChat",
+        "request"
+      ]
+    },
+    "src/owned.js": {
+      "summary": "Which comments in a file Docturnal wrote itself.",
+      "symbols": [
+        "anchorHash",
+        "cleanRecords",
+        "findOwned",
+        "recordFor",
+        "isRecord"
+      ]
+    },
+    "src/precheck.js": {
+      "summary": "The pre-check, run before models are selected or Ollama is installed.",
+      "symbols": [
+        "precheck",
+        "plural",
+        "writeOutputs"
+      ]
+    },
+    "src/process.js": {
+      "summary": "Processes comments and generates reports.",
+      "symbols": [
+        "DOCS_PASS_RESERVE_MINUTES",
+        "DOCS_RESERVE_MINUTES",
+        "deadlines",
+        "processItems"
+      ]
+    },
+    "src/python-helper.py": {
+      "summary": "Analyzes and verifies Python source for Docturnal.",
+      "symbols": [
+        "analyze",
+        "dump",
+        "verify",
+        "main"
+      ]
+    },
+    "src/python.js": {
+      "summary": "Runs src/python-helper.py with python3 to analyze and verify Python source.",
+      "symbols": [
+        "analyzePython",
+        "findPython",
+        "verifyPython",
+        "runHelper"
+      ]
+    },
+    "src/readme.js": {
+      "summary": "The repository's README.md, the main document.",
+      "symbols": [
+        "readmeIsPlain",
+        "readmePrompt",
+        "MAINTAINED",
+        "README_PATH",
+        "README_STATE_PATH",
+        "parseReadme"
+      ]
+    },
+    "src/report.js": {
+      "summary": "Builds .docturnal/last-run.md, which the GitHub App uses as the pull request description.",
+      "symbols": [
+        "DOCS_TITLE",
+        "UPDATE_TITLE",
+        "buildReport",
+        "code",
+        "plainText",
+        "progressLines"
+      ]
+    },
+    "src/restates.js": {
+      "summary": "A deterministic check for comments that only restate the code under them.",
+      "symbols": [
+        "RESTATES_AT",
+        "restatement",
+        "restates",
+        "stem",
+        "words"
+      ]
+    },
+    "src/safe-path.js": {
+      "summary": "Docturnal reads and writes a few paths by name: README.md, docs/, .docturnal/, and project files such as package.json.",
+      "symbols": [
+        "LinkError",
+        "isPlainPath",
+        "requirePlainPath"
+      ]
+    },
+    "src/state.js": {
+      "summary": "Reads and manages state files",
+      "symbols": [
+        "LAST_RUN_PATH",
+        "STATE_PATH",
+        "emptyPending",
+        "emptyState",
+        "hashContent",
+        "readState"
+      ]
+    },
+    "src/structure.js": {
+      "summary": "Analyzes file structures",
+      "symbols": [
+        "commentPurpose",
+        "fileStructure",
+        "leadingComment",
+        "structuralSummary",
+        "symbolsOf",
+        "basename"
+      ]
+    },
+    "src/verify-models.js": {
+      "summary": "Checks each pulled model against pins/models.json before any code reaches it.",
+      "symbols": [
+        "ModelDigestError",
+        "compareBlobs",
+        "readPins",
+        "referencedDigests",
+        "verifyFiles",
+        "verifyModels"
+      ]
+    },
+    "src/verify.js": {
+      "summary": "Proves that inserting comments did not change the program.",
+      "symbols": [
+        "rebuildsOriginal",
+        "verifyCandidates",
+        "stripBom",
+        "rawLines",
+        "transpile",
+        "shape"
+      ]
+    },
+    "test/action-steps.test.js": {
+      "summary": "Which steps of action.yml run, from each step's if:, evaluated the way GitHub Actions does.",
+      "symbols": [
+        "steps",
+        "evaluate",
+        "running",
+        "names"
+      ]
+    },
+    "test/check-run.test.js": {
+      "summary": "Defines and evaluates checks in the project.",
+      "symbols": [
+        "onCheck",
+        "addComments",
+        "git",
+        "dropConnection",
+        "runMain",
+        "editPayroll"
+      ]
+    },
+    "test/comments.test.js": {
+      "summary": "Defines and evaluates comments in the project.",
+      "symbols": [
+        "lang",
+        "source",
+        "reasons",
+        "forcedInsertion"
+      ]
+    },
+    "test/config.test.js": {
+      "summary": "Defines and evaluates project configurations.",
+      "symbols": []
+    },
+    "test/coverage.test.js": {
+      "summary": "Defines and evaluates code coverage in the project.",
+      "symbols": [
+        "changesFor",
+        "rankByName",
+        "documented",
+        "gitRepo",
+        "runMain",
+        "fn"
+      ]
+    },
+    "test/docs.test.js": {
+      "summary": "Defines and evaluates documentation in the project.",
+      "symbols": [
+        "h2s",
+        "repoRead",
+        "mockHandler"
+      ]
+    },
+    "test/e2e.sh": {
+      "summary": "End-to-end test for the Action.",
+      "symbols": [
+        "getUser",
+        "listUsers",
+        "listOrders",
+        "connect",
+        "disconnect",
+        "deleteUser"
+      ]
+    },
+    "test/edges.test.js": {
+      "summary": "Edge cases of how Docturnal covers a project, against real git with the mock Ollama server.",
+      "symbols": [
+        "runDuring",
+        "summaries",
+        "commentRequests"
+      ]
+    },
+    "test/first-run.test.js": {
+      "summary": "Defines and evaluates the first run of the project.",
+      "symbols": [
+        "plain"
+      ]
+    },
+    "test/git-repo.js": {
+      "summary": "A scratch git remote with a seed clone, for tests that run the Action against real git.",
+      "symbols": [
+        "fn",
+        "gitRepo",
+        "runAction"
+      ]
+    },
+    "test/heavy.test.js": {
+      "summary": "Defines and evaluates heavy level comments in the project.",
+      "symbols": [
+        "lineOf",
+        "hasBlockAbove",
+        "firstPassHandler"
+      ]
+    },
+    "test/helpers.js": {
+      "summary": "Shared test helpers.",
+      "symbols": [
+        "applyAnchored",
+        "withAccuracy",
+        "withAnchor"
+      ]
+    },
+    "test/ignore.test.js": {
+      "summary": "Defines and evaluates ignore patterns in the project.",
+      "symbols": [
+        "repo"
+      ]
+    },
+    "test/mock-ollama.js": {
+      "summary": "A stand-in for the Ollama HTTP API.",
+      "symbols": [
+        "OOM_MESSAGE",
+        "accuracyReply",
+        "blocksReply",
+        "defaultHandler",
+        "kindOf",
+        "startMockOllama"
+      ]
+    },
+    "test/models.test.js": {
+      "summary": "Defines and evaluates fake file reading in the project.",
+      "symbols": [
+        "fakeReadFile"
+      ]
+    },
+    "test/ollama.test.js": {
+      "summary": "Defines and exports the Ollama client.",
+      "symbols": [
+        "slowMock"
+      ]
+    },
+    "test/ownership.test.js": {
+      "summary": "Defines ownership checks and tests them.",
+      "symbols": [
+        "firstPass",
+        "handler",
+        "run",
+        "codeOnly",
+        "above"
+      ]
+    },
+    "test/precheck.test.js": {
+      "summary": "Defines pre-checks and tests them.",
+      "symbols": [
+        "git",
+        "clone",
+        "pushSeed",
+        "precheck",
+        "runMain"
+      ]
+    },
+    "test/proposals.test.js": {
+      "summary": "Defines proposal handling and tests them.",
+      "symbols": [
+        "line",
+        "at"
+      ]
+    },
+    "test/readme.test.js": {
+      "summary": "Defines README.md updates and tests them.",
+      "symbols": [
+        "world",
+        "h2s",
+        "section",
+        "removeSection"
+      ]
+    },
+    "test/restates.test.js": {
+      "summary": "Defines restate filtering and tests them.",
+      "symbols": [
+        "codeUnder",
+        "proposal"
+      ]
+    },
+    "test/scale.test.js": {
+      "summary": "Defines scaling and tests them.",
+      "symbols": [
+        "source",
+        "projectLike72",
+        "project1000",
+        "firstRun",
+        "checkPromptSizes"
+      ]
+    },
+    "test/speed-model.js": {
+      "summary": "Exports simulated model times.",
+      "symbols": [
+        "SPEEDS",
+        "simulatedChat",
+        "promptOf",
+        "answerTokens"
+      ]
+    },
+    "test/supply-chain.test.js": {
+      "summary": "Defines supply chain verification and tests them.",
+      "symbols": [
+        "sha256",
+        "archiveFetch"
+      ]
+    },
+    "test/usefulness.test.js": {
+      "summary": "Defines usefulness checks and tests them.",
+      "symbols": [
+        "proposal",
+        "judge",
+        "run",
+        "greedy"
+      ]
+    }
+  },
+  "layers": [
+    {
+      "name": "GitHub Integration",
+      "description": "Manages interactions with the GitHub API, including handling requests, scheduling tasks, and managing session tokens.",
+      "files": [
+        "app/src/github.ts",
+        "app/src/handlers.ts",
+        "app/src/index.ts",
+        "app/src/scheduler.ts",
+        "app/src/session.ts",
+        "app/src/settings.ts",
+        "app/src/setup.ts",
+        "app/src/workflow.ts"
+      ]
+    },
+    {
+      "name": "Ollama Management",
+      "description": "Handles scripts for managing Ollama releases and models, including hashing archive files and computing checksums.",
+      "files": [
+        "scripts/archive-hashes.js",
+        "scripts/update-models.js",
+        "scripts/update-ollama.sh"
+      ]
+    },
+    {
+      "name": "Comment Engine",
+      "description": "Supports the core functionality of the software project, including parsing, analyzing, and processing code comments.",
+      "files": [
+        "src/accuracy.js",
+        "src/analyze.js",
+        "src/apply.js",
+        "src/changes.js",
+        "src/comments.js",
+        "src/config.js",
+        "src/configuration.js",
+        "src/docs.js",
+        "src/folders.js",
+        "src/git.js",
+        "src/importance.js",
+        "src/install-ollama.js",
+        "src/languages.js",
+        "src/layers.js",
+        "src/links.js",
+        "src/main.js",
+        "src/models.js",
+        "src/ollama.js",
+        "src/owned.js",
+        "src/precheck.js",
+        "src/process.js",
+        "src/python-helper.py",
+        "src/python.js",
+        "src/readme.js",
+        "src/report.js",
+        "src/restates.js",
+        "src/safe-path.js",
+        "src/state.js",
+        "src/structure.js",
+        "src/verify-models.js",
+        "src/verify.js"
+      ]
+    },
+    {
+      "name": "Tests",
+      "description": "Converts PKCS#1 to PKCS#8 for WebCrypto.",
+      "files": [
+        "app/scripts/pkcs8.mjs",
+        "app/scripts/register.mjs",
+        "app/tests/fake-kv.ts",
+        "app/tests/fake-queue.ts",
+        "app/tests/mock-github.mjs",
+        "app/tests/pkcs8.spec.ts",
+        "app/tests/scheduler.spec.ts",
+        "app/tests/setup.spec.ts",
+        "app/tests/webhook.spec.ts",
+        "test/action-steps.test.js",
+        "test/check-run.test.js",
+        "test/comments.test.js",
+        "test/config.test.js",
+        "test/coverage.test.js",
+        "test/docs.test.js",
+        "test/e2e.sh",
+        "test/edges.test.js",
+        "test/first-run.test.js",
+        "test/git-repo.js",
+        "test/heavy.test.js",
+        "test/helpers.js",
+        "test/ignore.test.js",
+        "test/mock-ollama.js",
+        "test/models.test.js",
+        "test/ollama.test.js",
+        "test/ownership.test.js",
+        "test/precheck.test.js",
+        "test/proposals.test.js",
+        "test/readme.test.js",
+        "test/restates.test.js",
+        "test/scale.test.js",
+        "test/speed-model.js",
+        "test/supply-chain.test.js",
+        "test/usefulness.test.js"
+      ]
+    }
+  ],
+  "replies": {
+    "comment-engine": "# Comment Engine\n\nThe Comment Engine layer is responsible for parsing, analyzing, and processing code comments within your project.\n\n## Overview\n\nThis layer focuses on extracting meaningful information from code comments, such as documentation tags, TODOs, and other relevant notes. It ensures that these comments are correctly formatted and accessible for further processing or display.\n\n## Responsibilities\n\n- Parses code comments to extract relevant information.\n- Analyzes comments to identify tags and keywords.\n- Processes comments to format them for display or further use.\n\n\n## How it works\n\nThe Comment Engine layer consists of several modules and utilities that work together to achieve its goals. These modules handle tasks such as reading code files, identifying comment blocks, and extracting specific information from those comments.",
+    "tests": "# Tests\n\nThis layer is responsible for ensuring the quality and functionality of your codebase through automated testing.\n\n## Overview\n\nThe Tests layer contains scripts and files that help you verify that your application works as expected. It includes unit tests, end-to-end tests, and mock services to simulate different scenarios.\n\n## Responsibilities\n\n- **Unit Tests**: Test individual components or functions to ensure they perform correctly.\n- **End-to-End Tests**: Simulate user interactions to ensure the application behaves as expected.\n- **Mock Services**: Provide fake implementations of dependencies to isolate and test components in isolation.\n\n\n## How it works\n\nThe Tests layer is structured as follows:\n\n- **app/scripts**: Contains scripts for handling PKCS#1 to PKCS#8 conversions and serving the app registration page.\n- **app/tests**: Includes test files for various components, such as in-memory data structures, mock services, and unit tests for specific features.\n- **test**: Defines and evaluates various aspects of the project, including action steps, checks, comments, configurations, and end-to-end tests.",
+    "readme": "# Docturnal\n\nDocturnal documents your codebase overnight.\n\n## Overview\n\nDocturnal comments your code and writes its documentation.\n\n## Architecture\n\nDocturnal consists of several layers that work together to achieve its goals:\n\n| Layer               | Description                                                                 | Files (Count) | Location      |\n|---------------------|----------------------------------------------------------------------------|---------------|---------------|\n| GitHub Integration  | Manages interactions with the GitHub API, including handling requests, scheduling tasks, and managing session tokens. | 8             | `app/src`     |\n| Ollama Management   | Handles scripts for managing Ollama releases and models, including hashing archive files and computing checksums. | 3             | `scripts`     |\n| Comment Engine      | Supports the core functionality of the software project, including parsing, analyzing, and processing code comments. | 31            | `src`         |\n| Tests               | Converts PKCS#1 to PKCS#8 for WebCrypto. | 34            | `app/scripts`, `app/tests`, `test` |\n\n## Getting started\n\nInstall the dependencies with `npm install`."
+  },
+  "configurationComment": "  // An env object or binding, such as a Cloudflare Worker's env.API_KEY.\n  /\\benv\\.([A-Z][A-Z0-9_]{2,})\\b/g,"
+}

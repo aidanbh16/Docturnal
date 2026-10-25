@@ -3,11 +3,13 @@
 // Architecture layers grounded in the project's real folders. The groups come from the folder
 // tree, not from the model: files are grouped by folder below the folders every file shares, a
 // group with several subfolders is split into them while that keeps at most MAX_LAYERS groups,
-// and when there are more, the smallest group joins the one it shares the most imports with.
-// The model then only names the groups and may merge ones with one responsibility. A name it
-// gives must be supported by the group's folders, files, or summaries; a generic name such as
-// "User Interface" needs every one of its words there. Otherwise the group keeps a name from its
-// folder.
+// test folders are one group, and a small group joins the group whose folder shares the most of
+// its path (app/scripts joins app/src), never a test group unless it is tests itself. The model
+// then only names the groups and may merge ones with one responsibility. A name it gives must be
+// supported by the group's folders, files, or summaries; a generic name such as "User Interface"
+// needs every one of its words there. Otherwise the group keeps a name from its folder. A
+// description that repeats one file's purpose is dropped, and docs.js builds one from the
+// folder summaries.
 
 const path = require('path');
 
@@ -97,10 +99,13 @@ function groupFiles(files, importsOf = () => []) {
     join(tests[0], extra);
     groups = groups.filter((g) => g !== extra);
   }
-  // The group a small one joins: the one it shares the most imports with, or the one whose
-  // folder shares the most of its path, or the largest.
+  const isTests = (g) => (g.folders || [g.folder]).every((f) => segments(f).some((s) => TEST_FOLDER.test(s)));
+  // The group a small one joins: the one whose folder shares the most of its path, then the one
+  // it shares the most imports with, then the largest. A test group takes only tests. Null when
+  // no group can take it.
   const partner = (small) => {
-    const others = groups.filter((g) => g !== small);
+    const others = groups.filter((g) => g !== small && (isTests(small) || !isTests(g)));
+    if (!others.length) return null;
     const owner = new Map();
     others.forEach((g, i) => g.files.forEach((f) => owner.set(f, i)));
     const mine = new Set(small.files);
@@ -111,25 +116,36 @@ function groupFiles(files, importsOf = () => []) {
     others.forEach((g, i) => {
       for (const file of g.files) for (const target of importsOf(file)) if (mine.has(target)) links.set(i, (links.get(i) || 0) + 1);
     });
-    const linked = [...links].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
-    if (linked) return others[linked[0]];
     const shared = (g) => {
       const a = segments(small.folder);
-      const b = segments(g.folder);
-      let n = 0;
-      while (n < a.length && n < b.length && a[n] === b[n]) n++;
-      return n;
+      let best = 0;
+      for (const folder of g.folders || [g.folder]) {
+        const b = segments(folder);
+        let n = 0;
+        while (n < a.length && n < b.length && a[n] === b[n]) n++;
+        best = Math.max(best, n);
+      }
+      return best;
     };
-    return [...others].sort((x, y) => shared(y) - shared(x) || y.files.length - x.files.length)[0];
+    const order = others.map((g, i) => ({ g, shared: shared(g), links: links.get(i) || 0 }));
+    order.sort((x, y) => y.shared - x.shared || y.links - x.links || y.g.files.length - x.g.files.length);
+    return order[0].g;
   };
   // A group of one or two files joins another while more than MERGE_ABOVE remain, and while
   // there are too many groups, the smallest joins another.
+  // A group no other can take stays as it is.
+  const alone = new Set();
   for (;;) {
     groups.sort((a, b) => a.files.length - b.files.length || a.folder.localeCompare(b.folder));
-    const small = groups[0];
+    const small = groups.find((g) => !alone.has(g));
     if (!small || groups.length <= MERGE_ABOVE || (small.files.length >= MIN_GROUP_FILES && groups.length <= MAX_LAYERS)) break;
-    join(partner(small), small);
-    groups.shift();
+    const into = partner(small);
+    if (!into) {
+      alone.add(small);
+      continue;
+    }
+    join(into, small);
+    groups = groups.filter((g) => g !== small);
   }
   return groups
     .sort((a, b) => a.folder.localeCompare(b.folder))
@@ -145,6 +161,24 @@ function groupText(group, fileInfo, folders) {
     if (info && info.summary) parts.push(info.summary);
   }
   return parts.join(' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+}
+
+function contentWords(text) {
+  return new Set(String(text || '').toLowerCase().replace(/[^a-z0-9#]+/g, ' ').split(' ').filter((w) => w.length > 2 && !STOPWORDS.has(w)));
+}
+
+// Whether a layer's description only repeats one file's purpose, such as pkcs8.mjs's
+// "Converts PKCS#1 to PKCS#8 for WebCrypto" for a whole layer: most of the words of both are
+// the same.
+function copiesPurpose(description, purposes) {
+  const own = contentWords(description);
+  if (!own.size) return false;
+  return purposes.some((purpose) => {
+    const theirs = contentWords(purpose);
+    let both = 0;
+    for (const w of own) if (theirs.has(w)) both++;
+    return theirs.size > 0 && both / Math.max(own.size, theirs.size) >= 0.6;
+  });
 }
 
 function significantWords(name) {
@@ -168,7 +202,7 @@ function layersPrompt(groups, fileInfo, folders, totalChars, styleRules = '') {
 
 For each layer, give:
 - name: 2 to 4 words in title case, taken from what its folders and files do, such as "Comment Engine" or "Settings Page".
-- description: one sentence on what the layer does.
+- description: one sentence that sums up the whole layer, from its folder summaries. Never one file's purpose.
 - groups: the ids of its groups.
 
 Put every group in exactly one layer. Put two groups in one layer only when the material shows they share one responsibility. Never use a generic name such as "User Interface", "API Routes", "Data Access", or "Business Logic" unless the group's files really are that.
@@ -228,6 +262,8 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
   } catch (err) {
     errors.push(`layers: ${err.message}`);
   }
+  // Every file's purpose in the project: a layer's description may repeat none of them.
+  const purposes = files.map((f) => (fileInfo.get(f) || {}).summary).filter(Boolean);
   const byId = new Map(groups.map((g) => [g.id, g]));
   const assigned = new Set();
   const layers = [];
@@ -240,11 +276,12 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
     const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 60) : '';
     const grounded = name && supports(groupText(merged, fileInfo, folders), name);
     if (name && !grounded) errors.push(`layers: the name "${name}" is not supported by its folders, so it is named after them`);
-    layers.push({
-      name: grounded ? name : folderName(byId.get(members[0]).folder),
-      description: grounded && typeof entry.description === 'string' ? entry.description : '',
-      files: merged.files,
-    });
+    let description = grounded && typeof entry.description === 'string' ? entry.description.trim() : '';
+    if (description && merged.files.length > 1 && copiesPurpose(description, purposes)) {
+      errors.push(`layers: the description of "${name}" repeats one file's purpose, so it comes from its folders`);
+      description = '';
+    }
+    layers.push({ name: grounded ? name : folderName(byId.get(members[0]).folder), description, files: merged.files });
   }
   for (const group of groups) {
     if (!assigned.has(group.id)) layers.push({ name: folderName(group.folder), description: '', files: group.files });
@@ -252,4 +289,4 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
   return { layers };
 }
 
-module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, folderName, groupFiles, layersPrompt, planGroundedLayers, supports };
+module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, copiesPurpose, folderName, groupFiles, layersPrompt, planGroundedLayers, supports };

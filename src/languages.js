@@ -315,6 +315,7 @@ function classifyFile(filePath, { docsDir = 'docs', exclude = [], extensions = [
 
 module.exports = {
   LANGUAGES,
+  LEXER_TOKENS: T,
   LOCKFILES,
   MAX_FILE_BYTES,
   SKIP_DIRS,

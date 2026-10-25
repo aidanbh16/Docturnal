@@ -204,11 +204,11 @@ test('picks another slug when a person wrote a doc with that name', () => {
 // --- Assembly ---
 
 const LAYERS = [
-  { name: 'Request Handlers', slug: 'request-handlers', description: 'Handles HTTP requests.', files: ['src/api/orders.js', 'src/api/users.js'] },
+  { name: 'Request Handlers', slug: 'request-handlers', description: 'Handles HTTP requests and turns them into calls to the data layer.', files: ['src/api/orders.js', 'src/api/users.js'] },
   { name: 'Data Access', slug: 'data-access', description: 'Talks to the database.', files: ['src/db/client.js'] },
 ];
 const FILE_INFO = new Map([
-  ['src/api/orders.js', { summary: 'Defines order routes. Validates input.', symbols: ['listOrders', 'createOrder'] }],
+  ['src/api/orders.js', { summary: 'Defines order routes. Validates input. Turns errors into JSON responses.', symbols: ['listOrders', 'createOrder'] }],
   ['src/api/users.js', { summary: 'Defines user routes | admin only.', symbols: ['getUser'] }],
   ['src/db/client.js', { summary: 'Opens the database pool.', symbols: ['pool'] }],
 ]);

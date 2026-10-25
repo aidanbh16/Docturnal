@@ -156,13 +156,13 @@ One paragraph that says what the project is and who it is for.
 
 ## Architecture
 
-One or two paragraphs on how the layers below work together. A table of layers is added separately.
+One or two short paragraphs on how the layers below work together. Do not write a table: the table of layers is added separately.
 
 ## Getting started
 
 Prerequisites, installation, and how to run the project, using only the commands and settings in the project facts. A table of scripts and a list of environment variables are added separately.
 
-Do not add other sections. A project structure section is added separately.
+Do not add other sections or any table. A project structure section is added separately.
 
 Layers:
 ${layerList.slice(0, 1500)}
@@ -181,6 +181,17 @@ ${docs.describeFacts(facts).slice(0, 600)}
   ];
 }
 
+// The Architecture section's prose: its first paragraphs, without lists, headings, or code.
+const ARCHITECTURE_PARAGRAPHS = 2;
+
+function proseParagraphs(text, count) {
+  return text.split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p && !/^(#|[-*+]\s|\d+[.)]\s|```|~~~|>|<!--)/.test(p))
+    .slice(0, count)
+    .join('\n\n');
+}
+
 // The model's prose for the standard sections: { intro, overview, architecture, start }.
 function readmeBodies(raw, { projectName, facts, existingPaths, knownUrls, linkStats }) {
   const cleaned = docs.cleanMarkdown(raw, { title: projectName, docPath: README_PATH, existingPaths, knownUrls, linkStats });
@@ -190,7 +201,7 @@ function readmeBodies(raw, { projectName, facts, existingPaths, knownUrls, linkS
   return {
     intro: first || facts.description || '',
     overview: [rest, bodies.get('overview')].filter(Boolean).join('\n\n'),
-    architecture: bodies.get('architecture') || '',
+    architecture: proseParagraphs(bodies.get('architecture') || '', ARCHITECTURE_PARAGRAPHS),
     start: docs.removeSubsections(bodies.get('start') || '', ['available scripts', 'scripts', 'environment variables']),
   };
 }
@@ -490,6 +501,7 @@ async function updateReadme({ root, caller, layers, facts, projectName, docsDir 
 }
 
 module.exports = { readmeIsPlain,
+  proseParagraphs,
   readmePrompt,
   MAINTAINED,
   README_PATH,
