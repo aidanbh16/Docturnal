@@ -276,11 +276,18 @@ cd "$WORK/seed"
 edit_readme() { node -e "const fs = require('fs'); let t = fs.readFileSync('README.md', 'utf8'); t = (() => { $1 })(); fs.writeFileSync('README.md', t);"; }
 section_of() { node -e "const t = require('fs').readFileSync(0, 'utf8'); const m = t.match(new RegExp('## $1\\n[\\\\s\\\\S]*?(?=\\n## |\$)')); process.stdout.write(m ? m[0] : '');"; }
 
-# Run 7: a person deletes the Overview section.
+# Run 7: a person deletes the Overview section. An edit to README.md alone starts no run, so
+# a small code change comes with it.
 edit_readme "return t.replace(/## Overview\n[\s\S]*?(?=## )/, '');"
 seed_commit "Remove the overview"
+BEFORE="$(remote_sha)"
+run_docturnal run7a
+[ "$(remote_sha)" = "$BEFORE" ] || fail "run 7 ran for an edit to README.md alone"
+expect_count "run 7 for README.md alone" '"kind"' 0
+cd "$WORK/seed"
+printf '\nexport function closeAll(clients) {\n  return clients.length;\n}\n' >> src/db/client.js
+seed_commit "Close all clients"
 run_docturnal run7
-expect_count "run 7 main doc" '"kind":"readme"' 0
 expect_count "run 7 polish" '"kind":"polish"' 0
 README="$(remote_file README.md)"
 lacks "$README" '## Overview' "run 7 README.md"
@@ -289,7 +296,7 @@ contains "$(remote_file .docturnal/readme.json)" '"key": "overview"' "run 7 read
 pass "run 7 keeps a section a person deleted out of README.md"
 
 # Run 8: the person adds Overview back in their own words, along with a code change that
-# makes Docturnal regenerate its own sections.
+# makes Docturnal regenerate its own sections. Their words stay exactly as written.
 merge_pull_request
 cd "$WORK/seed"
 edit_readme "return t.replace('## Architecture', '## Overview\n\nBasically, the shop keeps users and orders in one small database for the team.\n\n## Architecture');"
@@ -297,28 +304,26 @@ printf '\nexport function countOrders(db) {\n  return db.all().length;\n}\n' >> 
 seed_commit "Write our own overview and count orders"
 run_docturnal run8
 expect_count "run 8 main doc" '"kind":"readme"' 1
-expect_count "run 8 polish" '"kind":"polish"' 1
 README="$(remote_file README.md)"
-contains "$(printf '%s' "$README" | section_of Overview)" 'The shop keeps users and orders in one small database for the team.' "run 8 Overview"
+contains "$(printf '%s' "$README" | section_of Overview)" 'Basically, the shop keeps users and orders in one small database for the team.' "run 8 Overview"
 lacks "$README" 'It has a few modules.' "run 8 README.md"
 LAST_RUN="$(remote_file .docturnal/last-run.md)"
-contains "$LAST_RUN" '- Polished for clarity: "Overview"' "run 8 last-run.md"
+lacks "$LAST_RUN" 'Polished' "run 8 last-run.md"
 lacks "$LAST_RUN" 'Not re-added' "run 8 last-run.md"
-pass "run 8 keeps a re-added section as the person's and polishes it"
+pass "run 8 keeps a re-added section as the person's, word for word"
 
-# Run 9: the person adds a new section.
+# Run 9: the person adds a new section, with a code change.
 merge_pull_request
 cd "$WORK/seed"
 edit_readme "return t.replace('## Project structure', '## Support\n\nBasically, open an issue on GitHub and we answer within 2 days, see [the guide](https://example.com/help).\n\n## Project structure');"
-seed_commit "Add a support section"
+printf '\nexport function countUsers(db) {\n  return db.all().length;\n}\n' >> src/api/users.js
+seed_commit "Add a support section and count users"
 run_docturnal run9
-expect_count "run 9 main doc" '"kind":"readme"' 0
-expect_count "run 9 polish" '"kind":"polish"' 1
 SUPPORT="$(remote_file README.md | section_of Support)"
-contains "$SUPPORT" 'Open an issue on GitHub and we answer within 2 days, see [the guide](https://example.com/help).' "run 9 Support"
-contains "$(remote_file .docturnal/last-run.md)" '- Polished for clarity: "Support"' "run 9 last-run.md"
-contains "$(printf '%s' "$(remote_file README.md)" | section_of Overview)" 'The shop keeps users and orders in one small database for the team.' "run 9 Overview"
-pass "run 9 keeps and polishes a section a person added"
+contains "$SUPPORT" 'Basically, open an issue on GitHub and we answer within 2 days, see [the guide](https://example.com/help).' "run 9 Support"
+lacks "$(remote_file .docturnal/last-run.md)" 'Polished' "run 9 last-run.md"
+contains "$(printf '%s' "$(remote_file README.md)" | section_of Overview)" 'Basically, the shop keeps users and orders in one small database for the team.' "run 9 Overview"
+pass "run 9 keeps a section a person added, word for word"
 
 # Run 10: nothing changed, so README.md stays byte for byte the same and nothing is pushed.
 merge_pull_request
@@ -329,6 +334,6 @@ run_docturnal run10
 expect_count "run 10" '"kind"' 0
 [ "$(git -C "$WORK/run10" show HEAD:README.md | sha256sum)" = "$README_BEFORE" ] || fail "run 10 changed README.md"
 [ -z "$(git -C "$WORK/run10" status --porcelain)" ] || fail "run 10 left changes in the working tree"
-pass "run 10 with nothing to do leaves README.md unchanged and polishes nothing again"
+pass "run 10 with nothing to do leaves README.md unchanged"
 
 echo "All end-to-end scenarios passed."

@@ -242,12 +242,42 @@ test('layer doc has the sections in order with generated tables and links', () =
   assert.doesNotMatch(doc, /made up by the model/);
 });
 
-test('layer doc keeps a real configuration section', () => {
-  const raw = '# X\nIntro.\n## Overview\nO.\n## Configuration\nSet `DATABASE_URL` to the connection string.';
-  const doc = docs.buildLayerDoc(raw, { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO });
-  assert.deepStrictEqual(h2s(doc), ['Overview', 'Responsibilities', 'Key components', 'Configuration', 'Related layers']);
+test('a layer doc\'s Configuration section is the computed one: the model\'s, even one saying there is none, is dropped', () => {
+  for (const said of ['Set `DATABASE_URL` to the connection string.', 'This layer has no configuration.']) {
+    const raw = `# X\nIntro.\n## Overview\nO.\n## Configuration\n${said}`;
+    const without = docs.buildLayerDoc(raw, { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO });
+    assert.deepStrictEqual(h2s(without), ['Overview', 'Responsibilities', 'Key components', 'Related layers']);
+    assert.doesNotMatch(without, /DATABASE_URL|no configuration/);
+    const computed = '- Environment variables: `PGHOST`, `PGPORT`.';
+    const withConfig = docs.buildLayerDoc(raw, { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO, configuration: computed });
+    assert.deepStrictEqual(h2s(withConfig), ['Overview', 'Responsibilities', 'Key components', 'Configuration', 'Related layers']);
+    assert.match(withConfig, /## Configuration\n\n- Environment variables: `PGHOST`, `PGPORT`\./);
+  }
   // With no responsibilities from the model, they come from the file summaries.
+  const doc = docs.buildLayerDoc('# X\nIntro.', { layer: LAYERS[1], layers: LAYERS, fileInfo: FILE_INFO });
   assert.match(doc, /## Responsibilities\n\n- Opens the database pool\./);
+});
+
+test('the Configuration section lists the environment variables, action inputs, and configuration files the code reads', () => {
+  const { configurationSection, layerConfiguration } = require('../src/configuration');
+  const store = {
+    'action.yml': 'name: x\ninputs:\n  comment-level:\n    default: medium\n  model:\n    default: auto\nruns:\n  using: composite\n',
+    'app/wrangler.toml': 'name = "x"\n',
+    'app/src/index.ts': 'export default { fetch(req, env) { return env.CLIENT_ID + env.SETTINGS; } };\n',
+    'app/src/db.py': 'import os\nURL = os.environ.get("DATABASE_URL")\nPORT = os.getenv("PORT")\n',
+    'src/config.js': "const level = env[`INPUT_${name}`];\nconst host = process.env.OLLAMA_HOST;\nconst pins = path.join(__dirname, 'pins', 'models.json');\nconst lock = 'package-lock.json';\n",
+    'pins/models.json': '{}',
+    'package-lock.json': '{}',
+    'src/plain.js': 'export const x = 1;\n',
+  };
+  const read = (p) => store[p] ?? null;
+  const all = Object.keys(store);
+  assert.strictEqual(configurationSection(layerConfiguration(['app/src/index.ts', 'app/src/db.py'], read, all)),
+    '- Environment variables: `CLIENT_ID`, `DATABASE_URL`, `PORT`, `SETTINGS`.\n- Configuration files: `app/wrangler.toml`.');
+  assert.strictEqual(configurationSection(layerConfiguration(['src/config.js'], read, all)),
+    '- Environment variables: `OLLAMA_HOST`.\n- Action inputs: `comment-level`, `model`.\n- Configuration files: `pins/models.json`.');
+  // A layer that reads nothing has no section.
+  assert.strictEqual(configurationSection(layerConfiguration(['src/plain.js'], read, all)), '');
 });
 
 const REPO = {
@@ -283,8 +313,8 @@ function mockHandler(body) {
   if (body.format) {
     return {
       layers: [
-        { name: 'API', description: 'Handles HTTP requests.', files: ['src/api/orders.js', 'src/api/users.js'] },
-        { name: 'Data Access', description: 'Talks to the database.', files: ['src/db/client.js'] },
+        { name: 'API', description: 'Handles HTTP requests.', groups: ['g1'] },
+        { name: 'Database Client', description: 'Talks to the database.', groups: ['g2'] },
       ],
     };
   }
@@ -306,9 +336,9 @@ test('generateDocs plans layers, writes docs, respects human docs, and regenerat
     const first = await docs.generateDocs({ files, allFiles: Object.keys(store), readFile: repoRead(store), model: 'docs', host: mock.host });
 
     assert.deepStrictEqual(first.errors, []);
-    assert.deepStrictEqual(first.layers.map((l) => l.slug), ['api-2', 'data-access']);
+    assert.deepStrictEqual(first.layers.map((l) => l.slug), ['api-2', 'database-client']);
     // Only layer docs go in docs/; the main document is README.md, planned by readme.js.
-    assert.deepStrictEqual(first.docs.map((d) => d.path), ['docs/api-2.md', 'docs/data-access.md']);
+    assert.deepStrictEqual(first.docs.map((d) => d.path), ['docs/api-2.md', 'docs/database-client.md']);
     assert.strictEqual(first.readmeNeeded, true);
     assert.strictEqual(first.projectName, 'shopfront');
     for (const doc of first.docs) assert.ok(docs.hasMarker(doc.content), doc.path);
@@ -328,7 +358,7 @@ test('generateDocs plans layers, writes docs, respects human docs, and regenerat
       previousLayers: first.layers,
       changedFiles: new Set(['src/db/client.js']),
     });
-    assert.deepStrictEqual(second.docs.map((d) => d.path), ['docs/data-access.md']);
+    assert.deepStrictEqual(second.docs.map((d) => d.path), ['docs/database-client.md']);
     // The set of files is the same, so the layers are reused without asking the model.
     assert.strictEqual(second.replanned, false);
     assert.strictEqual(mock.requests.length - before, 1);

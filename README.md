@@ -78,7 +78,7 @@ Each layer document starts with a hidden marker. Docturnal rewrites a layer docu
 
 `README.md` is shared between you and Docturnal. Its first line is a hidden comment that says so.
 
-- **Your additions are kept.** A section you add or edit is yours. Docturnal polishes it once for clarity, keeping your heading, links, badges, code, and numbers. If a polish would change any of them, your wording stays.
+- **Your text is kept exactly.** A section you add or edit is yours, and Docturnal never rewrites it, on the first run or after.
 - **Your deletions are never re-added.** If you delete a section, Docturnal does not write it again.
 - **Adding a section back makes it yours.** Docturnal keeps your version and no longer treats the section as deleted.
 - **Docturnal's own sections**, such as the overview and the architecture, are rewritten when your code changes, unless you edited them.

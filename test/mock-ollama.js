@@ -30,7 +30,8 @@ function promptOf(body) {
 function folderReply(body) {
   const digest = body.messages[1].content;
   const where = (digest.match(/^Files in (?:the folder )?(.+?)\./m) || [])[1] || 'the project';
-  const files = [...digest.matchAll(/^- ([^:\n]+): (?:(?:exports|defines) ([\w$]+))?/gm)].map((m) => ({
+  // Only the files marked "*" need a purpose.
+  const files = [...digest.matchAll(/^\* ([^:\n]+): (?:(?:exports|defines) ([\w$]+))?/gm)].map((m) => ({
     name: m[1],
     purpose: m[2] ? `Defines ${m[2]} for ${m[1]}.` : `Supports ${m[1]}.`,
   }));
@@ -99,22 +100,19 @@ function accuracyReply(body, judge = () => true) {
   };
 }
 
+// One layer per group, named after the last part of its folder: "Api Code" for src/api.
 function layersReply(body) {
   const prompt = promptOf(body);
-  const files = [...prompt.matchAll(/^- ([^\s:]+)(?::|$)/gm)].map((m) => m[1]);
-  const groups = new Map();
-  for (const file of files) {
-    const parts = file.split('/');
-    const key = parts.length > 1 ? parts[parts.length - 2] : 'core';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(file);
-  }
+  const groups = [...prompt.matchAll(/^- (g\d+): ([^\s,(]+)/gm)].map((m) => ({ id: m[1], folder: m[2] }));
+  const used = new Set();
   return {
-    layers: [...groups].map(([key, groupFiles]) => ({
-      name: `${key.charAt(0).toUpperCase()}${key.slice(1)} Code`,
-      description: `Holds the ${key} code.`,
-      files: groupFiles,
-    })),
+    layers: groups.map(({ id, folder }) => {
+      // The parent folder too when the last part repeats, as a model would name app/src and src.
+      let key = folder === '.' ? 'core' : folder.split('/').pop();
+      for (let n = 2; used.has(key); n++) key = `${folder.split('/').pop()} ${n}`;
+      used.add(key);
+      return { name: `${key.charAt(0).toUpperCase()}${key.slice(1)} Code`, description: `Holds the ${key} code.`, groups: [id] };
+    }),
   };
 }
 

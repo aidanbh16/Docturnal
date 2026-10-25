@@ -256,12 +256,13 @@ describe('coverage over several runs', () => {
     assert.strictEqual(result.code, 0, result.stderr);
     const kinds = mock.requests.map((r) => r.format && r.format.properties ? Object.keys(r.format.properties).join(',') : 'text');
     assert.ok(!kinds.some((k) => k.includes('comments') || k.includes('verdicts')), kinds.join(' | '));
-    // One summary call per folder, not per file.
+    // One summary call per folder of up to 10 files, not per file.
     const folderCalls = mock.requests.filter((r) => r.messages[0].content.startsWith('You describe one folder'));
     const docState = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
-    const dirs = new Set(Object.keys(docState.files).filter((f) => f.endsWith('.js')).map((f) => path.posix.dirname(f)));
-    assert.strictEqual(folderCalls.length, dirs.size);
-    assert.ok(dirs.size < 21);
+    const perDir = new Map();
+    for (const f of Object.keys(docState.files).filter((x) => x.endsWith('.js'))) perDir.set(path.posix.dirname(f), (perDir.get(path.posix.dirname(f)) || 0) + 1);
+    assert.strictEqual(folderCalls.length, [...perDir.values()].reduce((n, count) => n + Math.ceil(count / 10), 0));
+    assert.ok(folderCalls.length < 21);
     assert.strictEqual(Object.values(docState.files).filter((e) => typeof e.summary === 'string').length, 21);
     // Docs only: the code is unchanged, and the layer docs and the README are written.
     for (let i = 0; i < 21; i++) {
@@ -442,7 +443,7 @@ describe('a state from before gradual coverage', () => {
       const summaries = mock.requests.filter((r) => r.messages[0].content.startsWith('You describe one folder'));
       assert.strictEqual(summaries.length, 1);
       assert.match(summaries[0].messages[1].content, /^Files in the folder src\./);
-      assert.strictEqual((summaries[0].messages[1].content.match(/^- missed/gm) || []).length, 6);
+      assert.strictEqual((summaries[0].messages[1].content.match(/^[*-] missed/gm) || []).length, 6);
       assert.ok(!mock.requests.some((r) => r.format && r.format.properties && r.format.properties.comments));
       const state = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
       assert.strictEqual(state.docsComplete, true);

@@ -7,7 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { MARKER } = require('../src/docs');
-const { MAINTAINED, parseReadme, planReadme, polishProblem } = require('../src/readme');
+const { MAINTAINED, parseReadme, planReadme } = require('../src/readme');
 
 const FACTS = { description: 'An online store.', envVars: [], scripts: {}, packageManagers: ['npm'] };
 const BLOCKS = {
@@ -24,16 +24,8 @@ const PROSE = {
 
 // A repository whose README goes through runs, like the nightly Action. Each run passes the
 // README as it is now, and the state that the previous run saved.
-// A careful edit: drops the filler word "basically" and keeps everything else.
-function dropFiller(text) {
-  return text.replace(/\bbasically,? (\w)/gi, (match, next, offset) => {
-    const startsSentence = offset === 0 || /[.!?]\s*$|\n\s*$/.test(text.slice(0, offset));
-    return startsSentence ? next.toUpperCase() : next;
-  }).replace(/,? basically\b/gi, '');
-}
-
-function world({ polish = (heading, body) => dropFiller(body) } = {}) {
-  const w = { current: null, saved: null, generateCalls: 0, polishCalls: [], blocks: { ...BLOCKS } };
+function world() {
+  const w = { current: null, saved: null, generateCalls: 0, blocks: { ...BLOCKS } };
   w.run = async ({ regenerate = false } = {}) => {
     const plan = await planReadme({
       current: w.current,
@@ -45,10 +37,6 @@ function world({ polish = (heading, body) => dropFiller(body) } = {}) {
       generate: async () => {
         w.generateCalls++;
         return { prose: PROSE, fallback: false };
-      },
-      polish: async (heading, body) => {
-        w.polishCalls.push(heading);
-        return polish(heading, body);
       },
     });
     if (plan.content !== null) w.current = plan.content;
@@ -82,7 +70,6 @@ test('first run with no README writes every standard section with computed block
   ]);
   assert.strictEqual(plan.state.text, text);
   assert.deepStrictEqual(plan.report.updated, ['Introduction', 'Overview', 'Architecture', 'Getting started', 'Project structure']);
-  assert.deepStrictEqual(w.polishCalls, []);
 });
 
 const HAND_WRITTEN = [
@@ -102,28 +89,61 @@ const HAND_WRITTEN = [
   '',
 ].join('\n');
 
-test('first run with a hand-written README keeps everything, polishes it, and adds what is missing', async () => {
+test('first run with a hand-written README keeps every section byte for byte and adds only what is missing', async () => {
   const w = world();
   w.current = HAND_WRITTEN;
   const plan = await w.run({ regenerate: true });
   const text = plan.content;
 
-  // Nothing is lost: the heading, badge, commands, numbers, and every sentence are still there.
-  for (const kept of ['# Shop', '[![CI](https://ci.example/badge.svg)](https://ci.example/shop)', '`npm install`', '`npm start`', '3000', '12 kinds of tea', 'Thanks to Ann and Bo']) {
-    assert.ok(text.includes(kept), kept);
+  // Every section a person wrote is kept exactly, filler words and all.
+  const before = parseReadme(HAND_WRITTEN).parts.filter((p) => !p.empty);
+  for (const part of before) {
+    const now = parseReadme(text).parts.find((p) => p.key === part.key);
+    assert.ok(now, part.heading || 'Introduction');
+    if (part.key === 'installation') {
+      // Only the computed scripts table is added to the section that counts as Getting started.
+      assert.ok(now.text.startsWith(part.text.trimEnd()), 'Installation keeps its text');
+      assert.match(now.text, /### Available scripts\n\n<!-- docturnal:scripts -->/);
+    } else {
+      assert.strictEqual(now.text.trimEnd(), part.text.trimEnd(), part.heading || 'Introduction');
+    }
   }
-  // Installation counts as the Getting started section, so no second one is added; the
-  // scripts table goes into it. The missing sections go in their standard positions.
+  assert.match(text, /Basically this is the shop that sells 12 kinds of tea/);
+  // The missing sections go in their standard positions; Installation counts as Getting started.
   assert.deepStrictEqual(h2s(text), ['Overview', 'Architecture', 'Installation', 'Project structure', 'Credits']);
-  assert.match(section(text, 'Installation'), /### Available scripts\n\n<!-- docturnal:scripts -->/);
   assert.deepStrictEqual(plan.state.sections.map((s) => [s.heading, s.owner]), [
     [null, 'person'], ['Overview', 'docturnal'], ['Architecture', 'docturnal'], ['Installation', 'person'], ['Project structure', 'docturnal'], ['Credits', 'person'],
   ]);
-  // Each person's section is polished once.
-  assert.deepStrictEqual(w.polishCalls, ['Introduction', 'Installation', 'Credits']);
-  assert.deepStrictEqual(plan.report.polished, ['Introduction', 'Installation']);
-  assert.match(text, /^This is the shop that sells 12 kinds of tea|\nthis is the shop that sells 12 kinds of tea/m);
-  assert.ok(!/basically/i.test(text));
+  assert.strictEqual(w.generateCalls, 1);
+  assert.deepStrictEqual(Object.keys(plan.report).sort(), ['fallback', 'notReadded', 'updated']);
+});
+
+test('a person\'s tagline and sections stay byte for byte through later runs and code changes', async () => {
+  const w = world();
+  const readme = [
+    '# Docturnal',
+    '',
+    'Your codebase, documented overnight.',
+    '',
+    '## How comments are checked',
+    '',
+    'The model never edits your files. It only proposes comments, and Docturnal decides which ones to insert.',
+    '',
+    '- **New lines only.** A comment is inserted as a whole new line above the code it describes.',
+    '',
+  ].join('\n');
+  w.current = readme;
+  await w.run({ regenerate: true });
+  const first = w.current;
+  for (let night = 0; night < 3; night++) {
+    w.blocks.layers = `${BLOCKS.layers}\n| [Night ${night}](docs/n${night}.md) | Changed. |`;
+    await w.run({ regenerate: true });
+  }
+  const intro = parseReadme(w.current).parts.find((p) => p.key === 'intro');
+  assert.strictEqual(intro.text, parseReadme(readme).parts.find((p) => p.key === 'intro').text);
+  assert.match(w.current, /^# Docturnal\n\nYour codebase, documented overnight\.\n/m);
+  assert.strictEqual(section(w.current, 'How comments are checked'), section(first, 'How comments are checked'));
+  assert.strictEqual((w.current.match(/^## How comments are checked$/gm) || []).length, 1);
 });
 
 // --- People change the README ---
@@ -148,77 +168,38 @@ test('a Docturnal section a person deletes is never added again, even after code
   assert.deepStrictEqual(later.report.notReadded, ['Overview']);
 });
 
-test('a section a person adds back is kept as theirs and maintained again', async () => {
+test('a section a person adds back is kept as theirs, byte for byte', async () => {
   const w = world();
   await w.run({ regenerate: true });
   w.current = removeSection(w.current, 'Overview');
   await w.run();
 
-  w.current = w.current.replace('## Architecture', '## Overview\n\nBasically, the store sells tea and takes orders by email from its customers.\n\n## Architecture');
+  const added = '## Overview\n\nBasically, the store sells tea and takes orders by email from its customers.\n\n';
+  w.current = w.current.replace('## Architecture', `${added}## Architecture`);
   const plan = await w.run({ regenerate: true });
   assert.deepStrictEqual(w.saved.suppressed, []);
   assert.strictEqual(w.saved.sections.find((s) => s.key === 'overview').owner, 'person');
-  assert.match(section(w.current, 'Overview'), /^## Overview\n\nThe store sells tea and takes orders by email from its customers\.\n/);
-  assert.deepStrictEqual(plan.report.polished, ['Overview']);
+  assert.strictEqual(section(w.current, 'Overview'), added);
   assert.deepStrictEqual(plan.report.notReadded, []);
 
-  // It is the person's now: later runs neither regenerate nor polish it again.
-  const polishedText = section(w.current, 'Overview');
-  w.polishCalls.length = 0;
+  // It is the person's now: later runs never regenerate or rewrite it.
   await w.run({ regenerate: true });
-  assert.strictEqual(section(w.current, 'Overview'), polishedText);
-  assert.deepStrictEqual(w.polishCalls, []);
+  assert.strictEqual(section(w.current, 'Overview'), added);
 });
 
-test('a section a person adds is kept, polished once, and not polished again', async () => {
+test('a section a person adds, or edits, is kept byte for byte on every run', async () => {
   const w = world();
   await w.run({ regenerate: true });
-  w.current = w.current.replace('## Project structure', '## FAQ\n\nBasically, you can ask questions in the issue tracker at any time of day.\n\n## Project structure');
-  const plan = await w.run();
-  assert.deepStrictEqual(w.polishCalls, ['FAQ']);
-  assert.deepStrictEqual(plan.report.polished, ['FAQ']);
-  assert.match(w.current, /## FAQ\n\nYou can ask questions in the issue tracker at any time of day\.\n\n## Project structure/);
+  const faq = '## FAQ\n\nBasically, you can ask questions in the issue tracker at any time of day.\n\n';
+  w.current = w.current.replace('## Project structure', `${faq}## Project structure`);
+  await w.run({ regenerate: true });
+  assert.strictEqual(section(w.current, 'FAQ'), faq);
   assert.strictEqual(w.saved.sections.find((s) => s.key === 'faq').owner, 'person');
 
-  const before = w.current;
-  const again = await w.run({ regenerate: true });
-  assert.deepStrictEqual(w.polishCalls, ['FAQ'], 'not polished a second time');
-  assert.strictEqual(section(w.current, 'FAQ'), section(before, 'FAQ'));
-  assert.deepStrictEqual(again.report.polished, []);
-
-  // A new edit by the person is polished once more.
-  w.current = w.current.replace('at any time of day.', 'at any time of day, basically.');
-  await w.run();
-  assert.deepStrictEqual(w.polishCalls, ['FAQ', 'FAQ']);
-});
-
-test('a polish that drops a link or a number keeps the original wording', async () => {
-  const original = 'See the [setup guide](https://example.com/setup) for the 3 steps you need before the first deploy.';
-  for (const rewrite of [
-    'See the setup guide for the 3 steps you need before the first deploy.',
-    'See the [setup guide](https://example.com/setup) for the steps you need before the first deploy.',
-    'See the [setup guide](https://evil.example/setup) for the 3 steps you need before the first deploy.',
-    'Read the [setup guide](https://example.com/setup) and run `rm -rf /` for the 3 steps before the first deploy.',
-    'See the [setup guide](https://example.com/setup), 3 steps.',
-  ]) {
-    const w = world({ polish: () => rewrite });
-    await w.run({ regenerate: true });
-    w.current = w.current.replace('## Project structure', `## Deploying\n\n${original}\n\n## Project structure`);
-    const plan = await w.run();
-    assert.strictEqual(section(w.current, 'Deploying'), `## Deploying\n\n${original}\n\n`, rewrite);
-    assert.deepStrictEqual(plan.report.kept, ['Deploying'], rewrite);
-    assert.deepStrictEqual(plan.report.polished, []);
-  }
-});
-
-test('the safeguard names what a rewrite broke', () => {
-  const original = 'Run `npm test` before you push. It takes 2 minutes.\n\n<img src="logo.png">\n\n```sh\nnpm ci\n```';
-  assert.strictEqual(polishProblem(original, 'Run `npm test` before you push. It takes 2 minutes.\n\n<img src="logo.png">\n\n```sh\nnpm ci\n```'), null);
-  assert.strictEqual(polishProblem(original, 'Run tests before you push. It takes 2 minutes.\n\n<img src="logo.png">\n\n```sh\nnpm ci\n```'), 'dropped a inline code');
-  assert.strictEqual(polishProblem(original, 'Run `npm test` before you push. It takes 2 minutes.\n\n<img src="logo.png">'), 'dropped a code block');
-  assert.strictEqual(polishProblem(original, 'Run `npm test` before you push. It takes 2 minutes.\n\n```sh\nnpm ci\n```'), 'dropped a HTML tag');
-  assert.strictEqual(polishProblem(original, 'Run `npm test` and `npm audit` before you push. It takes 2 minutes.\n\n<img src="logo.png">\n\n```sh\nnpm ci\n```'), 'added a inline code');
-  assert.strictEqual(polishProblem(original, 'Run `npm test` before you push. It takes 2 minutes.\n\n<img src="logo.png">\n\n```sh\nnpm ci\n```\n\n## New heading'), 'added a heading');
+  const edited = faq.replace('at any time of day.', 'at any time of day, basically.');
+  w.current = w.current.replace(faq, edited);
+  await w.run({ regenerate: true });
+  assert.strictEqual(section(w.current, 'FAQ'), edited);
 });
 
 test('a layers table a person deletes is not added again, until they put it back', async () => {
@@ -265,7 +246,6 @@ test('an unchanged README stays byte for byte the same', async () => {
   assert.match(written, /\r\n/);
   assert.doesNotMatch(written.replace(/\r\n/g, ''), /\n/, 'line endings stay CRLF');
   const savedBefore = JSON.stringify(w.saved);
-  w.polishCalls.length = 0;
 
   // A night with nothing to do, and a night where Docturnal's prose comes out the same.
   for (const regenerate of [false, true]) {
@@ -275,7 +255,6 @@ test('an unchanged README stays byte for byte the same', async () => {
     assert.strictEqual(JSON.stringify(w.saved), savedBefore);
     assert.deepStrictEqual(plan.report.updated, []);
   }
-  assert.deepStrictEqual(w.polishCalls, []);
 });
 
 test('the README parser loses no bytes', () => {
@@ -288,13 +267,14 @@ test('the README parser loses no bytes', () => {
 
 test('last-run.md lists README sections by heading only', async () => {
   const { buildReport } = require('../src/report');
-  const w = world({ polish: (heading, body) => (heading === 'Deploying' ? body.replace('3', 'three') : dropFiller(body)) });
+  const w = world();
   await w.run({ regenerate: true });
   w.current = removeSection(w.current, 'Overview')
     .replace('## Project structure', '## FAQ\n\nBasically, you can ask questions in the issue tracker at any time of day.\n\n## Deploying\n\nDeploy with the 3 commands in the [guide](https://example.com/deploy) for production.\n\n## Project structure');
   w.blocks.layers = `${BLOCKS.layers}\n| [Data](docs/data.md) | Stores orders. |`;
   const plan = await w.run({ regenerate: true });
   const report = buildReport({ docs: { updated: [], removed: [], pending: [], readme: plan.report }, models: { comment: 'a', docs: 'b', level: 'medium' } });
-  assert.match(report, /## README\n\n- Updated: "Architecture"\n- Polished for clarity: "FAQ"\n- Kept in your wording: "Deploying"\n- Not re-added because you removed them: "Overview"\n/);
+  assert.match(report, /## README\n\n- Updated: "Architecture"\n- Not re-added because you removed them: "Overview"\n/);
+  assert.doesNotMatch(report, /Polished|your wording/);
   assert.doesNotMatch(report, /issue tracker|guide|Stores orders/);
 });

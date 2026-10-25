@@ -15,7 +15,7 @@ const path = require('path');
 const { hasMarker } = require('./docs');
 const { IGNORE_FILE, listFiles } = require('./git');
 const { classifyFile, MAX_FILE_BYTES } = require('./languages');
-const { readCurrentReadme, readReadmeState, readmeIsPlain } = require('./readme');
+const { readReadmeState, readmeIsPlain } = require('./readme');
 const { isPlainPath } = require('./safe-path');
 const { emptyPending, hashContent } = require('./state');
 
@@ -91,10 +91,10 @@ function findChanges(cwd, config, previous) {
   const summarized = Object.values(previous.files).some((entry) => typeof entry.summary === 'string');
   const docsMissing = previous.docs.some((slug) => !docExists(cwd, `${config.docsDir}/${slug}.md`)) ||
     (previous.layers.length === 0 && summarized);
-  // A person editing README.md is a change, so their section gets polished. An earlier run
-  // that has no saved README yet counts too, so the README gets set up once.
+  // README.md is set up once for a state from before Docturnal saved it. A person's edits to it
+  // are not a change: their text is kept as it is, and Docturnal reads it on its next run.
   const readmeState = readReadmeState(cwd);
-  const readmeChanged = !readmeIsPlain(cwd) ? false : readmeState ? readCurrentReadme(cwd) !== readmeState.text : previous.commentLevel !== null;
+  const readmeChanged = readmeIsPlain(cwd) && !readmeState && previous.commentLevel !== null;
   // Earlier versions wrote the main document to docs/README.md; it moves to README.md.
   const legacyReadme = docExists(cwd, `${config.docsDir}/README.md`);
   // Files .docturnalignore now matches show up as deleted, and ones it no longer matches as

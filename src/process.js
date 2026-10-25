@@ -13,7 +13,8 @@ const ollama = require('./ollama');
 const { knownUrls } = require('./links');
 const { proposalSummary } = require('./report');
 const { hashContent } = require('./state');
-const { planFolderCalls, summarizeFolder } = require('./folders');
+const { callLabel, fallbackPurpose, planFolderCalls, splitCall, summarizeFolder } = require('./folders');
+const { symbolsOf } = require('./structure');
 const { languageForPath } = require('./languages');
 
 // Time kept free for the accuracy check and the docs after the last file is commented, and
@@ -72,11 +73,27 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   const byPath = new Map(readable.map((r) => [r.path, r]));
   const folderCalls = planFolderCalls(readable, config.contextTokens);
   const folders = [];
+  const summarizedDirs = new Set();
   let summaryCalls = 0;
-  for (const call of folderCalls) {
-    const entries = call.files.map((f) => byPath.get(f.path));
+  let fromStructure = 0;
+  const record = (path, summary, symbols) => {
+    const r = byPath.get(path);
+    const before = previous.files[r.path] || {};
+    // A file whose content is unchanged keeps its comment level and Docturnal's records.
+    const same = before.hash === r.originalHash;
+    const entry = { hash: r.originalHash, summary, symbols, level: same ? before.level ?? null : null };
+    if (same && before.comments) entry.comments = before.comments;
+    results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'summarized', originalHash: r.originalHash, entry });
+  };
+  // Each call's answer is checked. One that cannot be used is split in half and tried again,
+  // down to single files, and the files a usable answer leaves out are tried again on their
+  // own. Every retry is smaller than the call before it, so this ends. A file that a call of
+  // its own cannot describe gets a purpose built from its structure: no file is left out.
+  const queue = [...folderCalls];
+  while (queue.length) {
+    const call = queue.shift();
     if (now() > summaryDeadline) {
-      for (const r of entries) leave(r.item, r.originalHash, 'time budget');
+      for (const f of call.files) leave(byPath.get(f.path).item, byPath.get(f.path).originalHash, 'time budget');
       continue;
     }
     let answer;
@@ -84,32 +101,50 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       summaryCalls++;
       answer = await summarizeFolder({ call, model: models.comment, contextTokens: config.contextTokens, chat });
     } catch (err) {
-      for (const r of entries) leave(r.item, r.originalHash, 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
+      for (const f of call.files) {
+        const r = byPath.get(f.path);
+        leave(r.item, r.originalHash, 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
+      }
       continue;
     }
-    if (!answer.failed && call.part === 1) folders.push({ dir: call.dir, summary: answer.summary });
-    for (const r of entries) {
-      const before = previous.files[r.path] || {};
-      // A file whose content is unchanged keeps its comment level and Docturnal's records.
-      const same = before.hash === r.originalHash;
-      const described = answer.failed ? null : answer.files.find((f) => f.path === r.path);
-      if (!described || !described.summary) {
-        // Recorded so the documentation pass can end; a later change, or a batch, reads it again.
-        const entry = { hash: r.originalHash, level: same ? before.level ?? null : null, summaryFailed: true };
-        if (same && before.comments) entry.comments = before.comments;
-        results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'skipped', originalHash: r.originalHash, entry, why: 'no usable summary' });
-        log(`${r.path}: skipped, no usable summary`);
-        continue;
+    if (!answer.failed) {
+      if (!summarizedDirs.has(call.dir)) {
+        summarizedDirs.add(call.dir);
+        folders.push({ dir: call.dir, summary: answer.summary });
       }
-      const entry = { hash: r.originalHash, summary: described.summary, symbols: described.symbols, level: same ? before.level ?? null : null };
-      if (same && before.comments) entry.comments = before.comments;
-      results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'summarized', originalHash: r.originalHash, entry });
+      for (const described of answer.files) record(described.path, described.summary, described.symbols);
+    }
+    // Files whose leading comment gives their purpose need nothing from a failed answer.
+    if (answer.failed) for (const f of call.files.filter((x) => x.purpose)) record(f.path, f.purpose, symbolsOf(f.structure));
+    const rest = answer.failed ? call.files.filter((f) => !f.purpose) : call.files.filter((f) => answer.missing.includes(f.path));
+    if (!rest.length) {
+      if (answer.failed) log(`${callLabel(call)}: no folder summary, the answer could not be used (${answer.failed})`);
+      continue;
+    }
+    const why = answer.failed || `${rest.length} of ${call.files.length} files missing from the answer`;
+    if (rest.length === 1 && call.files.length === 1) {
+      const only = rest[0];
+      record(only.path, fallbackPurpose(only.path, only.structure), symbolsOf(only.structure));
+      fromStructure++;
+      log(`${only.path}: described from its structure, the answer could not be used (${why})`);
+    } else if (rest.length === 1) {
+      log(`${callLabel(call)}: ${why}, trying again with 1 file`);
+      queue.unshift({ ...call, files: rest, retry: true });
+    } else if (answer.failed) {
+      const halves = splitCall({ ...call, files: rest });
+      log(`${callLabel(call)}: the answer could not be used (${why}), trying again with ${halves[0].files.length} and ${halves[1].files.length} files`);
+      queue.unshift(...halves);
+    } else {
+      const again = rest.length === 1 ? [{ ...call, files: rest, retry: true }] : splitCall({ ...call, files: rest });
+      log(`${callLabel(call)}: ${why}, trying them again`);
+      queue.unshift(...again);
     }
   }
   const summaryStats = {
     files: summaryItems.length,
     folders: new Set(folderCalls.map((c) => c.dir)).size,
     calls: summaryCalls,
+    fromStructure,
     ms: now() - summaryStarted,
   };
 

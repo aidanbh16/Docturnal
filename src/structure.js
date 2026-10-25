@@ -139,6 +139,21 @@ function symbolsOf(structure) {
   return uniqueNames([...structure.exports, ...structure.classes, ...structure.functions]);
 }
 
+// Headers that say nothing about what a file does: licenses, tool directives, generated-file notes.
+const NOT_A_PURPOSE = /copyright|licen[cs]e|spdx|eslint|prettier|@ts-|@flow|jshint|generated|do not edit|istanbul|coding[:=]/i;
+
+// The file's purpose in its author's words: the first sentence of its leading comment, when that
+// is a plain sentence of 3 to 20 words. Such a file needs no model call for its purpose.
+function commentPurpose(structure) {
+  if (!structure.leading) return null;
+  const sentence = (structure.leading.match(/^.*?[.!?](\s|$)/) || [null])[0];
+  if (!sentence) return null;
+  const text = sentence.trim();
+  const words = text.split(/\s+/).length;
+  if (words < 3 || words > 20 || NOT_A_PURPOSE.test(text) || /[:;]\s*$|^[-*]|`{3}/.test(text) || !/^[A-Z]/.test(text)) return null;
+  return text;
+}
+
 // A plain description built only from the structure, for a file the model left out.
 function structuralSummary(file, structure) {
   if (structure.leading) {
@@ -149,4 +164,4 @@ function structuralSummary(file, structure) {
   return names.length ? `Defines ${names.map((n) => `\`${n}\``).join(', ')}.` : null;
 }
 
-module.exports = { fileStructure, leadingComment, structuralSummary, symbolsOf, basename: (file) => path.posix.basename(file) };
+module.exports = { commentPurpose, fileStructure, leadingComment, structuralSummary, symbolsOf, basename: (file) => path.posix.basename(file) };

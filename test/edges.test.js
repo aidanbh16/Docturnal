@@ -340,7 +340,7 @@ test('state.json from every earlier version reads without losing what it recorde
 describe('review fixes', () => {
   const { kindOf } = require('./mock-ollama');
 
-  it('a file the model can never summarize is recorded, and the documentation pass still ends', async () => {
+  it('a file the model can never summarize is described from its structure, and the documentation pass still ends', async () => {
     const base = defaultHandler();
     const mock = await startMockOllama((body, n) => {
       if (kindOf(body) === 'folder' && body.messages[1].content.startsWith('Files in the folder src/odd.')) return '{"summary": "cut o';
@@ -351,10 +351,11 @@ describe('review fixes', () => {
       repo.commit({ 'src/a.js': fn('a'), 'src/odd/broken.js': fn('broken') }, 'Initial commit');
       const first = await runAction(repo, repo.clone(), mock);
       assert.strictEqual(first.code, 0, first.stderr);
-      assert.match(first.log, /src\/odd\/broken\.js: skipped, no usable summary/);
+      assert.match(first.log, /^src\/odd\/broken\.js: described from its structure, the answer could not be used \(answer cut off before its end\)$/m);
       const state = repo.state();
       assert.strictEqual(state.docsComplete, true);
-      assert.strictEqual(state.files['src/odd/broken.js'].summaryFailed, true);
+      assert.strictEqual(state.files['src/odd/broken.js'].summary, 'Defines `broken`.');
+      assert.strictEqual(state.files['src/odd/broken.js'].summaryFailed, undefined);
       // It can still be commented, in a batch.
       repo.merge();
       assert.strictEqual((await runAction(repo, repo.clone(), mock)).code, 0);
@@ -692,7 +693,8 @@ test('layer docs stop starting early enough that the README is always written', 
   const repo = gitRepo();
   try {
     const files = {};
-    for (let i = 0; i < 7; i++) files[`src/area${i}/file${i}.js`] = fn(`area${i}`);
+    // Three files in each area, so each stays a layer of its own.
+    for (let i = 0; i < 7; i++) for (let j = 0; j < 3; j++) files[`src/area${i}/file${j}.js`] = fn(`area${i}x${j}`);
     repo.commit(files, 'Seven areas');
     // Summaries are instant; every docs-model call takes 6 simulated minutes of the 40.
     let clock = Date.parse('2026-10-24T00:00:00Z');

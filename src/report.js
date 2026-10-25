@@ -80,7 +80,7 @@ function proposalSummary(stats, { reasons = false } = {}) {
 
 // processed: [{ path, verifier, added, rejections, stats }]
 // docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }],
-//   readme: { updated, polished, kept, notReadded, fallback } with section headings, or null }
+//   readme: { updated, notReadded, fallback } with section headings, or null }
 const DOCS_TITLE = 'Docturnal: documentation';
 const UPDATE_TITLE = 'Docturnal: comments and documentation';
 
@@ -135,7 +135,7 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   const summary = [];
   if (added) summary.push(`adds ${plural(added, 'comment')} to ${plural(commented, 'file')}`);
   if (docs.updated.length) summary.push(`updates ${plural(docs.updated.length, 'doc')}`);
-  if (docs.readme && (docs.readme.updated.length || docs.readme.polished.length)) summary.push('updates the README');
+  if (docs.readme && docs.readme.updated.length) summary.push('updates the README');
   if (docs.removed.length) summary.push(`removes ${plural(docs.removed.length, 'doc')}`);
   if (summarized && !summary.length) summary.push(`reads ${plural(summarized, 'file')} for the documentation`);
   const what = summary.length ? `The latest run ${summary.join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : 'The latest run updates Docturnal\'s records of your code.';
@@ -163,12 +163,10 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
 
   // The README lists sections by heading only, never their text.
   const readme = docs.readme;
-  if (readme && (readme.updated.length || readme.polished.length || readme.kept.length || readme.notReadded.length)) {
+  if (readme && (readme.updated.length || readme.notReadded.length)) {
     const list = (items) => items.map((h) => `"${plainText(String(h).replace(/\s+/g, ' ').trim())}"`).join(', ');
     lines.push('', '## README', '');
     if (readme.updated.length) lines.push(`- Updated: ${list(readme.updated)}${readme.fallback ? ' (written with the fallback model)' : ''}`);
-    if (readme.polished.length) lines.push(`- Polished for clarity: ${list(readme.polished)}`);
-    if (readme.kept.length) lines.push(`- Kept in your wording: ${list(readme.kept)}`);
     if (readme.notReadded.length) lines.push(`- Not re-added because you removed them: ${list(readme.notReadded)}`);
   }
 

@@ -8,8 +8,8 @@
 // the current README with it, section by section:
 // - A saved section that is gone was deleted by a person. Its heading is suppressed and never
 //   written again, until a person adds it back.
-// - A section that changed, or that is new, belongs to a person. Docturnal polishes it once,
-//   and never regenerates it.
+// - A section that changed, or that is new, belongs to a person. Docturnal keeps it byte for
+//   byte, apart from the computed blocks inside it.
 // - A section that is unchanged keeps its owner. Docturnal regenerates its own sections.
 // Computed blocks (the layers table, the scripts table, the directory tree) sit between
 // hidden markers, and are refreshed wherever they are, unless a person removed them.
@@ -42,7 +42,6 @@ const STANDARD = [
 ];
 const BLOCK_HOST = Object.fromEntries(STANDARD.filter((s) => s.block).map((s) => [s.block, s.id]));
 
-const POLISH_MIN_WORDS = 0.7;
 
 // --- Parsing ---
 
@@ -129,109 +128,17 @@ function refreshBlocks(text, blocks) {
   return text.replace(BLOCK_RE, (match, name) => (name in blocks ? renderBlock(name, blocks[name]) : match));
 }
 
-// --- The polish safeguard ---
-
-function polishTokens(text) {
-  const lines = text.split('\n');
-  const fences = [];
-  const prose = [];
-  const headings = [];
-  let fence = null;
-  let buffer = [];
-  for (const line of lines) {
-    const fenceMatch = line.match(/^\s*(```+|~~~+)/);
-    if (fence) {
-      buffer.push(line);
-      if (fenceMatch && line.trim().startsWith(fence)) {
-        fences.push(buffer.join('\n'));
-        buffer = [];
-        fence = null;
-      }
-      continue;
-    }
-    if (fenceMatch) {
-      fence = fenceMatch[1].slice(0, 3);
-      buffer = [line];
-      continue;
-    }
-    if (/^#{1,6}\s/.test(line)) headings.push(line.trim());
-    prose.push(line);
-  }
-  if (fence) fences.push(buffer.join('\n'));
-  const proseText = prose.join('\n');
-  const inline = proseText.match(/`[^`\n]+`/g) || [];
-  const noCode = proseText.replace(/`[^`\n]+`/g, ' ');
-  const links = noCode.match(/!?\[[^[\]\n]*\]\([^()\s]+(?:\s+"[^"\n]*")?\)/g) || [];
-  const targets = [
-    ...[...noCode.matchAll(/\]\(\s*([^)\s]+)/g)].map((m) => m[1]),
-    ...(noCode.match(/\bhttps?:\/\/[^\s)<>\]"'`]+/g) || []),
-    ...[...noCode.matchAll(/^\s*\[[^\]\n]+\]:\s*(\S+)/gm)].map((m) => m[1]),
-  ];
-  const html = noCode.match(/<!--[\s\S]*?-->|<\/?[A-Za-z][^<>\n]*>/g) || [];
-  const bare = noCode
-    .replace(/\]\([^)]*\)/g, ' ')
-    .replace(/\bhttps?:\/\/\S+/g, ' ')
-    .replace(/<!--[\s\S]*?-->|<\/?[A-Za-z][^<>\n]*>/g, ' ');
-  const numbers = bare.match(/\d+(?:[.,:]\d+)*/g) || [];
-  const words = text.split(/\s+/).filter(Boolean).length;
-  return { fences, inline, links, targets, html, numbers, headings, words };
-}
-
-// Checks a polished rewrite against the person's original. Returns null when it is safe,
-// or the reason it is not.
-function polishProblem(original, rewrite) {
-  if (!rewrite.trim()) return 'the rewrite is empty';
-  const before = polishTokens(original);
-  const after = polishTokens(rewrite);
-  const has = (list, item) => list.includes(item);
-  const checks = [
-    ['code block', 'fences'], ['inline code', 'inline'], ['link target', 'targets'], ['HTML tag', 'html'], ['number', 'numbers'],
-  ];
-  for (const [label, field] of checks) {
-    const missing = before[field].find((item) => !has(after[field], item));
-    if (missing !== undefined) return `dropped a ${label}`;
-    const added = after[field].find((item) => !has(before[field], item));
-    if (added !== undefined) return `added a ${label}`;
-  }
-  const missingLink = before.links.find((link) => !rewrite.includes(link));
-  if (missingLink) return 'changed a link or image';
-  if (after.headings.some((h) => !before.headings.includes(h))) return 'added a heading';
-  if (after.words < before.words * POLISH_MIN_WORDS) return 'too short';
-  return null;
-}
-
-// Strips what a model wraps around a reply: a code fence around everything, chatter, and a
-// repeated heading.
-function cleanPolish(raw, heading, original) {
-  let text = String(raw || '').replace(/\r\n?/g, '\n').trim();
-  const fenced = text.match(/^(```|~~~)[\w-]*\n([\s\S]*?)\n\1\s*$/);
-  if (fenced && !/^\s*(```|~~~)/.test(original)) text = fenced[2];
-  const lines = docs.trimChatter(text.split('\n'));
-  if (lines.length && heading && normalizeHeading(lines[0].replace(/^#+\s*/, '')) === normalizeHeading(heading) && /^#/.test(lines[0])) {
-    lines.shift();
-  }
-  return lines.join('\n').trim();
-}
-
-function polishPrompt(heading, body) {
-  return [
-    {
-      role: 'system',
-      content: `You edit developer documentation written by people.\n\n${docs.STYLE_RULES}\n- Keep every link, image, badge, inline code span, code block, number, and HTML comment or tag exactly as written.\n- Add no information, links, commands, or headings.`,
-    },
-    {
-      role: 'user',
-      content: `Rewrite this README section for clarity, following the writing rules. Keep its meaning and every fact. Reply with the rewritten section body only, without its heading.\n\nSection heading: ${heading}\n\nSection body:\n${body}`,
-    },
-  ];
-}
-
 // --- Generated sections ---
 
-function readmePrompt({ projectName, layers, facts, personText, contextTokens }) {
+// The longest answer for the README's sections, in tokens.
+const README_TOKENS = 450;
+// How much of the people's own sections the prompt shows, for context.
+const PERSON_TEXT_CHARS = 800;
+
+function readmePrompt({ projectName, layers, facts, personText }) {
   // Each layer with its files, or, when that is too long for the prompt, its folders.
   let layerList = layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n') || 'None.';
-  if (layerList.length > docs.charBudget(contextTokens) / 3) {
+  if (layerList.length > 1200) {
     layerList = layers.map((l) => {
       const dirs = [...new Set(l.files.map((f) => path.posix.dirname(f)))];
       return `- ${l.name}: ${l.description} ${l.files.length} files, in ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? `, and ${dirs.length - 8} more folders` : ''}.`;
@@ -258,18 +165,19 @@ Prerequisites, installation, and how to run the project, using only the commands
 Do not add other sections. A project structure section is added separately.
 
 Layers:
-${layerList}
+${layerList.slice(0, 1500)}
 
 Project facts:
-${docs.describeFacts(facts)}
+${docs.describeFacts(facts).slice(0, 600)}
 `;
+  const system = `You write developer documentation.\n\n${docs.STYLE_RULES}`;
   if (personText) {
-    const room = Math.max(0, docs.charBudget(contextTokens) - content.length - 100);
-    content += `\nSections that the project's people wrote, for context. Do not repeat them:\n${personText.slice(0, room)}\n`;
+    const room = Math.min(PERSON_TEXT_CHARS, docs.DOC_PROMPT_CHARS - system.length - content.length - 100);
+    if (room > 0) content += `\nSections that the project's people wrote, for context. Do not repeat them:\n${personText.slice(0, room)}\n`;
   }
   return [
-    { role: 'system', content: `You write developer documentation.\n\n${docs.STYLE_RULES}` },
-    { role: 'user', content },
+    { role: 'system', content: system },
+    { role: 'user', content: content.slice(0, docs.DOC_PROMPT_CHARS - system.length) },
   ];
 }
 
@@ -329,15 +237,6 @@ function standardText(id, { prose, blocks, allowBlock, name, facts }) {
   }
 }
 
-// Splits a part into the line that names it (its H2, or the H1 of the intro) and its body.
-function splitHead(part) {
-  const lines = part.text.split('\n');
-  if (part.heading !== null) return { head: lines[0], body: lines.slice(1).join('\n') };
-  const h1 = lines.findIndex((line) => /^#\s/.test(line));
-  if (h1 === -1) return { head: '', body: part.text };
-  return { head: lines.slice(0, h1 + 1).join('\n'), body: lines.slice(h1 + 1).join('\n') };
-}
-
 function displayHeading(part) {
   return part.heading === null ? 'Introduction' : part.heading;
 }
@@ -349,13 +248,12 @@ function displayHeading(part) {
 // blocks: { layers, scripts, tree } computed contents ('' when there is nothing to show).
 // regenerate: whether Docturnal's own sections need new prose.
 // generate(personText): returns the model's reply for the standard sections.
-// polish(heading, body): returns the model's rewrite of a person's section.
 // Returns { content, state, report, pending, errors }. content is null when README.md stays
 // exactly as it is.
 async function planReadme({
-  current, saved, blocks, regenerate, generate, polish, name, facts, deadline = Infinity, now = Date.now,
+  current, saved, blocks, regenerate, generate, name, facts, deadline = Infinity, now = Date.now,
 }) {
-  const report = { updated: [], polished: [], kept: [], notReadded: [], fallback: false };
+  const report = { updated: [], notReadded: [], fallback: false };
   const errors = [];
   let pending = null;
   const suppressed = new Map((saved ? saved.suppressed : []).map((s) => [s.key, s.heading]));
@@ -368,15 +266,12 @@ async function planReadme({
     const hash = sectionHash(p.text);
     const before = savedByKey.get(p.key);
     let owner = 'person';
-    let changed = true;
-    if (p.empty) changed = false;
-    else if (!foreign && before && before.hash === hash) {
+    if (!p.empty && !foreign && before && before.hash === hash) {
       owner = before.owner;
-      changed = Boolean(before.pendingPolish);
-    } else if (!foreign && !before && suppressed.has(p.key)) {
+    } else if (!p.empty && !foreign && !before && suppressed.has(p.key)) {
       suppressed.delete(p.key); // Added back by a person.
     }
-    return { ...p, owner, changed, original: p.text };
+    return { ...p, owner, original: p.text };
   });
   const present = (key) => parts.some((p) => !p.empty && p.key === key);
   if (saved) {
@@ -422,7 +317,7 @@ async function planReadme({
       part.text = text;
       continue;
     }
-    const created = { key: std.id === 'intro' ? 'intro' : normalizeHeading(std.title), heading: std.title, text, owner: 'docturnal', changed: false, original: null };
+    const created = { key: std.id === 'intro' ? 'intro' : normalizeHeading(std.title), heading: std.title, text, owner: 'docturnal', original: null };
     const index = STANDARD.indexOf(std);
     let at;
     if (std.id === 'intro') {
@@ -446,36 +341,6 @@ async function planReadme({
   // Blocks are refreshed wherever they are, even inside a person's section.
   const blocksNow = new Set(parts.flatMap((p) => [...blocksIn(p.text)]));
   for (const part of parts) part.text = refreshBlocks(part.text, blocks);
-
-  // Polish each person's section that changed, once. The model sees a placeholder for each
-  // block, and the refreshed block goes back in its place.
-  for (const part of parts) {
-    if (part.owner !== 'person' || !part.changed) continue;
-    const { head, body } = splitHead({ ...part, text: part.original });
-    const original = body.replace(BLOCK_RE, (match, blockName) => `<!-- docturnal:${blockName} -->`).trim();
-    if (!original) continue;
-    if (now() > deadline) {
-      part.pendingPolish = true;
-      continue;
-    }
-    let rewrite;
-    try {
-      rewrite = cleanPolish(await polish(displayHeading(part), original), part.heading, original);
-    } catch (err) {
-      errors.push(`${README_PATH} (${displayHeading(part)}): ${err.message}`);
-      part.pendingPolish = true;
-      continue;
-    }
-    if (rewrite === original) continue;
-    if (polishProblem(original, rewrite)) {
-      report.kept.push(displayHeading(part));
-      continue;
-    }
-    const polished = rewrite.replace(/<!-- docturnal:([a-z]+) -->/g, (match, blockName) => renderBlock(blockName, blocks[blockName] ?? ''));
-    part.text = head ? `${head.trimEnd()}\n\n${polished.trim()}\n` : `${polished.trim()}\n`;
-    part.polished = true;
-    report.polished.push(displayHeading(part));
-  }
 
   // A block that is in no section, and that no person removed, goes into its standard section.
   for (const [blockName, hostId] of Object.entries(BLOCK_HOST)) {
@@ -508,7 +373,7 @@ async function planReadme({
   }
 
   for (const part of parts) {
-    if (part.empty || part.polished) continue;
+    if (part.empty) continue;
     if (part.text !== part.original) report.updated.push(displayHeading(part));
   }
   for (const [key, heading] of suppressed) {
@@ -523,9 +388,7 @@ async function planReadme({
     text: finalText,
     sections: finalParts.map((p) => {
       const planned = owners.get(p.key);
-      const entry = { key: p.key, heading: p.heading, hash: sectionHash(p.text), owner: planned ? planned.owner : 'person' };
-      if (planned && planned.pendingPolish) entry.pendingPolish = true;
-      return entry;
+      return { key: p.key, heading: p.heading, hash: sectionHash(p.text), owner: planned ? planned.owner : 'person' };
     }),
     suppressed: [...suppressed].map(([key, heading]) => ({ key, heading })),
   };
@@ -543,7 +406,7 @@ function readReadmeState(root) {
       version: README_STATE_VERSION,
       text: typeof data.text === 'string' ? data.text : null,
       sections: data.sections.filter((s) => s && typeof s.key === 'string' && typeof s.hash === 'string')
-        .map((s) => ({ key: s.key, heading: typeof s.heading === 'string' ? s.heading : null, hash: s.hash, owner: s.owner === 'docturnal' ? 'docturnal' : 'person', ...(s.pendingPolish ? { pendingPolish: true } : {}) })),
+        .map((s) => ({ key: s.key, heading: typeof s.heading === 'string' ? s.heading : null, hash: s.hash, owner: s.owner === 'docturnal' ? 'docturnal' : 'person' })),
       suppressed: data.suppressed.filter((s) => s && typeof s.key === 'string').map((s) => ({ key: s.key, heading: String(s.heading || s.key) })),
     };
   } catch {
@@ -609,7 +472,7 @@ async function updateReadme({ root, caller, layers, facts, projectName, docsDir 
     tree: `\`\`\`text\n${docs.directoryTree([...new Set([...allFiles, README_PATH])])}\n\`\`\``,
   };
   const existingPaths = docs.pathsWithDirs([...allFiles, README_PATH, ...layers.map((l) => `${docsBase}${l.slug}.md`)]);
-  const docOptions = { temperature: 0.3, seed: 42, num_ctx: contextTokens };
+  const docOptions = { temperature: 0.3, seed: 42, num_ctx: contextTokens, num_predict: README_TOKENS };
   return planReadme({
     current,
     saved,
@@ -620,20 +483,19 @@ async function updateReadme({ root, caller, layers, facts, projectName, docsDir 
     deadline,
     now,
     generate: async (personText) => {
-      const raw = await caller.call(README_PATH, { messages: readmePrompt({ projectName, layers, facts, personText, contextTokens }), options: docOptions });
+      const raw = await caller.call(README_PATH, { messages: readmePrompt({ projectName, layers, facts, personText }), options: docOptions });
       return { prose: readmeBodies(raw, { projectName, facts, existingPaths, knownUrls: links.knownUrls(root), linkStats }), fallback: caller.lastUsedFallback };
     },
-    polish: (heading, body) => caller.call(`${README_PATH} (${heading})`, { messages: polishPrompt(heading, body), options: { ...docOptions, temperature: 0.2 } }),
   });
 }
 
 module.exports = { readmeIsPlain,
+  readmePrompt,
   MAINTAINED,
   README_PATH,
   README_STATE_PATH,
   parseReadme,
   planReadme,
-  polishProblem,
   readCurrentReadme,
   readReadmeState,
   renderBlock,
