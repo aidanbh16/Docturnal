@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "text": "<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->\n\n# Docturnal\n\nYour codebase, documented quickly.\n\n## What it does\n\nDocturnal is a GitHub App that adds comments to your code and keeps your documentation up to date. Every night, it reads the files that changed, adds comments explaining why the code does what it does, updates your `README.md` and the documents in `docs/`, and opens a pull request for you to review.\n\nThe models that write the comments and documents run on GitHub's own runner, inside your repository's workflow. Your code is not sent to any outside service. Nothing reaches your code until you merge the pull request.\n\n## Architecture\n\n<!-- docturnal:layers -->\n| Layer | Description |\n| --- | --- |\n| [User Interface](docs/user-interface.md) | Handles the app registration page and setup page. |\n| [API Routes](docs/api-routes.md) | Manages webhook and queue requests for the app. |\n| [Data Access](docs/data-access.md) | Manages per-installation settings in Cloudflare KV. |\n| [Workflow Management](docs/workflow-management.md) | Manages the workflow file committed to each repository. |\n| [GitHub Integration](docs/github-integration.md) | Manages the GitHub API version used by the app. |\n| [Security](docs/security.md) | Manages signed, short-lived tokens for the setup page. |\n| [Testing](docs/testing.md) | Contains tests for various components of the app. |\n<!-- /docturnal:layers -->\n\n## Install\n\nTo install the Docturnal GitHub App, go to the [Docturnal GitHub App page](https://github.com/apps/docturnal-app) and select **Install**. Choose the repositories you want to use with Docturnal.\n\nFor each repository, the app adds a `.github/workflows/docturnal.yml` file to the default branch and starts the first run. If branch protection rules prevent the app from committing to the default branch, it will open a pull request titled \"Set up Docturnal\" with the workflow file instead. The first run will start when you merge this pull request.\n\n### Available scripts\n\n<!-- docturnal:scripts -->\n| Command | Runs |\n| --- | --- |\n| `npm run test` | `node --test` |\n<!-- /docturnal:scripts -->\n\n## Settings\n\nAfter installing the app, GitHub takes you to Docturnal's settings page. You sign in with GitHub, and the page checks that you have the necessary permissions: on a personal account, it must be your account; in an organization, you need admin access to every repository where Docturnal is installed. These settings apply to all repositories, so collaborators with less access can't change them. Each Docturnal pull request includes a **Change Docturnal settings** link to the same page.\n\nYou can choose:\n\n- **Time:** the hour when Docturnal runs each day.\n- **Time zone:** the time zone for that hour. Daylight saving time is automatically handled.\n- **Comment level:** low, medium, heavy, or off. See [Comment levels](#comment-levels).\n- **Existing code:** **Comment gradually**, the default, comments existing code in small batches, starting with the most important files. **Only new and changed code** leaves existing code untouched and comments only what you add or change.\n\nThe defaults are midnight, New York time, medium comments, and existing code commented gradually. When the settings are still at their defaults, opening the page saves your browser's time zone, so midnight will be in your time zone even if you close the page without saving. These settings apply to every repository in the installation.\n\n## What you get\n\n- **First, documentation for the whole project.** The first pull request, titled \"Docturnal: documentation,\" includes your `README.md` and a document for each part of your code, with no code comments.\n- **Then comments, in pull requests you can review in minutes.** Each night, new and changed code is commented first. If the setting allows, one batch of existing code, up to 15 files, is reviewed, starting with the most important files and keeping them focused on one part of the project. Each pull request contains at most one such batch; the next batch waits until you merge or close it.\n- **Progress in every pull request.** Each pull request shows how far the documentation and comments are, such as \"Comments: 45 of 300 files,\" what the pull request includes, and what comes next.\n\nThere is always only one open Docturnal pull request, which comes from the `docturnal/update` branch. Each night, changes are added to this branch until you merge or close it, allowing you to review all changes in one pull request. The title of the pull request indicates what it contains: \"Docturnal: documentation,\" or \"Docturnal: comments and documentation\" once comments are added. The description lists the comments added to each file, documents updated, changes made to the `README.md`, files skipped or left for the next night, and the models used. It never includes the comment text or your code.\n\nAfter the pull request closes, whether merged or not, Docturnal deletes its branch. If a Docturnal run is still in progress at that moment, the branch stays until a later Docturnal pull request closes. The next night that finds changes starts a new pull request. Docturnal also deletes its other branches, `docturnal/setup` and `docturnal/workflow-update`, in the same way when their pull requests close.\n\nWhen Docturnal's workflow file changes, the app opens a pull request titled \"Update Docturnal workflow\" with the new version. It proposes each version once. If you close that pull request, Docturnal continues running with the workflow you have.\n\n## Comment levels\n\n| Level | What Docturnal aims for |\n| --- | --- |\n| `low` | A few short, single-line comments on the most important or surprising code. |\n| `medium` | Single-line comments that can be longer, placed less sparsely. This is the default. |\n| `heavy` | Block comments above every function, class, and component, short comments on each constant, and single-line comments on calculations, loops, edge cases, and magic numbers. |\n| `off` | No comments. Docturnal only updates your documentation. |\n\nEach level limits the number of single-line comments a file can have, and existing comments count toward this limit. Block comments above functions at `heavy` do not count toward the limit. After changing the level, files you modify are commented at the new level, and existing files follow in small batches like existing code.\n\n## How comments are checked\n\nHow comments are checked\n\nDocturnal inserts comments as new lines above the code they describe. Here’s how it ensures comments are accurate and useful:\n\n- **New lines only:** Comments are added as whole new lines above the code they describe. Docturnal never changes, moves, or deletes existing lines of code, and it never adds a comment where one already exists.\n- **Placed by anchor:** Each comment is linked to the exact text of the line it should be above. Docturnal places the comment above the matching line, and it drops the comment if no nearby line matches.\n- **Checked for accuracy and usefulness:** A second request verifies whether each comment is true for the code below it and whether it adds new information. Comments that are incorrect or redundant are dropped. A word-by-word comparison with the code catches restatements the model might miss.\n- **Verified by a parser:** For JavaScript, TypeScript, and Python, Docturnal parses the file after inserting comments and confirms that the program remains unchanged except for the comments. A comment that fails this check is dropped. For every language, removing the inserted lines must return the original file exactly. Other languages are checked with placement rules, ensuring comments don’t land inside strings or block comments.\n- **Files with syntax errors are skipped:** JavaScript, TypeScript, or Python files that don’t parse correctly are not commented, and the pull request will indicate this.\n- **Only its own comments:** Docturnal records each comment it inserts. On a later run, it may replace or remove a comment it wrote, such as one that turns out to be wrong or a single-line comment above a function that becomes a block comment at `heavy`. It removes all of its comments at `off`. It never changes or removes a comment you wrote. If you edit one of Docturnal’s comments, it becomes yours.\n\n## What Docturnal writes\n\n| Path | What it is |\n| --- | --- |\n| `README.md` | The main document: an overview of your code, with links to every layer document. See [README rules](#readme-rules). |\n| `docs/<layer>.md` | One document for each part of your code, such as the API or the database layer. Docturnal decides the layers and keeps them stable between runs. |\n| `.docturnal/state.json` | What the last run saw: file hashes, summaries, the layers, and the comments Docturnal inserted. |\n| `.docturnal/readme.json` | The README as Docturnal last wrote it, with who owns each section. |\n| `.docturnal/last-run.md` | The pull request description. |\n| `.github/workflows/docturnal.yml` | The workflow that the app starts each night. |\n\nEach layer document starts with a hidden marker. Docturnal rewrites a layer document only when files in that layer change, and never overwrites a file in `docs/` that does not have the marker.\n\n## README rules\n\n`README.md` is shared between you and Docturnal. Its first line is a hidden comment that says so.\n\n- **Your additions are kept.** A section you add or edit is yours. Docturnal polishes it for clarity, keeping your heading, links, badges, code, and numbers. If a polish would change any of them, your wording stays.\n- **Your deletions are never re-added.** If you delete a section, Docturnal does not write it again.\n- **Adding a section back makes it yours.** Docturnal keeps your version and no longer treats the section as deleted.\n- **Docturnal's own sections**, such as the overview and the architecture, are rewritten when your code changes, unless you edited them.\n- **Tables Docturnal computes**, such as the table of layer documents, the available scripts, and the directory tree, sit between hidden markers and stay current wherever they are. If you delete one, it stays deleted until you put its markers back.\n- **Deleting the whole README** counts as deleting every section, so Docturnal does not create it again.\n\nOn the first run in a repository that already has a README, every existing section stays yours, and Docturnal adds only the sections and tables that are missing. A run with nothing to update leaves `README.md` exactly as it is.\n\n## Excluding files\n\nTo keep Docturnal from commenting on certain files, add a `.docturnalignore` file to your repository's root. This file uses the same patterns as `.gitignore`:\n\n```text\n# Generated code\nsrc/generated/\n*.pb.go\n\n# Test fixtures that tests compare byte for byte\ntest/fixtures/\n```\n\nDocturnal ignores any file that matches these patterns and leaves them out of the documentation. Changes to `.docturnalignore` are considered changes, so the next run will pick them up.\n\nDocturnal also skips files that are generated, vendored, binary, minified, or very large, and anything in `.github/`, `.docturnal/`, and `docs/`, except for its own layer documents.\n\n## How your code is protected\n\n- **The app never reads your code.** It only makes GitHub API calls to commit workflow files, start runs, open pull requests, and delete branches. It reads only two files: its own workflow file to check its version, and `.docturnal/last-run.md`, which Docturnal writes and does not contain any code.\n- **The models run on GitHub's runner.** The workflow installs Ollama on the runner, downloads the models, and runs them there, listening only on the runner itself. Your code goes to these local models and nowhere else.\n- **What runs is pinned.** Docturnal installs one fixed Ollama release from Ollama's official GitHub releases and checks every file against checksums stored in this repository. It also checks every file of each model against fixed digests and uses actions pinned to exact commits. If anything doesn't match, the run stops and makes no changes.\n- **Generated text adds no outside links.** Docs and comments link to a web address only if your repository already has it, and they never include images from other sites or HTML.\n- **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic includes the checkout of your repository, downloads of Ollama from GitHub, the models, and the Action's one dependency, as well as the push of the `docturnal/update` branch back to your repository.\n- **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, and the names of the repositories it is installed on. It does not store any code.\n- **Minimum permissions.** The app requests write access to contents, workflows, pull requests, and actions, and read access to metadata.\n\n## How nightly runs work\n\n- **Documentation first.** The first run reads every file and writes the documentation, requesting one short summary for each folder. For a project with up to about 1,000 source files, the documentation is ready in the first pull request. It doesn't add any comments.\n- **New and changed code next.** Each subsequent run compares your files with the hashes from the last run and comments on new and changed files before anything else.\n- **Existing code in batches.** After that, if time remains and no batch is waiting in an open pull request, the run comments on one batch of existing files. It ranks them by importance: entry points like `package.json`, route or handler files, files many others import, complex files, and files that changed recently.\n- **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, usually taking under a minute.\n- **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.\n- **Only Docturnal's own work.** Docturnal runs only on your default branch. If someone adds a commit to the open Docturnal pull request, Docturnal stops adding to it until you merge or close it, so the pull request never mixes its changes with someone else's.\n- **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.\n\n## Supported languages\n\nDocturnal supports JavaScript, TypeScript (including JSX and TSX), Python, C, C++, C#, Java, Go, Rust, Swift, Kotlin, Scala, Dart, PHP, Ruby, Shell, R, Perl, PowerShell, SQL, Lua, Haskell, CSS, SCSS, and Less.\n\nA parser verifies the result for JavaScript, TypeScript, and Python. The other languages are checked using placement rules only.\n\n## Limitations\n\n- **Small models on CPUs:** GitHub's standard runners don't have GPUs, so Docturnal uses smaller code models: `qwen2.5-coder:3b` for comments and `qwen2.5-coder:7b` for documents. On runners with less memory, like those for private repositories, documents might be written using the smaller model, and the pull request will indicate this. The comments and documents are good drafts, not expert reviews.\n- **Speed:** Models on a CPU are slow. In a very large repository, the first run writes documentation for the folders it reaches, lists the others in the README, and adds them the next night. Commenting all existing code takes many nights, one batch at a time.\n- **GitHub Actions minutes:** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes. A night with nothing to do stops before Ollama is installed, which usually takes under a minute.\n\n## Uninstalling\n\nWhen you uninstall the app, it deletes your stored settings. GitHub then removes access to your repositories, so it can't clean up. To fully remove Docturnal, delete these:\n\n- `.github/workflows/docturnal.yml`. Only the app starts it, so it no longer runs on its own.\n- The `.docturnal/` folder.\n- Any `docturnal/` branches, like `docturnal/update`, and any open Docturnal pull requests.\n\nComments and documents you merged stay in your code.\n\n## Project layout\n\nThis repository has three parts:\n\n| Path | Contents |\n| --- | --- |\n| `action.yml`, `src/` | The GitHub Action that runs on the runner, in plain Node.js. |\n| `app/` | The GitHub App backend, a Cloudflare Worker. See [`app/README.md`](app/README.md) and [`app/DEPLOY.md`](app/DEPLOY.md). |\n| `test/` | Tests for the Action, including a mock Ollama server. |\n\nTo work on it, you need Node.js 20 or later:\n\n- Install the dependencies with `npm install`.\n- Run the Action tests with `npm test`.\n- Run the end-to-end runs against a local git remote with `bash test/e2e.sh`.\n- Run the app tests with `npm test` in the `app` folder.\n\n<!-- docturnal:tree -->\n```text\n.\n├── app/\n│   ├── scripts/\n│   ├── src/\n│   └── tests/\n├── pins/\n├── scripts/\n├── src/\n├── test/\n├── .docturnalignore\n├── .gitignore\n├── CLAUDE.md\n├── LICENSE\n├── README.md\n├── action.yml\n├── package-lock.json\n└── package.json\n```\n<!-- /docturnal:tree -->\n\n## License\n\nCopyright (c) 2026 Aidan Holton. All rights reserved.\n\nYou can use the source code to verify what Docturnal does with your code. However, Docturnal is not open source. You can only use it by installing the official [Docturnal app](https://github.com/apps/docturnal-app) or under a separate written license from the author. See [LICENSE](LICENSE).\n",
+  "sections": [
+    {
+      "key": "intro",
+      "heading": null,
+      "hash": "sha256-efbebbab88798c0cb990809867d8e7ca8c94e9bab195bd9992c08105d115cd37",
+      "owner": "person"
+    },
+    {
+      "key": "what it does",
+      "heading": "What it does",
+      "hash": "sha256-9f8bf5c886f57aff88b421065db7b5a1b91c335bc70d06f8c1287031875ab7da",
+      "owner": "person"
+    },
+    {
+      "key": "architecture",
+      "heading": "Architecture",
+      "hash": "sha256-abe5d010e61f592b0f1c347a880f4551aea6196ce65fa7cf27ca1d662c4d4c6c",
+      "owner": "docturnal"
+    },
+    {
+      "key": "install",
+      "heading": "Install",
+      "hash": "sha256-cc973d58c7b3bc99df8c72755f1162c506feee8e2d7fb261a94b47cb0bbe7d8b",
+      "owner": "person"
+    },
+    {
+      "key": "settings",
+      "heading": "Settings",
+      "hash": "sha256-456891ea168af63d641d2d68d9ecafd55886b71d9002ca906d840b42adaf2ab8",
+      "owner": "person"
+    },
+    {
+      "key": "what you get",
+      "heading": "What you get",
+      "hash": "sha256-2bb905f38df1b74ce0f17c05856607f38c1a021768240291565200a5f1537eb7",
+      "owner": "person"
+    },
+    {
+      "key": "comment levels",
+      "heading": "Comment levels",
+      "hash": "sha256-bda2f3f5a2dedf76ad02a0aa46d880045b4a704aa8e8ef57be10ce4543769a3f",
+      "owner": "person"
+    },
+    {
+      "key": "how comments are checked",
+      "heading": "How comments are checked",
+      "hash": "sha256-fa30c14322c5aa8959848cb7c351e94cc29c847865f6854d86c81df84a7b68f0",
+      "owner": "person"
+    },
+    {
+      "key": "what docturnal writes",
+      "heading": "What Docturnal writes",
+      "hash": "sha256-5810b84de3b4c341379ff795698df9c9c9c32d903b92b6fdcd6720cdb89cbf00",
+      "owner": "person"
+    },
+    {
+      "key": "readme rules",
+      "heading": "README rules",
+      "hash": "sha256-b40a7a4accf67c4d7192602fb13f3e55e4facda798c5240674395acbfc0ca61f",
+      "owner": "person"
+    },
+    {
+      "key": "excluding files",
+      "heading": "Excluding files",
+      "hash": "sha256-7ef8118abc2fe015edd4aa5b0ab3064b5742902c4954069faed5b86efc8dec2b",
+      "owner": "person"
+    },
+    {
+      "key": "how your code is protected",
+      "heading": "How your code is protected",
+      "hash": "sha256-cdcc9c378b9e29d6ccd24449bdb13b8502171b7b3516b2a922795682bec200a4",
+      "owner": "person"
+    },
+    {
+      "key": "how nightly runs work",
+      "heading": "How nightly runs work",
+      "hash": "sha256-ed49b739c55e3c48474b0e4a353103a7254cc83ba16a364a586145342cf21abe",
+      "owner": "person"
+    },
+    {
+      "key": "supported languages",
+      "heading": "Supported languages",
+      "hash": "sha256-917a17d01e967542062a557ab9fa195e7acd88a60041317cad16bb237d067562",
+      "owner": "person"
+    },
+    {
+      "key": "limitations",
+      "heading": "Limitations",
+      "hash": "sha256-2ecda635150d5b8c1aa35dcc3589fbb3e89032d2af5b80a510d0eedb8dc62539",
+      "owner": "person"
+    },
+    {
+      "key": "uninstalling",
+      "heading": "Uninstalling",
+      "hash": "sha256-c65d2cab424920873469a932d4243304a9f58359b436ed256d1e0ce4de3b5ede",
+      "owner": "person"
+    },
+    {
+      "key": "project layout",
+      "heading": "Project layout",
+      "hash": "sha256-74526005ef4cbfc8718ee53a99803d3bf9edc4d0f3bc2cf948e8a714394257ea",
+      "owner": "person"
+    },
+    {
+      "key": "license",
+      "heading": "License",
+      "hash": "sha256-592c92430eef76f90e98319200df315d733a449da2bf4222b690387c86eed780",
+      "owner": "person"
+    }
+  ],
+  "suppressed": []
+}
