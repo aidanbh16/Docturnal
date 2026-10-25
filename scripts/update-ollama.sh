@@ -11,9 +11,9 @@
 # cached install is checked file by file. Then set OLLAMA_VERSION in action.yml to the new
 # version, review the diff, and commit.
 #
-# Model digests are the SHA-256 of each model's manifest on registry.ollama.ai, which is what
-# the Ollama server reports in /api/tags. ollama.com shows the first 12 characters on each
-# model's tags page, so you can compare them there.
+# The model pins come from scripts/update-models.js: the digest of every blob each model's
+# manifest on registry.ollama.ai names. ollama.com shows the first 12 characters of each layer's
+# digest on the model's page, so you can compare them there.
 set -euo pipefail
 
 version="${1:?Usage: update-ollama.sh <version>}"
@@ -69,26 +69,8 @@ node -e '
 ' "$root/pins/ollama.json" "$work" "$version" $entries
 echo "Wrote the checksums for Ollama $version to pins/ollama.json."
 
-# The pinned models, from the registry.
-node -e '
-  const fs = require("fs");
-  const crypto = require("crypto");
-  const file = process.argv[1];
-  const pins = JSON.parse(fs.readFileSync(file, "utf8"));
-  (async () => {
-    for (const name of Object.keys(pins)) {
-      const [model, tag] = name.split(":");
-      const url = `https://registry.ollama.ai/v2/library/${model}/manifests/${tag}`;
-      const response = await fetch(url, { headers: { accept: "application/vnd.docker.distribution.manifest.v2+json" } });
-      if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-      const digest = "sha256:" + crypto.createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex");
-      if (digest !== pins[name]) console.log(`${name}: ${pins[name]} -> ${digest}`);
-      else console.log(`${name}: unchanged, ${digest}`);
-      pins[name] = digest;
-    }
-    fs.writeFileSync(file, JSON.stringify(pins, null, 2) + "\n");
-  })().catch((err) => { console.error(err.message); process.exit(1); });
-' "$root/pins/models.json"
+# The pinned models: every blob each one's registry manifest names.
+node "$root/scripts/update-models.js"
 
 echo
 echo "Now set OLLAMA_VERSION to $version in action.yml, review git diff, and commit."

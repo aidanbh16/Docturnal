@@ -1,4 +1,62 @@
 {
-  "qwen2.5-coder:3b": "sha256:f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225",
-  "qwen2.5-coder:7b": "sha256:dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+  "qwen2.5-coder:3b": {
+    "manifest": "sha256:f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225",
+    "blobs": [
+      {
+        "kind": "config",
+        "digest": "sha256:bb967eff3bda079d4ee62c09c5ef0b2e71a6a75934a4c92a13c755fcfd655703",
+        "size": 487
+      },
+      {
+        "kind": "model",
+        "digest": "sha256:4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba",
+        "size": 1929903072
+      },
+      {
+        "kind": "system",
+        "digest": "sha256:66b9ea09bd5b7099cbb4fc820f31b575c0366fa439b08245566692c6784e281e",
+        "size": 68
+      },
+      {
+        "kind": "template",
+        "digest": "sha256:1e65450c30670713aa47fe23e8b9662bdf4065e81cc8e3cbfaa98924fcc0d320",
+        "size": 1615
+      },
+      {
+        "kind": "license",
+        "digest": "sha256:45fc3ea7579acf3021044fc8c4c5dd5969ebc3ca2a68219b5075662cc949a4f1",
+        "size": 7384
+      }
+    ]
+  },
+  "qwen2.5-coder:7b": {
+    "manifest": "sha256:dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+    "blobs": [
+      {
+        "kind": "config",
+        "digest": "sha256:d9bb33f2786931fea42f50936a2424818aa2f14500638af2f01861eb2c8fb446",
+        "size": 487
+      },
+      {
+        "kind": "model",
+        "digest": "sha256:60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463",
+        "size": 4683074048
+      },
+      {
+        "kind": "system",
+        "digest": "sha256:66b9ea09bd5b7099cbb4fc820f31b575c0366fa439b08245566692c6784e281e",
+        "size": 68
+      },
+      {
+        "kind": "template",
+        "digest": "sha256:1e65450c30670713aa47fe23e8b9662bdf4065e81cc8e3cbfaa98924fcc0d320",
+        "size": 1615
+      },
+      {
+        "kind": "license",
+        "digest": "sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+        "size": 11343
+      }
+    ]
+  }
 }

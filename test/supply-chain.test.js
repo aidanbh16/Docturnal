@@ -177,75 +177,132 @@ describe('the pinned Ollama install', () => {
   });
 });
 
-describe('the model digests', () => {
+describe('the model pins', () => {
   const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pins', 'models.json'), 'utf8'));
+  const { pinFromManifest } = require('../scripts/update-models');
+  const { verifyFiles } = require('../src/verify-models');
+  const digest = (buffer) => `sha256:${sha256(buffer)}`;
 
-  it('every model Docturnal picks is pinned', () => {
-    const { COMMENT_MODEL, DOCS_MODEL, FALLBACK_DOCS_MODEL } = require('../src/models');
-    for (const model of [COMMENT_MODEL, DOCS_MODEL, FALLBACK_DOCS_MODEL]) assert.match(pinned[model], /^sha256:[0-9a-f]{64}$/);
-  });
+  // A small model as the registry serves it, and the pin update-models.js makes from it.
+  const blobs = {
+    config: Buffer.from('{"model_family":"qwen2"}'),
+    model: Buffer.from('model weights'),
+    template: Buffer.from('{{ .Prompt }}'),
+    license: Buffer.from('Apache License 2.0'),
+  };
+  const layer = (kind) => ({ mediaType: `application/vnd.ollama.image.${kind}`, digest: digest(blobs[kind]), size: blobs[kind].length });
+  const registryManifest = Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: 'application/vnd.docker.distribution.manifest.v2+json',
+    config: { mediaType: 'application/vnd.docker.container.image.v1+json', digest: digest(blobs.config), size: blobs.config.length },
+    layers: [layer('model'), layer('template'), layer('license')],
+  }));
+  const pin = pinFromManifest(registryManifest);
+  const expectedList = Object.values(blobs).map(digest).sort().join(', ');
 
-  it('pulled models that match their pins pass', async () => {
-    const mock = await startMockOllama(undefined, {
-      models: [
-        { name: 'qwen2.5-coder:3b', digest: pinned['qwen2.5-coder:3b'].replace('sha256:', '') },
-        { name: 'qwen2.5-coder:7b', digest: pinned['qwen2.5-coder:7b'].replace('sha256:', '') },
-      ],
-    });
-    const logs = [];
-    try {
-      await verifyModels({ host: mock.host, models: ['qwen2.5-coder:3b', 'qwen2.5-coder:7b'], log: (l) => logs.push(l) });
-      assert.deepStrictEqual(logs, ['Model verified: qwen2.5-coder:3b (f72c60cabf62).', 'Model verified: qwen2.5-coder:7b (dae161e27b0e).']);
-    } finally {
-      await mock.close();
-    }
-  });
-
-  it('a wrong model digest fails clearly', async () => {
-    const wrong = 'a'.repeat(64);
-    const mock = await startMockOllama(undefined, { models: [{ name: 'qwen2.5-coder:3b', digest: wrong }] });
-    try {
-      await assert.rejects(
-        verifyModels({ host: mock.host, models: ['qwen2.5-coder:3b'], log: () => {} }),
-        (err) => err instanceof ModelDigestError &&
-          err.message === `qwen2.5-coder:3b does not match the digest pinned in pins/models.json, so Docturnal does not run it. Expected ${pinned['qwen2.5-coder:3b'].replace('sha256:', '')}, got ${wrong}. If the model was updated on purpose, run scripts/update-ollama.sh and commit the new digest.`,
-      );
-    } finally {
-      await mock.close();
-    }
-  });
-
-  it('checks the model files on disk: a tampered blob in the models folder fails clearly', async () => {
+  // A models folder as Ollama leaves it: the saved manifest is written differently from the
+  // registry's (key order, spacing, an extra field), with the same blobs.
+  function modelsFolder({ layers = [layer('model'), layer('template'), layer('license')], write = blobs } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docturnal-models-'));
-    const { verifyFiles } = require('../src/verify-models');
+    const manifestDir = path.join(dir, 'manifests', 'registry.ollama.ai', 'library', 'qwen2.5-coder');
+    fs.mkdirSync(manifestDir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'blobs'));
+    const saved = { layers, config: { digest: digest(blobs.config), mediaType: 'application/vnd.docker.container.image.v1+json', size: blobs.config.length }, schemaVersion: 2, mediaType: 'application/vnd.docker.distribution.manifest.v2+json', from: 'saved by Ollama' };
+    fs.writeFileSync(path.join(manifestDir, '3b'), JSON.stringify(saved, null, 1));
+    for (const [kind, content] of Object.entries(write)) fs.writeFileSync(path.join(dir, 'blobs', digest(blobs[kind]).replace(':', '-')), content);
+    return dir;
+  }
+  async function rejectsWith(dir, pattern) {
     try {
-      const weights = Buffer.from('model weights');
-      const config = Buffer.from('{"model_family":"qwen2"}');
-      const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: `sha256:${sha256(config)}` }, layers: [{ digest: `sha256:${sha256(weights)}` }] }));
-      const manifestDir = path.join(dir, 'manifests', 'registry.ollama.ai', 'library', 'qwen2.5-coder');
-      fs.mkdirSync(manifestDir, { recursive: true });
-      fs.mkdirSync(path.join(dir, 'blobs'));
-      fs.writeFileSync(path.join(manifestDir, '3b'), manifest);
-      fs.writeFileSync(path.join(dir, 'blobs', `sha256-${sha256(config)}`), config);
-      fs.writeFileSync(path.join(dir, 'blobs', `sha256-${sha256(weights)}`), weights);
-      const pin = `sha256:${sha256(manifest)}`;
-      assert.strictEqual(await verifyFiles(dir, 'qwen2.5-coder:3b', pin), weights.length + config.length);
-      // Same file name, different content, as a tampered cache would have.
-      fs.writeFileSync(path.join(dir, 'blobs', `sha256-${sha256(weights)}`), 'tampered weights');
-      await assert.rejects(verifyFiles(dir, 'qwen2.5-coder:3b', pin), /A file of qwen2\.5-coder:3b in the models folder does not match its digest, so Docturnal does not run it\./);
-      await assert.rejects(verifyFiles(dir, 'qwen2.5-coder:3b', `sha256:${'c'.repeat(64)}`), /The manifest of qwen2\.5-coder:3b in the models folder does not match the digest pinned/);
+      await assert.rejects(verifyFiles(dir, 'qwen2.5-coder:3b', pin), (err) => {
+        assert.ok(err instanceof ModelDigestError);
+        assert.match(err.message, pattern);
+        return true;
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('every model Docturnal picks is pinned by the digest of each blob its registry manifest names', () => {
+    const { COMMENT_MODEL, DOCS_MODEL, FALLBACK_DOCS_MODEL } = require('../src/models');
+    for (const model of [COMMENT_MODEL, DOCS_MODEL, FALLBACK_DOCS_MODEL]) {
+      const kinds = pinned[model].blobs.map((b) => b.kind);
+      assert.deepStrictEqual(kinds.slice(0, 2), ['config', 'model'], model);
+      for (const blob of pinned[model].blobs) assert.match(blob.digest, /^sha256:[0-9a-f]{64}$/);
+    }
+  });
+
+  it('update-models.js pins every blob of a registry manifest, with its kind and size', () => {
+    assert.deepStrictEqual(pin.blobs.map((b) => [b.kind, b.digest, b.size]), [
+      ['config', digest(blobs.config), blobs.config.length],
+      ['model', digest(blobs.model), blobs.model.length],
+      ['template', digest(blobs.template), blobs.template.length],
+      ['license', digest(blobs.license), blobs.license.length],
+    ]);
+    assert.strictEqual(pin.manifest, digest(registryManifest));
+  });
+
+  it('a saved manifest whose bytes differ from the registry\'s, with the right blobs, passes', async () => {
+    const dir = modelsFolder();
+    try {
+      const saved = fs.readFileSync(path.join(dir, 'manifests', 'registry.ollama.ai', 'library', 'qwen2.5-coder', '3b'));
+      assert.notStrictEqual(digest(saved), pin.manifest);
+      assert.strictEqual(await verifyFiles(dir, 'qwen2.5-coder:3b', pin), Object.values(blobs).reduce((n, b) => n + b.length, 0));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('a model that is missing, or has no pin, fails clearly', async () => {
-    const mock = await startMockOllama(undefined, { models: [{ name: 'other:1b', digest: 'b'.repeat(64) }] });
+  it('a wrong layer digest fails, naming the model and the expected and actual digests', async () => {
+    const other = Buffer.from('other weights');
+    const wrong = { mediaType: 'application/vnd.ollama.image.model', digest: digest(other), size: other.length };
+    await rejectsWith(modelsFolder({ layers: [wrong, layer('template'), layer('license')] }), new RegExp(
+      `^The blobs of qwen2\\.5-coder:3b in the models folder do not match pins/models\\.json, so Docturnal does not run it\\. ` +
+      `Expected ${expectedList}; actual ${[digest(blobs.config), digest(other), digest(blobs.template), digest(blobs.license)].sort().join(', ')}\\. ` +
+      `Missing: ${digest(blobs.model)}\\. Not pinned: ${digest(other)}\\.$`,
+    ));
+  });
+
+  it('a missing layer fails, naming what is missing', async () => {
+    await rejectsWith(modelsFolder({ layers: [layer('model'), layer('template')] }), new RegExp(
+      `Expected ${expectedList}; actual ${[digest(blobs.config), digest(blobs.model), digest(blobs.template)].sort().join(', ')}\\. Missing: ${digest(blobs.license)}\\.$`,
+    ));
+  });
+
+  it('an extra layer fails, naming what is not pinned', async () => {
+    const adapter = Buffer.from('an adapter');
+    const extra = { mediaType: 'application/vnd.ollama.image.adapter', digest: digest(adapter), size: adapter.length };
+    await rejectsWith(modelsFolder({ layers: [layer('model'), layer('template'), layer('license'), extra] }), new RegExp(
+      `Expected ${expectedList}; actual ${[...Object.values(blobs).map(digest), digest(adapter)].sort().join(', ')}\\. Not pinned: ${digest(adapter)}\\.$`,
+    ));
+  });
+
+  it('a tampered blob, as a poisoned cache would have, fails with the expected and actual digests', async () => {
+    const tampered = Buffer.from('tampered weights');
+    await rejectsWith(modelsFolder({ write: { ...blobs, model: tampered } }), new RegExp(
+      `^The model file of qwen2\\.5-coder:3b does not match its digest, so Docturnal does not run it\\. Expected ${digest(blobs.model)}, got ${digest(tampered)}\\.$`,
+    ));
+  });
+
+  it('a missing blob file fails, naming the expected digest', async () => {
+    const { license, ...rest } = blobs;
+    await rejectsWith(modelsFolder({ write: rest }), new RegExp(`^The license file of qwen2\\.5-coder:3b is missing from the models folder, so Docturnal does not run it\\. Expected ${digest(license)}\\.$`));
+  });
+
+  it('a pulled model is checked through the server and the models folder, and one not pulled, or not pinned, fails', async () => {
+    const dir = modelsFolder();
+    const mock = await startMockOllama(undefined, { models: [{ name: 'qwen2.5-coder:3b', digest: 'anything: the saved manifest\'s hash is not checked' }] });
+    const logs = [];
     try {
-      await assert.rejects(verifyModels({ host: mock.host, models: ['qwen2.5-coder:3b'], log: () => {} }), /qwen2\.5-coder:3b is not on the Ollama server after the pull\./);
-      await assert.rejects(verifyModels({ host: mock.host, models: ['other:1b'], log: () => {} }), /other:1b has no pinned digest in pins\/models\.json, so Docturnal does not run it\./);
+      await verifyModels({ host: mock.host, models: ['qwen2.5-coder:3b'], modelsDir: dir, pins: { 'qwen2.5-coder:3b': pin }, log: (l) => logs.push(l) });
+      assert.deepStrictEqual(logs, [`Model verified: qwen2.5-coder:3b, 4 files (0.0 GB), weights ${digest(blobs.model).slice(7, 19)}.`]);
+      await assert.rejects(verifyModels({ host: mock.host, models: ['qwen2.5-coder:7b'], modelsDir: dir, pins: { 'qwen2.5-coder:7b': pin }, log: () => {} }), /qwen2\.5-coder:7b is not on the Ollama server after the pull\./);
+      await assert.rejects(verifyModels({ host: mock.host, models: ['other:1b'], modelsDir: dir, pins: {}, log: () => {} }), /other:1b has no pinned blobs in pins\/models\.json, so Docturnal does not run it\./);
+      await assert.rejects(verifyModels({ host: mock.host, models: ['qwen2.5-coder:3b'], pins: { 'qwen2.5-coder:3b': pin }, log: () => {} }), /OLLAMA_MODELS is not set/);
     } finally {
       await mock.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

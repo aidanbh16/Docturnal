@@ -1,12 +1,15 @@
 'use strict';
 
-// Checks each pulled model's digest, as the Ollama server reports it in /api/tags, against
-// pins/models.json, so a model that changed on the registry never runs over your code. With
-// OLLAMA_MODELS set, it also checks the files on disk: the manifest must hash to the pinned
-// digest, and each file it names must hash to its own digest, so a models folder restored from
-// a tampered cache is never loaded.
+// Checks each pulled model against pins/models.json before any code reaches it. Ollama saves
+// its own copy of a model's manifest, whose bytes differ from the registry's, so the manifest
+// is read only for the blobs it references:
+// - the set of blob digests (config and every layer: weights, template, system prompt,
+//   parameters, license, and so on) must equal the pinned set exactly, and
+// - every blob file in the models folder must hash to its digest, which also catches a models
+//   folder restored from a tampered cache.
+// A mismatch fails with the model's name and the expected and actual digests.
 //
-//   node src/verify-models.js <model> [<model> ...]   with OLLAMA_HOST, and OLLAMA_MODELS, set
+//   node src/verify-models.js <model> [<model> ...]   with OLLAMA_HOST and OLLAMA_MODELS set
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -14,6 +17,7 @@ const path = require('path');
 const { pipeline } = require('stream/promises');
 
 const PINS_PATH = path.join(__dirname, '..', 'pins', 'models.json');
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 class ModelDigestError extends Error {}
 
@@ -22,68 +26,79 @@ function readPins(file = PINS_PATH) {
 }
 
 const withTag = (name) => (name.includes(':') ? name : `${name}:latest`);
-const bareDigest = (digest) => String(digest || '').replace(/^sha256:/, '').toLowerCase();
 
 async function sha256File(file) {
   const hash = crypto.createHash('sha256');
   await pipeline(fs.createReadStream(file), hash);
-  return hash.digest('hex');
+  return `sha256:${hash.digest('hex')}`;
 }
 
-// The manifest and every blob of a pinned model, in Ollama's models folder.
-async function verifyFiles(modelsDir, name, pinned) {
+// Where Ollama saves a model's manifest.
+function manifestPath(modelsDir, name) {
   const [model, tag] = name.split(':');
   const namespace = model.includes('/') ? model : `library/${model}`;
-  const manifestPath = path.join(modelsDir, 'manifests', 'registry.ollama.ai', ...namespace.split('/'), tag);
+  return path.join(modelsDir, 'manifests', 'registry.ollama.ai', ...namespace.split('/'), tag);
+}
+
+// The blob digests a saved manifest references: its config and every layer.
+function referencedDigests(manifest) {
+  return [manifest.config, ...(Array.isArray(manifest.layers) ? manifest.layers : [])].map((blob) => (blob && typeof blob.digest === 'string' ? blob.digest : String(blob && blob.digest)));
+}
+
+const describe = (digests) => (digests.length ? [...digests].sort().join(', ') : 'none');
+
+// Checks one model's files in the models folder against its pin. Returns the total size of
+// its blobs.
+async function verifyFiles(modelsDir, name, pin) {
+  if (!pin || !Array.isArray(pin.blobs) || !pin.blobs.length || !pin.blobs.every((b) => DIGEST.test(b.digest))) {
+    throw new ModelDigestError(`${name} has no pinned blobs in pins/models.json, so Docturnal does not run it. Run node scripts/update-models.js ${name} and commit the result.`);
+  }
   let manifest;
   try {
-    manifest = fs.readFileSync(manifestPath);
+    manifest = JSON.parse(fs.readFileSync(manifestPath(modelsDir, name), 'utf8'));
   } catch {
-    throw new ModelDigestError(`${name} has no manifest in the models folder.`);
+    throw new ModelDigestError(`${name} has no readable manifest in the models folder, so Docturnal does not run it.`);
   }
-  const manifestDigest = crypto.createHash('sha256').update(manifest).digest('hex');
-  if (manifestDigest !== bareDigest(pinned)) throw new ModelDigestError(`The manifest of ${name} in the models folder does not match the digest pinned in pins/models.json, so Docturnal does not run it.`);
-  const { config, layers = [] } = JSON.parse(manifest.toString('utf8'));
+  const expected = pin.blobs.map((b) => b.digest);
+  const actual = referencedDigests(manifest);
+  const missing = expected.filter((d) => !actual.includes(d));
+  const extra = actual.filter((d) => !expected.includes(d));
+  if (missing.length || extra.length || new Set(actual).size !== actual.length) {
+    throw new ModelDigestError(
+      `The blobs of ${name} in the models folder do not match pins/models.json, so Docturnal does not run it. ` +
+      `Expected ${describe(expected)}; actual ${describe(actual)}.` +
+      `${missing.length ? ` Missing: ${describe(missing)}.` : ''}${extra.length ? ` Not pinned: ${describe(extra)}.` : ''}`,
+    );
+  }
   let bytes = 0;
-  for (const layer of [config, ...layers]) {
-    const digest = bareDigest(layer && layer.digest);
-    if (!/^[0-9a-f]{64}$/.test(digest)) throw new ModelDigestError(`The manifest of ${name} names a file without a SHA-256 digest.`);
-    const blob = path.join(modelsDir, 'blobs', `sha256-${digest}`);
-    let actual;
+  for (const blob of pin.blobs) {
+    const file = path.join(modelsDir, 'blobs', blob.digest.replace(':', '-'));
+    let hash;
     try {
-      actual = await sha256File(blob);
+      hash = await sha256File(file);
     } catch {
-      throw new ModelDigestError(`A file of ${name} is missing from the models folder.`);
+      throw new ModelDigestError(`The ${blob.kind || 'blob'} file of ${name} is missing from the models folder, so Docturnal does not run it. Expected ${blob.digest}.`);
     }
-    if (actual !== digest) throw new ModelDigestError(`A file of ${name} in the models folder does not match its digest, so Docturnal does not run it. Expected ${digest}, got ${actual}.`);
-    bytes += fs.statSync(blob).size;
+    if (hash !== blob.digest) {
+      throw new ModelDigestError(`The ${blob.kind || 'blob'} file of ${name} does not match its digest, so Docturnal does not run it. Expected ${blob.digest}, got ${hash}.`);
+    }
+    bytes += fs.statSync(file).size;
   }
   return bytes;
 }
 
 async function verifyModels({ host, models, modelsDir, pins = readPins(), fetchFn = fetch, log = console.log }) {
+  if (!modelsDir) throw new ModelDigestError('OLLAMA_MODELS is not set, so the model files cannot be checked.');
   const response = await fetchFn(`http://${host}/api/tags`);
   if (!response.ok) throw new ModelDigestError(`Could not list the models on the Ollama server: HTTP ${response.status}.`);
   const listed = (await response.json()).models || [];
   for (const model of [...new Set(models)]) {
     const name = withTag(model);
-    const pinned = pins[name];
-    if (!pinned) throw new ModelDigestError(`${name} has no pinned digest in pins/models.json, so Docturnal does not run it.`);
-    const entry = listed.find((m) => withTag(m.name || m.model || '') === name);
-    if (!entry) throw new ModelDigestError(`${name} is not on the Ollama server after the pull.`);
-    const actual = bareDigest(entry.digest);
-    if (actual !== bareDigest(pinned)) {
-      throw new ModelDigestError(
-        `${name} does not match the digest pinned in pins/models.json, so Docturnal does not run it. ` +
-        `Expected ${bareDigest(pinned)}, got ${actual || 'none'}. If the model was updated on purpose, run scripts/update-ollama.sh and commit the new digest.`,
-      );
-    }
-    if (modelsDir) {
-      const bytes = await verifyFiles(modelsDir, name, pinned);
-      log(`Model verified: ${name} (${actual.slice(0, 12)}), and its files (${(bytes / 1e9).toFixed(1)} GB).`);
-    } else {
-      log(`Model verified: ${name} (${actual.slice(0, 12)}).`);
-    }
+    if (!pins[name]) throw new ModelDigestError(`${name} has no pinned blobs in pins/models.json, so Docturnal does not run it.`);
+    if (!listed.some((m) => withTag(m.name || m.model || '') === name)) throw new ModelDigestError(`${name} is not on the Ollama server after the pull.`);
+    const bytes = await verifyFiles(modelsDir, name, pins[name]);
+    const weights = pins[name].blobs.find((b) => b.kind === 'model') || pins[name].blobs[0];
+    log(`Model verified: ${name}, ${pins[name].blobs.length} files (${(bytes / 1e9).toFixed(1)} GB), weights ${weights.digest.slice(7, 19)}.`);
   }
 }
 
@@ -94,4 +109,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ModelDigestError, readPins, verifyFiles, verifyModels };
+module.exports = { ModelDigestError, readPins, referencedDigests, verifyFiles, verifyModels };

@@ -184,8 +184,8 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 Everything that runs in users' repositories is pinned, so a change upstream never reaches them without a commit here.
 
 - **Ollama.** `action.yml` pins one version (`OLLAMA_VERSION`). `pins/ollama.json` holds, for that version and each architecture (linux amd64 and arm64), the release archive's SHA-256 and the SHA-256 of every file the install uses (the binary and the CPU libraries) and every link's target. `src/install-ollama.js` downloads the official archive from GitHub releases, checks its SHA-256 before extracting anything, extracts only the binary and the CPU libraries into the runner's temporary folder (no install script, no system service, no sudo), and checks every file. A mismatch fails the run with a clear message. A cached install is used only when every file matches, so an extra or changed library is never loaded.
-- **Models.** `pins/models.json` holds each model's digest: the SHA-256 of its manifest on registry.ollama.ai, the ID ollama.com shows. After the pull, `src/verify-models.js` checks the digest `/api/tags` reports and, on the runner, that the manifest on disk hashes to the pin and every file it names hashes to its own digest. A mismatch fails the run with a clear message. A model without a pin is never run.
-- **Upgrading** is deliberate: `scripts/update-ollama.sh <version>` downloads both archives, requires Ollama's `sha256sum.txt`, GitHub's asset digest, and its own SHA-256 to agree, records every file's hash (`scripts/archive-hashes.js`), and refreshes the model digests. Then set `OLLAMA_VERSION` in `action.yml` and commit.
+- **Models.** `pins/models.json` holds, for each model, the digest of every blob its manifest on registry.ollama.ai names: the config and every layer (weights, template, system prompt, parameters, license, and so on), with its kind and size. Ollama saves its own copy of the manifest, whose bytes differ from the registry's, so the saved manifest's bytes are never compared. After the pull, `src/verify-models.js` reads the saved manifest only for the blobs it names, requires that set to equal the pinned set exactly, and hashes every blob file in the models folder against its digest, which also catches a tampered cache. A mismatch fails the run with the model's name and the expected and actual digests. A model without a pin is never run. `/api/tags` is used only to check that the model is there.
+- **Upgrading** is deliberate: `scripts/update-ollama.sh <version>` downloads both archives, requires Ollama's `sha256sum.txt`, GitHub's asset digest, and its own SHA-256 to agree, records every file's hash (`scripts/archive-hashes.js`), and refreshes the model pins (`scripts/update-models.js`, which can also run alone). Then set `OLLAMA_VERSION` in `action.yml` and commit.
 - **Actions.** Every third-party action in `action.yml` and the workflow template is pinned to a full commit SHA, with its version in a comment. Raise `WORKFLOW_VERSION` when the template's pins change.
 
 ## Settings access
@@ -252,7 +252,7 @@ Do not rename these. Other parts and users' repos depend on them.
 ```
 action.yml          Composite action definition (repo root), which pins the Ollama version
 pins/               Checksums of the pinned Ollama release and digests of the pinned models
-scripts/            update-ollama.sh and archive-hashes.js, for upgrading the pins
+scripts/            update-ollama.sh, archive-hashes.js, and update-models.js, for upgrading the pins
 package.json        Runtime dependency: typescript only
 src/                Action code (Node 20+, plain CommonJS, no build step)
 app/                GitHub App backend (Cloudflare Worker)
