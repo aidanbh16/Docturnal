@@ -1,3 +1,5 @@
+<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->
+
 # Docturnal
 
 Your codebase, documented overnight.
@@ -8,11 +10,32 @@ Docturnal is a GitHub App that adds comments to your code and keeps your documen
 
 The models that write the comments and documents run on GitHub's own runner, inside your repository's workflow. Your code is not sent to any outside service. Nothing reaches your code until you merge the pull request.
 
+## Architecture
+
+Docturnal is structured into several layers that work together to ensure that your code and documentation are always up to date.
+
+<!-- docturnal:layers -->
+| Layer | Description |
+| --- | --- |
+| [App Management](docs/app-management.md) | Handles app registration, installation updates, session tokens, and GitHub API versions. |
+| [Release Management](docs/release-management.md) | Manages archive hashes, model digests, and checksums for Ollama releases. |
+| [Source](docs/source.md) | This folder contains various modules that support different aspects of the Docturnal project, including accuracy checks, line analysis, file processing, and language detection. |
+| [Tests](docs/tests.md) | This folder contains test files that define and evaluate various aspects of the project, including action steps, checks, comments, configurations, and end-to-end tests. |
+<!-- /docturnal:layers -->
+
 ## Install
 
 Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/docturnal-app) and choose your repositories. That is the only step.
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
+
+### Available scripts
+
+<!-- docturnal:scripts -->
+| Command | Runs |
+| --- | --- |
+| `npm run test` | `node --test` |
+<!-- /docturnal:scripts -->
 
 ## Settings
 
@@ -164,6 +187,28 @@ To work on it, you need Node.js 20 or later:
 - Run the Action tests with `npm test`.
 - Run the end-to-end runs against a local git remote with `bash test/e2e.sh`.
 - Run the app tests with `npm test` in the `app` folder.
+
+<!-- docturnal:tree -->
+```text
+.
+├── app/
+│   ├── scripts/
+│   ├── src/
+│   └── tests/
+├── pins/
+├── scripts/
+├── src/
+├── test/
+├── .docturnalignore
+├── .gitignore
+├── CLAUDE.md
+├── LICENSE
+├── README.md
+├── action.yml
+├── package-lock.json
+└── package.json
+```
+<!-- /docturnal:tree -->
 
 ## License
 
