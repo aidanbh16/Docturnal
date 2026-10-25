@@ -1,3 +1,5 @@
+<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->
+
 # Docturnal
 
 Your codebase, documented overnight.
@@ -8,11 +10,35 @@ Docturnal is a GitHub App that adds comments to your code and keeps your documen
 
 The models that write the comments and documents run on GitHub's own runner, inside your repository's workflow. Your code is not sent to any outside service. Nothing reaches your code until you merge the pull request.
 
+## Architecture
+
+Docturnal is built with multiple layers, each responsible for different aspects of the app's functionality. These layers include:
+
+<!-- docturnal:layers -->
+| Layer | Description |
+| --- | --- |
+| [App Registration](docs/app-registration.md) | Handles app registration, GitHub API versions, installation updates, scheduling, session tokens, and repository workflows. |
+| [Release Management](docs/release-management.md) | Manages archive hashes, model digests, and checksums for Ollama releases. |
+| [Source Ollama](docs/source-ollama.md) | Holds `accuracy.js`, `comments.js`, `install-ollama.js`, and 7 more files in `src/`. |
+| [Python Analysis](docs/python-analysis.md) | Holds `analyze.js`, `python-helper.py`, `python.js` in `src/`. |
+| [Configuration and State Management](docs/configuration-and-state-management.md) | Holds `apply.js`, `changes.js`, `config.js`, and 10 more files in `src/`. |
+| [Source Grounding](docs/source-grounding.md) | Holds `clusters.js`, `configuration.js`, `docs.js`, and 4 more files in `src/`. |
+| [Tests](docs/tests.md) | This folder contains test files for various aspects of the software project, including action steps, check runs, comments, configuration, coverage, documentation, end-to-end tests, edges, first run, git repository, heavy level, helpers, ignore patterns, mock Ollama, models, and test files. |
+<!-- /docturnal:layers -->
+
 ## Install
 
 Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/docturnal-app) and choose your repositories. That is the only step.
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
+
+### Available scripts
+
+<!-- docturnal:scripts -->
+| Command | Runs |
+| --- | --- |
+| `npm run test` | `node --test` |
+<!-- /docturnal:scripts -->
 
 ## Settings
 
@@ -164,6 +190,28 @@ To work on it, you need Node.js 20 or later:
 - Run the Action tests with `npm test`.
 - Run the end-to-end runs against a local git remote with `bash test/e2e.sh`.
 - Run the app tests with `npm test` in the `app` folder.
+
+<!-- docturnal:tree -->
+```text
+.
+├── app/
+│   ├── scripts/
+│   ├── src/
+│   └── tests/
+├── pins/
+├── scripts/
+├── src/
+├── test/
+├── .docturnalignore
+├── .gitignore
+├── CLAUDE.md
+├── LICENSE
+├── README.md
+├── action.yml
+├── package-lock.json
+└── package.json
+```
+<!-- /docturnal:tree -->
 
 ## License
 
