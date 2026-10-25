@@ -10,6 +10,10 @@ const { buildAccuracyMessages, ACCURACY_SCHEMA, codeUnder, parseVerdicts } = req
 const { analyzeLines, splitLines } = require('./analyze');
 const { languageForPath } = require('./languages');
 const ollama = require('./ollama');
+const { hasUnknownUrl } = require('./links');
+
+// A comment with a web link the repository does not already have.
+const LINK_NOT_FOUND = 'link not found in the repository';
 const { findOwned, recordFor } = require('./owned');
 const { restatement, restates } = require('./restates');
 const { verifyCandidates } = require('./verify');
@@ -146,7 +150,7 @@ const CLOSING_LINE = /^(?:[}\])]|<\/|\{\s*$|end\b|END\b|fi\b|done\b|esac\b|else\
 const ENCODING_LINE = /^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+/;
 
 function stripBom(text) {
-  return text.charCodeAt(0) === 0xfeff ? { bom: '﻿', body: text.slice(1) } : { bom: '', body: text };
+  return text.charCodeAt(0) === 0xfeff ? { bom: '\uFEFF', body: text.slice(1) } : { bom: '', body: text };
 }
 
 function dominantEol(lines) {
@@ -193,6 +197,11 @@ function cleanText(raw, language) {
   if (DIRECTIVE.test(joined)) return { reason: 'tool directive' };
   if (SELF_REFERENCE.test(joined)) return { reason: 'mentions AI' };
   if (EMOJI.test(joined)) return { reason: 'emoji' };
+  // Invisible and direction characters can make a line read differently from what it does.
+  if (/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/.test(joined)) return { reason: 'invisible or text-direction characters' };
+  // In C and C++, the trigraph ??/ is a backslash under older standards, and at the end of a
+  // line comment it would join the next line of code to the comment.
+  if ((language.id === 'c' || language.id === 'cpp') && joined.includes('??/')) return { reason: 'contains ??/' };
   // "?>" ends PHP mode even inside a // comment.
   if (language.phpTags && joined.includes('?>')) return { reason: 'contains ?>' };
   // JSDoc tags such as @type change type checking in JavaScript.
@@ -426,10 +435,12 @@ function analyzeFile(body, lines, language) {
 // without those comments, which is what the model sees and where comments are placed.
 // `owned` lists the comments taken out, each with its target line in `lines`. On a file
 // that cannot be commented, `error` says why.
-function prepareFile({ text, language, level, records = [] }) {
+// knownUrls: the URLs the repository already has. A proposed comment with any other URL is
+// dropped (none are known by default).
+function prepareFile({ text, language, level, records = [], knownUrls = new Set() }) {
   const { bom, body } = stripBom(text);
   const original = splitLines(body);
-  const ctx = { language, original: text, bom, body, lines: original, analysis: null, owned: [] };
+  const ctx = { language, original: text, bom, body, lines: original, analysis: null, owned: [], knownUrls };
   // At level off with nothing of Docturnal's to remove, there is nothing to place.
   if (!LEVELS[level] && !records.length) return ctx;
   if (language.phpTags && !phpIsSafe(original)) return { ...ctx, error: 'PHP file mixes code with HTML' };
@@ -535,6 +546,10 @@ function buildCandidates(ctx, level, groups) {
     const cleaned = cleanText(proposal.text, language);
     if (cleaned.reason) {
       reject(proposal, cleaned.reason);
+      continue;
+    }
+    if (hasUnknownUrl(cleaned.joined, ctx.knownUrls)) {
+      reject(proposal, LINK_NOT_FOUND);
       continue;
     }
     const shaped = shape(target, cleaned);
@@ -707,8 +722,8 @@ function finishFile(ctx, built, verdicts = new Map()) {
 // Filters, limits, inserts, and verifies proposals for one file, without a model.
 // proposals: [{ line, anchor, text, kind }], or groups: one array of proposals per model
 // response. records: the Docturnal comments recorded for this file on earlier runs.
-function applyProposals({ text, language, level, proposals, groups = [proposals], records = [] }) {
-  const ctx = prepareFile({ text, language, level, records });
+function applyProposals({ text, language, level, proposals, groups = [proposals], records = [], knownUrls }) {
+  const ctx = prepareFile({ text, language, level, records, knownUrls });
   return finishFile(ctx, buildCandidates(ctx, level, groups));
 }
 
@@ -807,13 +822,13 @@ function parseResponse(content) {
 // sends one follow-up request for the functions, classes, and components still without one.
 // records: the Docturnal comments recorded for this file on earlier runs.
 // Returns a plan for checkComments and finishComments.
-async function planComments({ path, text, level = 'medium', model, contextTokens = 8192, chat = ollama.chat, host, records = [] }) {
+async function planComments({ path, text, level = 'medium', model, contextTokens = 8192, chat = ollama.chat, host, records = [], knownUrls }) {
   const language = languageForPath(path);
   const plan = { path, language: language && language.id, level, text, summary: '', symbols: [], failedWindows: 0, errors: [], ctx: null, built: null, verdicts: new Map() };
   if (!language) return { ...plan, skipped: 'unsupported language' };
   if (isMinified(splitLines(stripBom(text).body))) return { ...plan, skipped: 'minified' };
 
-  const ctx = prepareFile({ text, language, level, records });
+  const ctx = prepareFile({ text, language, level, records, knownUrls });
   if (ctx.syntaxError) return { ...plan, skipped: SYNTAX_ERRORS };
   const { lines } = ctx;
   const windows = buildWindows(lines, contextTokens);

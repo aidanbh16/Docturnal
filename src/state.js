@@ -9,6 +9,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const { LinkError, requirePlainPath } = require('./safe-path');
+
 const { cleanRecords } = require('./owned');
 
 const STATE_PATH = '.docturnal/state.json';
@@ -21,6 +23,9 @@ const STATE_VERSION = 1;
 function emptyPending() {
   return { docs: false, changed: [], batch: null };
 }
+
+// The slugs Docturnal gives layers (see slugify in docs.js).
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function emptyState() {
   return {
@@ -35,6 +40,8 @@ function emptyState() {
     layers: [],
     docs: [],
     staleDocs: [],
+    // A short summary of each folder, from the documentation pass: { dir: summary }.
+    folders: {},
   };
 }
 
@@ -63,8 +70,10 @@ function readPending(value) {
 function readState(root) {
   let data;
   try {
+    requirePlainPath(root, STATE_PATH);
     data = JSON.parse(fs.readFileSync(path.join(root, STATE_PATH), 'utf8'));
-  } catch {
+  } catch (err) {
+    if (err instanceof LinkError) throw err;
     return emptyState();
   }
   if (!data || typeof data !== 'object' || data.version !== STATE_VERSION) return emptyState();
@@ -74,7 +83,8 @@ function readState(root) {
   // A hash of .docturnalignore, or null when there was none, so a change to it is a change.
   state.ignoreHash = typeof data.ignoreHash === 'string' ? data.ignoreHash : null;
   if (Array.isArray(data.layers)) {
-    state.layers = data.layers.filter((l) => l && typeof l.slug === 'string' && typeof l.name === 'string' && Array.isArray(l.files));
+    // A slug names a file in docs/, so it must be a plain slug: never a path.
+    state.layers = data.layers.filter((l) => l && typeof l.slug === 'string' && SLUG.test(l.slug) && typeof l.name === 'string' && Array.isArray(l.files));
   }
   state.docsComplete = typeof data.docsComplete === 'boolean' ? data.docsComplete : state.layers.length > 0 ? null : false;
   state.batchesDone = Number.isInteger(data.batchesDone) && data.batchesDone >= 0 ? data.batchesDone : 0;
@@ -100,8 +110,11 @@ function readState(root) {
       state.files[file] = clean;
     }
   }
-  if (Array.isArray(data.docs)) state.docs = data.docs.filter((s) => typeof s === 'string');
-  if (Array.isArray(data.staleDocs)) state.staleDocs = data.staleDocs.filter((s) => typeof s === 'string');
+  if (Array.isArray(data.docs)) state.docs = data.docs.filter((s) => typeof s === 'string' && SLUG.test(s));
+  if (Array.isArray(data.staleDocs)) state.staleDocs = data.staleDocs.filter((s) => typeof s === 'string' && (s === 'README' || SLUG.test(s)));
+  if (data.folders && typeof data.folders === 'object' && !Array.isArray(data.folders)) {
+    for (const [dir, summary] of Object.entries(data.folders)) if (typeof summary === 'string') state.folders[dir] = summary;
+  }
   return state;
 }
 
@@ -112,6 +125,7 @@ function serializeState(state) {
 
 function writeState(root, state) {
   const full = path.join(root, STATE_PATH);
+  requirePlainPath(root, STATE_PATH);
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, serializeState(state));
 }

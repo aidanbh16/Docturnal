@@ -2,7 +2,7 @@
 // run of docturnal.yml for each of their repositories.
 
 import type { QueueMessage } from './handlers';
-import { DEFAULT_SETTINGS, SettingsStore } from './settings';
+import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, SettingsStore } from './settings';
 
 const HOUR_MS = 60 * 60 * 1000;
 const QUEUE_BATCH_LIMIT = 100;
@@ -41,24 +41,49 @@ export interface ScheduleEnv {
   SETUP_QUEUE: Queue<QueueMessage>;
 }
 
-// Returns how many installations were due and how many runs were queued.
+// Returns how many installations were due and how many runs were queued. One installation's
+// failure never stops the others: its runs wait for the next night, and batches are sent as
+// they fill, so the runs queued before a failure still go.
 export async function runSchedule(env: ScheduleEnv, now: Date, log: (line: string) => void) {
   const store = new SettingsStore(env.SETTINGS);
-  const messages: { body: QueueMessage }[] = [];
+  let pending: { body: QueueMessage }[] = [];
   let due = 0;
-  // The key list gives each installation's repositories and schedule; only due installations
-  // read their settings key, for the comment level.
-  for await (const { installationId, schedule, repos } of store.schedules()) {
+  let queued = 0;
+  let failed = 0;
+  const flush = async () => {
+    const batch = pending;
+    pending = [];
+    try {
+      await env.SETUP_QUEUE.sendBatch(batch);
+      queued += batch.length;
+    } catch (err) {
+      failed += batch.length;
+      log(`cron ${now.toISOString()}: could not queue ${batch.length} runs, ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  // The key list gives each installation's repositories, schedule, and choices. Only a
+  // settings key saved before the choices were in its metadata is read.
+  for await (const { installationId, schedule, repos, hasSettings } of store.schedules()) {
     if (!isDue(schedule.time, schedule.timeZone, now)) continue;
-    const { commentLevel, existingCode } = (await store.getChoices(installationId)) ?? DEFAULT_SETTINGS;
+    let choices: { commentLevel: CommentLevel; existingCode: ExistingCode } = DEFAULT_SETTINGS;
+    if (schedule.commentLevel && schedule.existingCode) {
+      choices = { commentLevel: schedule.commentLevel, existingCode: schedule.existingCode };
+    } else if (hasSettings) {
+      try {
+        choices = (await store.getChoices(installationId)) ?? DEFAULT_SETTINGS;
+      } catch (err) {
+        // Never run with the defaults instead: they might comment code the owner turned off.
+        log(`cron ${now.toISOString()}: skipped installation ${installationId} this hour, could not read its settings (${err instanceof Error ? err.message : String(err)})`);
+        continue;
+      }
+    }
     due++;
     for (const repo of repos) {
-      messages.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel, existingCode } });
+      pending.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel: choices.commentLevel, existingCode: choices.existingCode } });
+      if (pending.length >= QUEUE_BATCH_LIMIT) await flush();
     }
   }
-  for (let i = 0; i < messages.length; i += QUEUE_BATCH_LIMIT) {
-    await env.SETUP_QUEUE.sendBatch(messages.slice(i, i + QUEUE_BATCH_LIMIT));
-  }
-  log(`cron ${now.toISOString()}: ${due} ${due === 1 ? 'installation' : 'installations'} due, queued ${messages.length} ${messages.length === 1 ? 'run' : 'runs'}`);
-  return { due, queued: messages.length };
+  if (pending.length) await flush();
+  log(`cron ${now.toISOString()}: ${due} ${due === 1 ? 'installation' : 'installations'} due, queued ${queued} ${queued === 1 ? 'run' : 'runs'}${failed ? `, ${failed} not queued` : ''}`);
+  return { due, queued };
 }

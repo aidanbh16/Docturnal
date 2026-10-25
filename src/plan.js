@@ -47,6 +47,13 @@ function nothingToCover(previous, entries) {
 function planWork({ config, previous, changes, branch, rank }) {
   const pending = openPending(branch, previous);
   const phase = docsDone(previous, changes.entries) ? 'normal' : 'docs';
+  // A pull request with someone else's commits is not added to (see prepareBranch).
+  if (branch.mode === 'foreign') {
+    return {
+      version: 1, base: branch.base, baseSha: branch.baseSha, updateSha: branch.updateSha,
+      pendingOpen: true, phase, items: [], batch: null, backlogTotal: 0, hasWork: false, foreign: true,
+    };
+  }
   if (nothingToCover(previous, changes.entries)) {
     return {
       version: 1, base: branch.base, baseSha: branch.baseSha, updateSha: branch.updateSha,

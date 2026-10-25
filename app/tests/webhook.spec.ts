@@ -172,6 +172,45 @@ describe('installation', () => {
     expect(t.gh.state.dispatches[0].inputs).toEqual({ 'comment-level': 'heavy', 'existing-code': 'gradual' });
   });
 
+  it('reads the choices from the key list when the settings key carries them, with no read per installation', async () => {
+    const t = setup({ repos: ['octo/hello'] });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'low', existingCode: 'none', repos: ['octo/hello'] });
+    t.kv.data.get('install:1:settings')!.metadata = { time: 0, timeZone: 'America/New_York', commentLevel: 'low', existingCode: 'none' };
+    t.gh.state.repos.get('octo/hello').files.set(`main:${WORKFLOW_PATH}`, WORKFLOW);
+    t.kv.reads.length = 0;
+    await t.cron('2026-01-15T05:07:00Z');
+    expect(t.kv.reads.filter((key: string) => !key.endsWith('*'))).toEqual([]);
+    await t.drain();
+    expect(t.gh.state.dispatches.map((d: { inputs: unknown }) => d.inputs)).toEqual([{ 'comment-level': 'low', 'existing-code': 'none' }]);
+  });
+
+  it('one installation whose settings cannot be read is skipped, never run with the defaults, and the others still run', async () => {
+    const t = setup({ repos: ['octo/a', 'octo/b'] });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'off', repos: ['octo/a'] });
+    t.kv.seed(2, { time: 0, timeZone: 'America/New_York', commentLevel: 'heavy', repos: ['octo/b'] });
+    for (const repo of ['octo/a', 'octo/b']) t.gh.state.repos.get(repo).files.set(`main:${WORKFLOW_PATH}`, WORKFLOW);
+    const get = t.kv.get.bind(t.kv);
+    t.kv.get = (async (key: string, type?: string | { type: string }) => {
+      if (key === 'install:1:settings') throw new Error('KV unavailable');
+      return get(key, type);
+    }) as typeof t.kv.get;
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    expect(t.gh.state.dispatches.map((d: { repo: string }) => d.repo)).toEqual(['octo/b']);
+    expect(t.logs).toContain('cron 2026-01-15T05:07:00.000Z: skipped installation 1 this hour, could not read its settings (KV unavailable)');
+  });
+
+  it('a batch that cannot be queued does not stop the batches after it', async () => {
+    const repos = Array.from({ length: 150 }, (_, i) => `octo/r${String(i).padStart(3, '0')}`);
+    const t = setup({ repos });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos });
+    t.queue.failNextSends = 1;
+    await t.cron('2026-01-15T05:07:00Z');
+    expect(t.queue.pending.length).toBe(50);
+    expect(t.logs).toContain('cron 2026-01-15T05:07:00.000Z: could not queue 100 runs, Queue send failed');
+    expect(t.logs).toContain('cron 2026-01-15T05:07:00.000Z: 1 installation due, queued 50 runs, 100 not queued');
+  });
+
   it('passes the Existing code setting to a template that takes it, and never to an older one', async () => {
     const t = setup({ repos: ['octo/new', 'octo/old'] });
     t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'low', existingCode: 'none', repos: ['octo/new', 'octo/old'] });
@@ -254,7 +293,7 @@ describe('installation', () => {
     expect(t.gh.state.dispatches).toEqual([]);
     expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, opened update pull request #1');
 
-    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 4 -->');
+    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 5 -->');
 
     // While it is open, it is not proposed again.
     await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
@@ -266,7 +305,7 @@ describe('installation', () => {
     await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
     await t.drain();
     expect(t.gh.state.pulls).toHaveLength(1);
-    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, the update to version 4 was declined earlier, left it unchanged');
+    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, the update to version 5 was declined earlier, left it unchanged');
   });
 
   it('queues the first run on retry when an earlier attempt created the file but could not queue the run', async () => {
@@ -352,7 +391,7 @@ describe('webhooks and settings saves at the same time', () => {
     expect(await deliveries).toEqual([200, 200]);
 
     // Nothing was read and written back: no gets and no lists.
-    expect(t.kv.reads).toEqual([]);
+    expect(t.kv.reads.filter((key: string) => !key.endsWith('*'))).toEqual([]);
     expect(await new SettingsStore(t.env.SETTINGS).get(1)).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'gradual', repos: ['octo/hello', 'octo/one', 'octo/two'] });
   });
 
@@ -369,7 +408,7 @@ describe('webhooks and settings saves at the same time', () => {
     expect(await both).toEqual([200, 200]);
 
     expect(await new SettingsStore(t.env.SETTINGS).get(1)).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'gradual', repos: ['octo/hello', 'octo/new'] });
-    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles' });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'gradual' });
   });
 });
 
@@ -659,7 +698,9 @@ describe('workflow template', () => {
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to a full commit SHA, so the code that checks out your repository cannot change
+      # without a new version of this workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: acme/docturnal@v1
@@ -673,13 +714,25 @@ describe('workflow template', () => {
     expect(WORKFLOW.split('\njobs:\n')[1].match(/^  [\w-]+:$/gm)).toEqual(['  docturnal:']);
     expect(WORKFLOW).not.toMatch(/mode:|artifact|matrix|needs:/);
   });
+
+  it('pins every third-party action to a full commit SHA, with its version in a comment', () => {
+    const references = [...WORKFLOW.matchAll(/^\s*- uses:\s*(.+)$/gm)].map((m) => m[1]);
+    const thirdParty = references.filter((r) => !r.startsWith('acme/docturnal@'));
+    expect(thirdParty).toEqual(['actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1']);
+    for (const reference of thirdParty) expect(reference).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+    // Docturnal's own Action follows its release tag, which the app's maintainer moves.
+    expect(references).toContain('acme/docturnal@v1');
+  });
 });
 
-// Earlier templates, from the current one. Version 3 had no existing-code input and no time
-// budget; version 2 used actions/checkout@v4; version 1 also had no version line and no
-// concurrency block.
-const WORKFLOW_V3 = WORKFLOW
-  .replace(`# Docturnal workflow version ${WORKFLOW_VERSION}.\n`, '# Docturnal workflow version 3.\n')
+// Earlier templates, from the current one. Version 4 used the actions/checkout@v7 tag;
+// version 3 also had no existing-code input and no time budget; version 2 used
+// actions/checkout@v4; version 1 also had no version line and no concurrency block.
+const WORKFLOW_V4 = WORKFLOW
+  .replace(`# Docturnal workflow version ${WORKFLOW_VERSION}.\n`, '# Docturnal workflow version 4.\n')
+  .replace("      # Pinned to a full commit SHA, so the code that checks out your repository cannot change\n      # without a new version of this workflow.\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n", '      - uses: actions/checkout@v7\n');
+const WORKFLOW_V3 = WORKFLOW_V4
+  .replace('# Docturnal workflow version 4.\n', '# Docturnal workflow version 3.\n')
   .replace(/\n      existing-code:\n(?:        .*\n){4}/, '\n')
   .replace(/\n          existing-code: .*\n          time-budget-minutes: .*\n          job-timeout-minutes: .*\n/, '\n');
 const WORKFLOW_V2 = WORKFLOW_V3
@@ -693,22 +746,24 @@ describe('workflow versions', () => {
   it('lets one run at a time per repository, and carries its version', () => {
     expect(WORKFLOW).toContain('\nconcurrency:\n  group: docturnal\n  cancel-in-progress: false\n');
     expect(WORKFLOW).toContain(`\n# Docturnal workflow version ${WORKFLOW_VERSION}.\n`);
-    expect(WORKFLOW_VERSION).toBe(4);
+    expect(WORKFLOW_VERSION).toBe(5);
+    expect(WORKFLOW_V4).toContain('      - uses: actions/checkout@v7\n');
+    expect(templateVersion(WORKFLOW_V4, 'acme/docturnal')).toBe(4);
     expect(WORKFLOW_V1).not.toContain('concurrency');
     expect(WORKFLOW_V3).not.toContain('existing-code');
     expect(WORKFLOW_V3).not.toContain('time-budget-minutes');
     expect(WORKFLOW_V3).toContain("          comment-level: ${{ inputs['comment-level'] || 'medium' }}\n");
     expect(WORKFLOW_V2).toContain('actions/checkout@v4');
-    expect(templateVersion(WORKFLOW, 'acme/docturnal')).toBe(4);
+    expect(templateVersion(WORKFLOW, 'acme/docturnal')).toBe(5);
     expect(templateVersion(WORKFLOW_V3, 'acme/docturnal')).toBe(3);
     expect(templateVersion(WORKFLOW_V2, 'acme/docturnal')).toBe(2);
     expect(templateVersion(WORKFLOW_V1, 'acme/docturnal')).toBe(1);
     expect(templateVersion(OLD_WORKFLOW, 'acme/docturnal')).toBe(0);
-    expect(templateVersion(workflowYaml('someone/my-docs-tool'), 'someone/my-docs-tool')).toBe(4);
+    expect(templateVersion(workflowYaml('someone/my-docs-tool'), 'someone/my-docs-tool')).toBe(5);
     expect(templateVersion('jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n', 'acme/docturnal')).toBeNull();
   });
 
-  it('proposes version 4 to a repository set up with version 1, listing every change since, through the update pull request', async () => {
+  it('proposes version 5 to a repository set up with version 1, listing every change since, through the update pull request', async () => {
     const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } });
     await t.deliver('installation', installation());
     await t.drain();
@@ -716,14 +771,14 @@ describe('workflow versions', () => {
     expect(repo.files.get(`main:${WORKFLOW_PATH}`)).toBe(WORKFLOW_V1);
     expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
     expect(t.gh.state.pulls).toEqual([expect.objectContaining({ title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', state: 'open' })]);
-    expect(t.gh.state.pulls[0].body).toContain('updates `.github/workflows/docturnal.yml` to version 4');
+    expect(t.gh.state.pulls[0].body).toContain('updates `.github/workflows/docturnal.yml` to version 5');
     expect(t.gh.state.pulls[0].body).toContain('The new version makes these changes:\n\n- Lets only one Docturnal run happen at a time');
     expect(t.gh.state.pulls[0].body).toContain('\n- Uses version 7 of `actions/checkout`, which runs on Node.js 24.');
     expect(t.gh.state.pulls[0].body).toContain('\n- Passes your "Existing code" setting to each run');
     expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
     expect(t.logs).toContain('setup octo/hello: the workflow is version 1, opened update pull request #1');  });
 
-  it('proposes version 4 to a repository on version 3, for the Existing code setting only', async () => {
+  it('proposes version 5 to a repository on version 3, with the Existing code setting and the pinned checkout', async () => {
     const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V3 } });
     t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
     await t.cron('2026-01-15T05:07:00Z');
@@ -731,13 +786,25 @@ describe('workflow versions', () => {
     const repo = t.gh.state.repos.get('octo/hello');
     expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
     const body = t.gh.state.pulls[0].body;
-    expect(body).toContain('The new version passes your "Existing code" setting to each run');
+    expect(body).toContain('The new version makes these changes:\n\n- Passes your "Existing code" setting to each run');
+    expect(body).toContain('\n- Pins `actions/checkout` to a full commit SHA');
     expect(body).not.toMatch(/parallel|artifact|actions: write/);
-    expect(body).not.toContain('actions/checkout');
-    expect(body).toContain('<!-- docturnal-workflow-version: 4 -->');
+    expect(body).not.toContain('Node.js 24');
+    expect(body).toContain('<!-- docturnal-workflow-version: 5 -->');
     // Version 3 runs as before until the pull request is merged, without the existing-code input.
     expect(t.gh.state.dispatches).toEqual([{ repo: 'octo/hello', workflow: 'docturnal.yml', ref: 'main', inputs: medium }]);
     expect(t.logs).toContain('dispatch octo/hello: the workflow is version 3, opened update pull request #1');
+  });
+
+  it('proposes version 5 to a repository on version 4, for the pinned checkout only, and still sends existing-code', async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V4 } });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', existingCode: 'none', repos: ['octo/hello'] });
+    await t.cron('2026-01-15T05:07:00Z');
+    await t.drain();
+    const body = t.gh.state.pulls[0].body;
+    expect(body).toContain('The new version pins `actions/checkout` to a full commit SHA');
+    expect(body).not.toContain('Existing code');
+    expect(t.gh.state.dispatches.map((d: { inputs: unknown }) => d.inputs)).toEqual([{ 'comment-level': 'medium', 'existing-code': 'none' }]);
   });
 
   it('proposes the update from the nightly run for existing installs, once, and still starts the run', async () => {
@@ -791,14 +858,14 @@ describe('workflow versions', () => {
     await t.drain();
     expect(t.gh.state.pulls).toHaveLength(1);
     expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
-    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 4 -->');
+    expect(t.gh.state.pulls[0].body).toContain('<!-- docturnal-workflow-version: 5 -->');
     // Still on the scheduled template until the pull request is merged, so no dispatch.
     expect(t.gh.state.dispatches).toEqual([]);
-    expect(t.logs).toContain('dispatch octo/hello: the workflow has the old schedule, updated pull request #3 to version 4');
+    expect(t.logs).toContain('dispatch octo/hello: the workflow has the old schedule, updated pull request #3 to version 5');
     expect(t.logs).toContain('dispatch octo/hello: skipped, the workflow still has its own schedule');
   });
 
-  it('leaves a repository alone after its owner closes the version 4 pull request', async () => {
+  it('leaves a repository alone after its owner closes the version 5 pull request', async () => {
     const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V1 } });
     t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
     await t.cron('2026-01-15T05:07:00Z');

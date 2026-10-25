@@ -150,14 +150,14 @@ runs:
     # A parallel run passes the plan, and the workers' results, between its jobs as artifacts.
     - name: Download the plan
       if: inputs.mode == 'work' || inputs.mode == 'finish'
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: docturnal-plan
         path: ${{ runner.temp }}/docturnal-plan
 
     - name: Download the work results
       if: inputs.mode == 'finish'
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         pattern: docturnal-shard-*
         merge-multiple: true
@@ -180,88 +180,53 @@ runs:
     # or Ollama to GitHub's cache. With ollama-url, nothing about Ollama runs on the runner.
     - name: Restore Ollama models cache
       if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/docturnal-ollama-models
         key: docturnal-ollama-${{ runner.os }}-${{ steps.models.outputs.comment-model }}-${{ steps.models.outputs.docs-model }}
 
-    # The Ollama install is cached between runs, keyed on its version. The latest version comes
-    # from GitHub's release redirect, which needs no API token; when it cannot be read, the
-    # installer runs and nothing is cached.
-    - name: Find the Ollama version
+    # Ollama is pinned: OLLAMA_VERSION below, with each archive's SHA-256 in pins/ollama.json.
+    # The cache key names the version and the checksum, so a new pin never reuses an old install.
+    - name: Find the pinned Ollama release
       id: ollama
-      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == ''
       shell: bash
+      env:
+        OLLAMA_VERSION: '0.40.11'
       run: |
-        version=$(curl -fsSI --max-time 20 https://github.com/ollama/ollama/releases/latest 2>/dev/null \
-          | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/tag/v\{0,1\}\([^/]*\)$|\1|p' | head -n 1)
-        if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*$'; then
-          echo "Latest Ollama release: $version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-        else
-          echo "Could not read the latest Ollama version, so the install is not cached this run."
-        fi
+        key=$(node "$GITHUB_ACTION_PATH/src/install-ollama.js" key)
+        echo "Pinned Ollama release: $key"
+        echo "version=$OLLAMA_VERSION" >> "$GITHUB_OUTPUT"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
 
     - name: Restore Ollama install cache
-      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted' && steps.ollama.outputs.version != ''
-      uses: actions/cache@v6
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/docturnal-ollama-install
-        key: docturnal-ollama-install-${{ runner.os }}-${{ runner.arch }}-${{ steps.ollama.outputs.version }}
+        key: docturnal-ollama-install-${{ runner.os }}-${{ runner.arch }}-${{ steps.ollama.outputs.key }}
 
+    # Downloads the official archive from GitHub releases, checks its SHA-256 against
+    # pins/ollama.json before extracting anything, and extracts the binary and the CPU
+    # libraries into the runner's temporary folder: no install script, service, or sudo.
     - name: Install Ollama
       if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == ''
       shell: bash
       env:
         OLLAMA_VERSION: ${{ steps.ollama.outputs.version }}
-        CACHED: ${{ runner.temp }}/docturnal-ollama-install
+        OLLAMA_DIR: ${{ runner.temp }}/docturnal-ollama-install
         GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
-        # A cache hit counts only with the binary and its CPU libraries, which Ollama loads
-        # from ../lib/ollama next to the binary.
-        if [ -n "$OLLAMA_VERSION" ] && [ -x "$CACHED/bin/ollama" ] \
-          && ls "$CACHED"/lib/ollama/libggml-cpu* >/dev/null 2>&1 \
-          && "$CACHED/bin/ollama" --version >/dev/null 2>&1; then
-          echo "Using the cached Ollama $OLLAMA_VERSION."
-          echo "$CACHED/bin" >> "$GITHUB_PATH"
+        # Internal testing on a self-hosted runner may use an Ollama already on its PATH.
+        if [ "$GITHUB_HOSTED" != "true" ] && command -v ollama >/dev/null 2>&1; then
+          echo "Using the Ollama on this runner's PATH: $(ollama --version 2>/dev/null || echo unknown version)"
           exit 0
         fi
-
-        if command -v ollama >/dev/null 2>&1; then
-          echo "Ollama is already installed: $(ollama --version 2>/dev/null || echo unknown version)"
-        elif [ "$(uname -s)" != "Linux" ]; then
-          echo "::error::Docturnal installs Ollama only on Linux x64 and arm64 runners. Install Ollama on this runner yourself, or set ollama-url."
+        if [ "$(uname -s)" != "Linux" ]; then
+          echo "::error::Docturnal installs Ollama only on Linux x64 and arm64 runners."
           exit 1
-        else
-          # OLLAMA_VERSION pins the installer to the version the cache key names.
-          curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
         fi
-        # The installer starts a system service on port 11434. On a GitHub-hosted runner, stop it
-        # so our own server can use the cached models folder. A self-hosted runner's services
-        # are left alone; Docturnal starts its own server on a free port there.
-        if [ "$GITHUB_HOSTED" = "true" ] && command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
-          sudo systemctl stop ollama || true
-          sudo systemctl disable ollama || true
-        fi
-
-        # Keep what a CPU runner needs for the next run: the binary and the CPU libraries. The
-        # GPU libraries are most of the download and are never used here.
-        if [ -n "$OLLAMA_VERSION" ]; then
-          binary=$(readlink -f "$(command -v ollama)")
-          libraries="$(dirname "$(dirname "$binary")")/lib/ollama"
-          rm -rf "$CACHED"
-          mkdir -p "$CACHED/bin" "$CACHED/lib/ollama"
-          cp "$binary" "$CACHED/bin/ollama"
-          if [ -d "$libraries" ]; then
-            for item in "$libraries"/*; do
-              case "$(basename "$item")" in
-                cuda*|rocm*|vulkan*|*cuda*) ;;
-                *) cp -R "$item" "$CACHED/lib/ollama/" ;;
-              esac
-            done
-          fi
-          echo "Saved Ollama $OLLAMA_VERSION for the next run ($(du -sh "$CACHED" | cut -f1))."
-        fi
+        node "$GITHUB_ACTION_PATH/src/install-ollama.js" install
 
     # GitHub-hosted runners use port 11434 and a models folder that is cached. Self-hosted
     # runners use a free port, so they never clash with an Ollama service already on the
@@ -286,6 +251,7 @@ runs:
           echo "Models folder: $OLLAMA_MODELS"
         fi
         echo "host=$OLLAMA_HOST" >> "$GITHUB_OUTPUT"
+        echo "models=$OLLAMA_MODELS" >> "$GITHUB_OUTPUT"
         mkdir -p "$OLLAMA_MODELS"
         log="$RUNNER_TEMP/docturnal-ollama.log"
         nohup ollama serve >"$log" 2>&1 &
@@ -309,6 +275,7 @@ runs:
       shell: bash
       env:
         OLLAMA_HOST: ${{ steps.ollama-server.outputs.host }}
+        OLLAMA_MODELS: ${{ steps.ollama-server.outputs.models }}
         COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
         DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
         PULL_DOCS_MODEL: ${{ steps.models.outputs.pull-docs-model }}
@@ -325,10 +292,15 @@ runs:
           fi
         }
         pull "$COMMENT_MODEL"
+        verify="$COMMENT_MODEL"
         # A worker with only summaries to write uses the comment model alone.
         if [ "$DOCS_MODEL" != "$COMMENT_MODEL" ] && [ "$PULL_DOCS_MODEL" != "false" ]; then
           pull "$DOCS_MODEL"
+          verify="$verify $DOCS_MODEL"
         fi
+        # Each model's digest must match pins/models.json, and each of its files the digest its
+        # manifest names, before any code reaches it.
+        node "$GITHUB_ACTION_PATH/src/verify-models.js" $verify
 
     # Docturnal for teams: checks the server in ollama-url before any code is sent to it, and
     # has it pull missing models unless pull-models is "false".
@@ -347,7 +319,9 @@ runs:
       if: steps.precheck.outputs.changed == 'true'
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: npm install --omit=dev --no-audit --no-fund
+      # Exactly the versions package-lock.json pins, checked against its hashes, and no install
+      # scripts.
+      run: npm ci --omit=dev --no-audit --no-fund --ignore-scripts
 
     - name: Run Docturnal
       id: run
@@ -368,7 +342,8 @@ runs:
         INPUT_DOCS_MAY_FALLBACK: ${{ steps.models.outputs.docs-may-fallback }}
         INPUT_FALLBACK_DOCS_MODEL: ${{ steps.models.outputs.fallback-docs-model }}
         INPUT_OPEN_PR: ${{ inputs.open-pr }}
-        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        # The token reaches this step only when it opens the pull request itself (internal).
+        INPUT_GITHUB_TOKEN: ${{ inputs.open-pr == 'true' && inputs.github-token || '' }}
         INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
         INPUT_ALLOW_PUBLIC_OLLAMA: ${{ inputs.allow-public-ollama }}
         INPUT_EXISTING_CODE: ${{ inputs.existing-code }}
@@ -388,7 +363,7 @@ runs:
     # files: they are kept for one day at most, and the finish job deletes them when it is done.
     - name: Upload the plan
       if: inputs.mode == 'plan' && steps.run.outputs.has-work == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: docturnal-plan
         path: ${{ runner.temp }}/docturnal-plan
@@ -397,7 +372,7 @@ runs:
 
     - name: Upload the work results
       if: inputs.mode == 'work'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: docturnal-shard-${{ inputs.shard }}
         path: ${{ runner.temp }}/docturnal-results/shard-${{ inputs.shard }}.json

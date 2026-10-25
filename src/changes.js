@@ -9,7 +9,8 @@ const path = require('path');
 const { hasMarker } = require('./docs');
 const { IGNORE_FILE, listFiles } = require('./git');
 const { classifyFile, MAX_FILE_BYTES } = require('./languages');
-const { readCurrentReadme, readReadmeState } = require('./readme');
+const { readCurrentReadme, readReadmeState, readmeIsPlain } = require('./readme');
+const { isPlainPath } = require('./safe-path');
 const { hashContent } = require('./state');
 
 function readCandidates(cwd, config) {
@@ -47,6 +48,7 @@ function ignoreHash(cwd) {
 }
 
 function docExists(cwd, docPath) {
+  if (!isPlainPath(cwd, docPath)) return true;
   try {
     return hasMarker(fs.readFileSync(path.join(cwd, docPath), 'utf8'));
   } catch {
@@ -86,7 +88,7 @@ function findChanges(cwd, config, previous) {
   // A person editing README.md is a change, so their section gets polished. An earlier run
   // that has no saved README yet counts too, so the README gets set up once.
   const readmeState = readReadmeState(cwd);
-  const readmeChanged = readmeState ? readCurrentReadme(cwd) !== readmeState.text : previous.commentLevel !== null;
+  const readmeChanged = !readmeIsPlain(cwd) ? false : readmeState ? readCurrentReadme(cwd) !== readmeState.text : previous.commentLevel !== null;
   // Earlier versions wrote the main document to docs/README.md; it moves to README.md.
   const legacyReadme = docExists(cwd, `${config.docsDir}/README.md`);
   // Files .docturnalignore now matches show up as deleted, and ones it no longer matches as

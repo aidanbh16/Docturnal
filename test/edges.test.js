@@ -17,7 +17,7 @@ const { summarizeFile } = require('../src/summary');
 const { defaultHandler, startMockOllama } = require('./mock-ollama');
 const { fn, gitRepo, runAction } = require('./git-repo');
 
-const summaries = (mock) => mock.requests.filter((r) => r.messages && r.messages[0] && r.messages[0].content.startsWith('You read one source file'));
+const summaries = (mock) => mock.requests.filter((r) => r.messages && r.messages[0] && r.messages[0].content.startsWith('You describe one folder'));
 const commentRequests = (mock) => mock.requests.filter((r) => r.format && r.format.properties && r.format.properties.comments && r.format.properties.summary);
 
 // --- Repositories with nothing to cover ---
@@ -199,12 +199,13 @@ test('an interrupted first run, then a normal night, then the first batch', asyn
   const repo = gitRepo();
   try {
     const files = {};
-    for (let i = 0; i < 6; i++) files[`src/f${i}.js`] = fn(`f${i}`);
+    for (let i = 0; i < 6; i++) files[`src/m${i}/f${i}.js`] = fn(`f${i}`);
     repo.commit(files, 'Initial commit');
-    // The first run runs out of time after four files: each call takes 10 simulated minutes.
+    // The first run stops reading after three folders: each call takes 10 simulated minutes,
+    // and summaries stop at 20 of the 60, so the docs always get written.
     let clock = Date.parse('2026-10-24T00:00:00Z');
     const chat = async (request) => {
-      clock += 10 * 60000;
+      clock += (request.model === "comment-model" ? 10 : 2) * 60000;
       const res = await fetch(`http://${mock.host}/api/chat`, { method: 'POST', body: JSON.stringify({ ...request, stream: false }) });
       return (await res.json()).message.content;
     };
@@ -215,12 +216,15 @@ test('an interrupted first run, then a normal night, then the first batch', asyn
       now: () => clock,
       log: () => {},
     });
-    assert.strictEqual(first.leftOver.length, 2);
+    assert.strictEqual(first.leftOver.length, 3);
     assert.strictEqual(repo.state().docsComplete, false);
-    // The next night reads the two files it missed, and still comments nothing.
+    // The README says which folders are not described yet.
+    assert.match(repo.text('docturnal/update', 'README.md'), /Not described yet: `src\/m3`, `src\/m4`, `src\/m5`\. The next update adds them\./);
+    // The next night reads the three folders it missed, and still comments nothing.
     mock.requests.length = 0;
     assert.strictEqual((await runAction(repo, repo.clone(), mock)).code, 0);
-    assert.strictEqual(summaries(mock).length, 2);
+    assert.strictEqual(summaries(mock).length, 3);
+    assert.doesNotMatch(repo.text('docturnal/update', 'README.md'), /Not described yet/);
     assert.strictEqual(commentRequests(mock).length, 0);
     assert.strictEqual(repo.state().docsComplete, true);
     // Then batch 1 follows.
@@ -364,22 +368,22 @@ describe('review fixes', () => {
   it('a file the model can never summarize is recorded, and the documentation pass still ends', async () => {
     const base = defaultHandler();
     const mock = await startMockOllama((body, n) => {
-      if (kindOf(body) === 'summary' && body.messages[1].content.startsWith('File: src/broken.js')) return '{"summary": "cut o';
+      if (kindOf(body) === 'folder' && body.messages[1].content.startsWith('Files in the folder src/odd.')) return '{"summary": "cut o';
       return base(body, n);
     });
     const repo = gitRepo();
     try {
-      repo.commit({ 'src/a.js': fn('a'), 'src/broken.js': fn('broken') }, 'Initial commit');
+      repo.commit({ 'src/a.js': fn('a'), 'src/odd/broken.js': fn('broken') }, 'Initial commit');
       const first = await runAction(repo, repo.clone(), mock);
       assert.strictEqual(first.code, 0, first.stderr);
-      assert.match(first.log, /src\/broken\.js: skipped, no usable summary/);
+      assert.match(first.log, /src\/odd\/broken\.js: skipped, no usable summary/);
       const state = repo.state();
       assert.strictEqual(state.docsComplete, true);
-      assert.strictEqual(state.files['src/broken.js'].summaryFailed, true);
+      assert.strictEqual(state.files['src/odd/broken.js'].summaryFailed, true);
       // It can still be commented, in a batch.
       repo.merge();
       assert.strictEqual((await runAction(repo, repo.clone(), mock)).code, 0);
-      assert.ok(repo.state().pending.batch.files.includes('src/broken.js'));
+      assert.ok(repo.state().pending.batch.files.includes('src/odd/broken.js'));
     } finally {
       await mock.close();
       repo.cleanup();
@@ -391,7 +395,7 @@ describe('review fixes', () => {
     const mock = await startMockOllama();
     const repo = gitRepo();
     try {
-      repo.commit({ 'src/a.js': fn('a'), 'src/b.js': fn('b'), 'src/c.js': fn('c') }, 'Initial commit');
+      repo.commit({ 'src/a/a.js': fn('a'), 'src/b/b.js': fn('b'), 'src/c/c.js': fn('c') }, 'Initial commit');
       let clock = Date.parse('2026-10-24T00:00:00Z');
       const chat = async (request) => {
         clock += 20 * 60000;
@@ -539,4 +543,206 @@ describe('review fixes', () => {
       repo.cleanup();
     }
   });
+});
+
+// --- Symbolic links to Docturnal's paths ---
+
+describe('symbolic links in place of the files Docturnal reads and writes', () => {
+  const linksWork = (() => {
+    const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-link-'));
+    try {
+      fs.symlinkSync('target', path.join(dir, 'link'));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  })();
+  const skip = linksWork ? false : 'this system cannot create symbolic links';
+  const { isPlainPath } = require('../src/safe-path');
+
+  // A repository whose README.md, docs/core.md, and package.json are links to files outside it.
+  function linkedRepo(outside) {
+    const repo = gitRepo();
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside the repository\n');
+    fs.mkdirSync(path.join(repo.seed, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo.seed, 'src', 'a.js'), fn('a'));
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo.seed, 'README.md'));
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo.seed, 'package.json'));
+    repo.git(repo.seed, 'add', '-A');
+    repo.git(repo.seed, 'commit', '-qm', 'Links');
+    repo.git(repo.seed, 'push', '-q', 'origin', 'main');
+    return repo;
+  }
+
+  it('a linked README.md and package.json are never read or written, and the file they point to is unchanged', { skip }, async () => {
+    const outside = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-outside-'));
+    const mock = await startMockOllama();
+    const repo = linkedRepo(outside);
+    try {
+      const cwd = repo.clone();
+      assert.strictEqual(isPlainPath(cwd, 'README.md'), false);
+      const result = await runAction(repo, cwd, mock);
+      assert.strictEqual(result.code, 0, result.stderr);
+      assert.match(result.log, /^README\.md is a symbolic link, so Docturnal leaves it alone\.$/m);
+      assert.strictEqual(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8'), 'outside the repository\n');
+      // Nothing from outside the repository reaches the model or the commit.
+      assert.ok(!mock.requests.some((r) => JSON.stringify(r).includes('outside the repository')));
+      assert.doesNotMatch(repo.text('docturnal/update', '.docturnal/state.json'), /outside the repository/);
+    } finally {
+      await mock.close();
+      repo.cleanup();
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('a linked .docturnal folder stops the run with a clear message, and nothing is pushed', { skip }, async () => {
+    const outside = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-outside-'));
+    const mock = await startMockOllama();
+    const repo = gitRepo();
+    try {
+      fs.mkdirSync(path.join(repo.seed, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repo.seed, 'src', 'a.js'), fn('a'));
+      fs.symlinkSync(outside, path.join(repo.seed, '.docturnal'));
+      repo.git(repo.seed, 'add', '-A');
+      repo.git(repo.seed, 'commit', '-qm', 'A linked state folder');
+      repo.git(repo.seed, 'push', '-q', 'origin', 'main');
+      const result = await runAction(repo, repo.clone(), mock);
+      assert.notStrictEqual(result.code, 0);
+      assert.match(result.stderr, /\.docturnal\/state\.json is a symbolic link, or is inside one\./);
+      assert.deepStrictEqual(fs.readdirSync(outside), []);
+      assert.strictEqual(repo.hasBranch('docturnal/update'), false);
+    } finally {
+      await mock.close();
+      repo.cleanup();
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('a linked doc in docs/ counts as a person\'s and is never overwritten', { skip }, () => {
+    const { writeDocs, MARKER } = require('../src/docs');
+    const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-docs-'));
+    const outside = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-outside-'));
+    try {
+      fs.mkdirSync(path.join(root, 'docs'));
+      fs.writeFileSync(path.join(outside, 'target.md'), `${MARKER}\n\nOutside.\n`);
+      fs.symlinkSync(path.join(outside, 'target.md'), path.join(root, 'docs', 'core.md'));
+      const result = writeDocs({ root, docs: [{ path: 'docs/core.md', content: `${MARKER}\n\nNew.\n` }], removed: ['docs/core.md'] });
+      assert.deepStrictEqual(result.written, []);
+      assert.deepStrictEqual(result.deleted, []);
+      assert.deepStrictEqual(result.skipped, [{ path: 'docs/core.md', reason: 'a symbolic link' }]);
+      assert.strictEqual(fs.readFileSync(path.join(outside, 'target.md'), 'utf8'), `${MARKER}\n\nOutside.\n`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('paths with .. are never plain', () => {
+    assert.strictEqual(isPlainPath(process.cwd(), '../x'), false);
+    assert.strictEqual(isPlainPath(process.cwd(), 'docs/../../x'), false);
+    assert.strictEqual(isPlainPath(process.cwd(), 'no/such/file.md'), true);
+  });
+});
+
+test('file names, headings, and layer names cannot inject Markdown, mentions, or links into the pull request', () => {
+  const { buildReport } = require('../src/report');
+  const evil = 'src/x` [Re-authorize](https://evil.example) @acme/everyone `.js';
+  const report = buildReport({
+    processed: [{ path: evil, added: 1, verifier: 'typescript', stats: null, rejections: [{ line: 2, reason: 'contains */', category: 'safety' }] }],
+    docs: { updated: [{ path: 'docs/a|b.md' }], removed: [], pending: [], readme: { updated: ['Setup @acme/everyone [click](https://evil.example)'], polished: [], kept: [], notReadded: [] } },
+    leftOver: [{ path: 'src/new\nline.js', reason: 'time budget' }],
+    skipped: [{ path: evil, reason: 'not UTF-8' }],
+    models: { comment: 'c', docs: 'd', level: 'medium' },
+    progress: null,
+  });
+  // Every file name stays inside a code span its own backticks cannot end.
+  assert.ok(report.includes('``src/x` [Re-authorize](https://evil.example) @acme/everyone `.js``'));
+  // Headings: no live link, mention, or autolink.
+  assert.ok(report.includes('"Setup &#64;acme/everyone \\[click\\](https:&#47;&#47;evil.example)"'));
+  // A newline in a file name cannot start a new line of Markdown.
+  assert.ok(report.includes('`src/new line.js`'));
+  assert.doesNotMatch(report, /^line\.js/m);
+});
+
+test('a run started on a branch other than the default one stops before doing anything', async () => {
+  const repo = gitRepo();
+  try {
+    repo.commit({ 'src/a.js': fn('a') }, 'Initial commit');
+    repo.git(repo.seed, 'checkout', '-q', '-b', 'feature');
+    repo.git(repo.seed, 'push', '-q', 'origin', 'feature');
+    const event = path.join(repo.work, 'event.json');
+    fs.writeFileSync(event, JSON.stringify({ repository: { default_branch: 'main', private: false } }));
+    const extra = { BASE_BRANCH: 'feature', GITHUB_EVENT_PATH: event, GITHUB_OUTPUT: path.join(repo.work, 'out') };
+    for (const script of ['src/precheck.js', 'src/main.js']) {
+      const result = await runAction(repo, repo.clone(), null, extra, script);
+      assert.notStrictEqual(result.code, 0);
+      assert.match(result.stderr, /::error::Docturnal runs only on the default branch, main\. This run started on feature, so it stopped\./);
+    }
+    assert.strictEqual(repo.hasBranch('docturnal/update'), false);
+    // On the default branch, the same event is fine.
+    const ok = await runAction(repo, repo.clone(), null, { ...extra, BASE_BRANCH: 'main' }, 'src/precheck.js');
+    assert.strictEqual(ok.code, 0, ok.stderr);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test('a state file with a layer slug or doc name that is a path drops it, so no file outside docs/ is ever touched', () => {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'docturnal-slugs-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.docturnal'));
+    fs.writeFileSync(path.join(dir, '.docturnal/state.json'), JSON.stringify({
+      version: 1,
+      commentLevel: 'medium',
+      files: {},
+      layers: [
+        { slug: '../../x', name: 'Escape', files: ['a.js'] },
+        { slug: 'core', name: 'Core', files: ['b.js'] },
+      ],
+      docs: ['../README', 'core'],
+      staleDocs: ['../../x', 'README', 'core'],
+    }));
+    const state = readState(dir);
+    assert.deepStrictEqual(state.layers.map((l) => l.slug), ['core']);
+    assert.deepStrictEqual(state.docs, ['core']);
+    assert.deepStrictEqual(state.staleDocs, ['README', 'core']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('layer docs stop starting early enough that the README is always written', async () => {
+  const { run } = require('../src/main');
+  const mock = await startMockOllama();
+  const repo = gitRepo();
+  try {
+    const files = {};
+    for (let i = 0; i < 7; i++) files[`src/area${i}/file${i}.js`] = fn(`area${i}`);
+    repo.commit(files, 'Seven areas');
+    // Summaries are instant; every docs-model call takes 6 simulated minutes of the 40.
+    let clock = Date.parse('2026-10-24T00:00:00Z');
+    const chat = async (request) => {
+      if (request.model === 'docs-model') clock += 6 * 60000;
+      const res = await fetch(`http://${mock.host}/api/chat`, { method: 'POST', body: JSON.stringify({ ...request, stream: false }) });
+      return (await res.json()).message.content;
+    };
+    const cwd = repo.clone();
+    const logs = [];
+    await run({
+      cwd,
+      env: { ...repo.gitEnv, BASE_BRANCH: 'main', INPUT_COMMENT_LEVEL: 'medium', INPUT_TIME_BUDGET_MINUTES: '40', INPUT_SELECTED_COMMENT_MODEL: 'comment-model', INPUT_SELECTED_DOCS_MODEL: 'docs-model', PUSH: 'false' },
+      chat,
+      now: () => clock,
+      log: (l) => logs.push(l),
+    });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.docturnal/state.json'), 'utf8'));
+    // Some layer docs wait for the next run, but the README was written.
+    assert.ok(state.staleDocs.length > 0 && !state.staleDocs.includes('README'), state.staleDocs.join(', '));
+    assert.match(fs.readFileSync(path.join(cwd, 'README.md'), 'utf8'), /## Architecture/);
+  } finally {
+    await mock.close();
+    repo.cleanup();
+  }
 });

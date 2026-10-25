@@ -403,7 +403,7 @@ test('re-running on already commented output stays within the level', () => {
 // --- Formatting and safety details ---
 
 test('keeps CRLF line endings and the byte order mark', () => {
-  const text = '﻿const a = 1;\r\nconst b = compute(a);\r\n';
+  const text = '\uFEFFconst a = 1;\r\nconst b = compute(a);\r\n';
   const result = applyProposals({
     text,
     language: lang('javascript'),
@@ -411,7 +411,7 @@ test('keeps CRLF line endings and the byte order mark', () => {
     proposals: [{ line: 2, text: 'Compute is pure, so this is safe to cache.', kind: 'line' }],
   });
   assert.strictEqual(result.added, 1);
-  assert.strictEqual(result.text, '﻿const a = 1;\r\n// Compute is pure, so this is safe to cache.\r\nconst b = compute(a);\r\n');
+  assert.strictEqual(result.text, '\uFEFFconst a = 1;\r\n// Compute is pure, so this is safe to cache.\r\nconst b = compute(a);\r\n');
 });
 
 test('never inserts above a shebang', () => {
@@ -531,4 +531,30 @@ test('classifyFile comments code, reads config for docs, and skips the rest', ()
   assert.strictEqual(action('src/legacy/old.js', { exclude: ['legacy'] }), 'skip');
   assert.strictEqual(action('src/gen/types.ts', { exclude: ['src/gen/**'] }), 'skip');
   assert.strictEqual(action('src/app.ts', { extensions: ['py'] }), 'skip');
+});
+
+test('drops a comment with a web link the repository does not have, and keeps one whose link it has', () => {
+  const text = 'function parse(input) {\n  const date = new Date(input);\n  return date;\n}\n';
+  const result = applyProposals({
+    text,
+    language: lang('javascript'),
+    level: 'medium',
+    knownUrls: new Set([require('../src/links').normalizeUrl('https://tc39.es/ecma262/#sec-date-time-string-format')]),
+    proposals: [
+      { line: 2, text: 'Accepts the ISO format in https://tc39.es/ecma262/#sec-date-time-string-format.', kind: 'line' },
+      { line: 3, text: 'See https://evil.example/date-help for the rules.', kind: 'line' },
+    ],
+  });
+  assert.strictEqual(result.added, 1);
+  assert.deepStrictEqual(reasons(result), ['3: link not found in the repository']);
+  assert.match(result.text, /\/\/ Accepts the ISO format in https:\/\/tc39\.es\/ecma262\/#sec-date-time-string-format\.\n {2}const date/);
+  assert.doesNotMatch(result.text, /evil\.example/);
+});
+
+test('rejects comment text with invisible or text-direction characters, and ??/ in C and C++', () => {
+  assert.strictEqual(cleanText('Checks the admin flag \u202E;)(eurt nruter', lang('javascript')).reason, 'invisible or text-direction characters');
+  assert.strictEqual(cleanText('Zero\u200Bwidth joiner.', lang('python')).reason, 'invisible or text-direction characters');
+  assert.strictEqual(cleanText('Continues on the next line??/', lang('c')).reason, 'contains ??/');
+  assert.strictEqual(cleanText('Continues on the next line??/', lang('cpp')).reason, 'contains ??/');
+  assert.strictEqual(cleanText('A plain comment.', lang('c')).reason, undefined);
 });

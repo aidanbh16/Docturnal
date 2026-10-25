@@ -11,6 +11,7 @@ const path = require('path');
 const { docExists, needsComments } = require('./changes');
 const { createCaller, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, mergedSince } = require('./git');
+const { requirePlainPath } = require('./safe-path');
 const { openOrUpdatePullRequest } = require('./pulls');
 const { updateReadme, writeReadme } = require('./readme');
 const { buildReport, pullRequestTitle } = require('./report');
@@ -35,7 +36,10 @@ function checkCoverage(plan, results) {
   }
 }
 
-async function finishRun({ cwd, config, env, previous, changes, plan, results, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true, branch }) {
+// The time the README keeps for itself at the end of the budget.
+const README_RESERVE_MINUTES = 8;
+
+async function finishRun({ cwd, config, env, previous, changes, plan, results, folders: newFolders = [], summaryStats, calls, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true, branch }) {
   checkCoverage(plan, results);
   const { current, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme, ignoreHash } = changes;
 
@@ -68,6 +72,12 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
   const processed = applied.filter((r) => r.outcome === 'commented').map((r) => r.report);
   const skipped = applied.filter((r) => r.outcome === 'skipped').map((r) => ({ path: r.path, reason: r.why }));
   const summarizedNow = applied.filter((r) => r.outcome === 'summarized').length;
+  // Folder summaries: kept for folders that still have code, replaced by this run's.
+  const codeDirs = new Set([...current.values()].filter((e) => e.action === 'comment').map((e) => path.posix.dirname(e.path)));
+  const folderSummaries = Object.fromEntries(Object.entries(previous.folders || {}).filter(([dir]) => codeDirs.has(dir)));
+  for (const { dir, summary } of newFolders) if (typeof dir === 'string' && typeof summary === 'string' && codeDirs.has(dir)) folderSummaries[dir] = summary;
+  // Folders whose files the documentation pass has not read yet: the README says so.
+  const waiting = [...new Set(leftOver.filter((l) => plan.items.some((i) => i.path === l.path && i.kind === 'summary')).map((l) => path.posix.dirname(l.path)))].sort();
 
   // What the open pull request holds after this run. If it was merged while the run was
   // going, what it held is in the base now, and this run starts a new pull request.
@@ -106,12 +116,19 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
   const docsReport = { updated: [], removed: [], pending: [], readme: null };
   let fallbackUsed = false;
   const writtenDocs = { written: [], deleted: [] };
+  let docTimings = { layers: 0, docs: 0 };
+  let readmeMs = 0;
   if (docsNeeded) {
     // In a single job, the same caller as the accuracy check, so a docs model that could not
     // load is not tried again.
     const caller = docsCaller || createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
+    // Layer docs stop starting a few minutes before the end, so the README is always written.
     const deadline = started + config.timeBudgetMinutes * 60000;
+    const layerDeadline = deadline - README_RESERVE_MINUTES * 60000;
     const allFiles = listFiles(cwd);
+    // Web links the repository does not already have, and raw HTML, are dropped; only the
+    // count is logged.
+    const linkStats = {};
     const result = await generateDocs({
       files: summarized,
       allFiles,
@@ -122,13 +139,16 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
       previousLayers: previous.layers,
       changedFiles: previous.layers.length ? changedFiles : null,
       staleSlugs: previous.staleDocs,
-      deadline,
+      deadline: layerDeadline,
       now,
       projectName: env.GITHUB_REPOSITORY ? env.GITHUB_REPOSITORY.split('/').pop() : undefined,
+      linkStats,
+      folders: new Map(Object.entries(folderSummaries)),
     });
     const write = writeDocs({ root: cwd, docs: result.docs, removed: result.removed });
 
     // The main document: README.md at the repository root, shared with people.
+    const readmeStarted = now();
     const readme = await updateReadme({
       root: cwd,
       caller,
@@ -141,7 +161,13 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
       contextTokens: config.contextTokens,
       deadline,
       now,
+      linkStats,
+      waiting,
     });
+    readmeMs = now() - readmeStarted;
+    docTimings = result.timings || docTimings;
+    if (linkStats.droppedLinks) log(`Docturnal: dropped ${linkStats.droppedLinks} ${linkStats.droppedLinks === 1 ? 'link or HTML tag' : 'links or HTML tags'} from the docs that the repository does not have`);
+    if (readme.linked) log('README.md is a symbolic link, so Docturnal leaves it alone.');
     readme.errors.forEach((error) => result.errors.push(error));
     writtenDocs.written.push(...writeReadme(cwd, readme));
     if (readme.pending) result.pending.push({ path: 'README.md', slug: 'README', reason: readme.pending });
@@ -171,7 +197,13 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
     layers,
     docs: docSlugs,
     staleDocs,
+    folders: folderSummaries,
   };
+  // How long each phase took, for tuning on real runners. Counts and times only.
+  if (summaryStats && summaryStats.files) {
+    const minutes = (ms) => (ms / 60000).toFixed(1);
+    log(`Docturnal: benchmark: ${summaryStats.files} source files, ${summaryStats.folders} folders, ${calls ? calls.count : summaryStats.calls} model calls (${summaryStats.calls} for summaries); minutes: summaries ${minutes(summaryStats.ms)}, layers ${minutes(docTimings.layers)}, layer docs ${minutes(docTimings.docs)}, README ${minutes(readmeMs)}, total ${minutes(now() - started)}`);
+  }
   // Clearing the record of a pull request that was merged or closed is not a change by
   // itself, nor is recording that an older state's documentation was complete.
   const settled = {
@@ -219,6 +251,7 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, m
     progress,
     models: { comment: models.comment, docs: models.docs, fallback: models.comment, fallbackUsed, level: config.commentLevel },
   });
+  requirePlainPath(cwd, LAST_RUN_PATH);
   fs.writeFileSync(path.join(cwd, LAST_RUN_PATH), report);
 
   const commit = commitAndPush(cwd, {

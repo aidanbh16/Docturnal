@@ -10,7 +10,8 @@ const fs = require('fs');
 
 const { findChanges } = require('./changes');
 const { readConfig, ConfigError } = require('./config');
-const { prepareBranch } = require('./git');
+const { BaseBranchError, prepareBranch } = require('./git');
+const { LinkError } = require('./safe-path');
 const { docsDone, nothingToCover, openPending } = require('./plan');
 const { readState } = require('./state');
 
@@ -32,6 +33,10 @@ function precheck({ cwd = process.cwd(), env = process.env, log = console.log } 
     return { changed: true, base: env.BASE_BRANCH || '', reasons: [] };
   }
   const branch = prepareBranch(cwd, { base: env.BASE_BRANCH });
+  if (branch.mode === 'foreign') {
+    log(`docturnal/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed.`);
+    return { changed: false, base: branch.base, reasons: [] };
+  }
   const previous = readState(cwd);
   const changes = findChanges(cwd, config, previous);
 
@@ -74,7 +79,8 @@ if (require.main === module) {
     const result = precheck();
     writeOutputs(process.env, { changed: String(result.changed), base: result.base });
   } catch (err) {
-    console.error(`::error::${err instanceof ConfigError ? err.message : err.stack || err.message}`);
+    const plain = err instanceof ConfigError || err instanceof BaseBranchError || err instanceof LinkError;
+    console.error(`::error::${plain ? err.message : err.stack || err.message}`);
     process.exitCode = 1;
   }
 }

@@ -311,7 +311,13 @@ describe('coverage over several runs', () => {
     assert.strictEqual(result.code, 0, result.stderr);
     const kinds = mock.requests.map((r) => r.format && r.format.properties ? Object.keys(r.format.properties).join(',') : 'text');
     assert.ok(!kinds.some((k) => k.includes('comments') || k.includes('verdicts')), kinds.join(' | '));
-    assert.strictEqual(mock.requests.filter((r) => r.messages[0].content.startsWith('You read one source file')).length, 21);
+    // One summary call per folder, not per file.
+    const folderCalls = mock.requests.filter((r) => r.messages[0].content.startsWith('You describe one folder'));
+    const docState = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
+    const dirs = new Set(Object.keys(docState.files).filter((f) => f.endsWith('.js')).map((f) => path.posix.dirname(f)));
+    assert.strictEqual(folderCalls.length, dirs.size);
+    assert.ok(dirs.size < 21);
+    assert.strictEqual(Object.values(docState.files).filter((e) => typeof e.summary === 'string').length, 21);
     // Docs only: the code is unchanged, and the layer docs and the README are written.
     for (let i = 0; i < 21; i++) {
       const file = i === 20 ? 'src/index.js' : `src/api/handler${String(i).padStart(2, '0')}.js`;
@@ -466,7 +472,8 @@ describe('the time budget', () => {
   before(async () => {
     mock = await startMockOllama();
     const files = {};
-    for (let i = 0; i < 6; i++) files[`src/f${i}.js`] = fn(`f${i}`);
+    // One file in each folder, so each summary is one call.
+    for (let i = 0; i < 6; i++) files[`src/m${i}/f${i}.js`] = fn(`f${i}`);
     repo.commit(files, 'Initial commit');
   });
   after(async () => {
@@ -477,7 +484,8 @@ describe('the time budget', () => {
   it('stops starting work when the budget is nearly used, and commits what is finished', async () => {
     const { run } = require('../src/main');
     const cwd = repo.clone();
-    // Each model call takes 10 simulated minutes; the budget is 60 minutes, and new work stops at 35.
+    // Each model call takes 10 simulated minutes; the budget is 60 minutes, and in the
+    // documentation pass new summaries stop at 20, leaving 40 for the docs.
     let clock = Date.parse('2026-10-24T00:00:00Z');
     const chat = async (request) => {
       clock += 10 * 60000;
@@ -495,14 +503,14 @@ describe('the time budget', () => {
     });
     // The budget's margin before the job's timeout is too small, and the log says so.
     assert.ok(logs.some((l) => /^::warning::time-budget-minutes \(60\) leaves less than 20 minutes before the job's timeout-minutes \(70\)/.test(l)));
-    // Four files were read before new work stopped; the other two wait for the next run.
-    assert.strictEqual(result.leftOver.length, 2);
+    // Three folders were read before new work stopped; the other three wait for the next run.
+    assert.strictEqual(result.leftOver.length, 3);
     assert.ok(result.leftOver.every((l) => l.reason === 'time budget'));
     assert.strictEqual(result.changed, true);
     const state = JSON.parse(execFileSync('git', ['show', 'HEAD:.docturnal/state.json'], { cwd, env: repo.gitEnv, encoding: 'utf8' }));
-    assert.strictEqual(Object.values(state.files).filter((e) => typeof e.summary === 'string').length, 4);
+    assert.strictEqual(Object.values(state.files).filter((e) => typeof e.summary === 'string').length, 3);
     assert.strictEqual(state.docsComplete, false);
-    assert.match(fs.readFileSync(path.join(cwd, '.docturnal/last-run.md'), 'utf8'), /- \*\*Documentation:\*\* in progress, 4 of 6 files read\. The rest follow on the next run\./);
+    assert.match(fs.readFileSync(path.join(cwd, '.docturnal/last-run.md'), 'utf8'), /- \*\*Documentation:\*\* in progress, 3 of 6 files read\. The rest follow on the next run\./);
   });
 });
 
@@ -602,8 +610,11 @@ describe('a state from before gradual coverage', () => {
     try {
       const result = await runMain(repo, repo.clone(), mock);
       assert.strictEqual(result.code, 0, result.stderr);
-      const summaries = mock.requests.filter((r) => r.messages[0].content.startsWith('You read one source file'));
-      assert.strictEqual(summaries.length, 6);
+      // The six missed files share a folder: one call reads them all.
+      const summaries = mock.requests.filter((r) => r.messages[0].content.startsWith('You describe one folder'));
+      assert.strictEqual(summaries.length, 1);
+      assert.match(summaries[0].messages[1].content, /^Files in the folder src\./);
+      assert.strictEqual((summaries[0].messages[1].content.match(/^- missed/gm) || []).length, 6);
       assert.ok(!mock.requests.some((r) => r.format && r.format.properties && r.format.properties.comments));
       const state = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
       assert.strictEqual(state.docsComplete, true);

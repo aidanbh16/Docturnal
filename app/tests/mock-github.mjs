@@ -22,6 +22,8 @@ export function createMockGitHub({
   // codes: OAuth code -> user token, each usable once like GitHub's; installations: user
   // token -> installations it can access; clientSecret: when set, the only accepted secret;
   // authorizeAs: the user token that the authorize page issues new codes for.
+  // logins: user token -> login. repositories: installation ID -> its repositories, as
+  // [{ full_name, admin: [logins with admin], read: [other logins that can see it] }].
   oauth = { codes: {}, installations: {} },
 } = {}) {
   const state = {
@@ -84,6 +86,44 @@ export function createMockGitHub({
       if (searchParams.get('state')) back.searchParams.set('state', searchParams.get('state'));
       return new Response(null, { status: 302, headers: { location: back.toString() } });
     }
+    // Revoking a user token, with the app's client ID and secret.
+    const revoke = pathname.match(/^\/applications\/([^/]+)\/token$/);
+    if (method === 'DELETE' && revoke) {
+      const [id, secret] = atob(String(headers.authorization || '').replace(/^Basic /, '')).split(':');
+      if (id !== revoke[1] || (oauth.clientSecret && secret !== oauth.clientSecret)) return json(401, { message: 'Bad credentials' });
+      (state.revoked = state.revoked || []).push(body.access_token);
+      return new Response(null, { status: 204 });
+    }
+    if (method === 'GET' && pathname === '/user') {
+      const token = String(headers.authorization || '').replace(/^Bearer /, '');
+      const login = (oauth.logins || {})[token];
+      if (!login) return json(401, { message: 'Bad credentials' });
+      return json(200, { login });
+    }
+    // The repositories of an installation that the signed-in user can see, with the user's
+    // permission on each, like GitHub's.
+    const userRepos = pathname.match(/^\/user\/installations\/(\d+)\/repositories$/);
+    if (method === 'GET' && userRepos) {
+      const token = String(headers.authorization || '').replace(/^Bearer /, '');
+      const login = (oauth.logins || {})[token];
+      if (!login) return json(401, { message: 'Bad credentials' });
+      const all = (oauth.repositories || {})[userRepos[1]] || [];
+      const visible = all.filter((r) => (r.admin || []).includes(login) || (r.read || []).includes(login));
+      const perPage = Number(searchParams.get('per_page') || 30);
+      const page = Number(searchParams.get('page') || 1);
+      const slice = visible.slice((page - 1) * perPage, page * perPage);
+      state.userRepoPages = (state.userRepoPages || 0) + 1;
+      return json(200, {
+        total_count: visible.length,
+        repositories: slice.map((r) => ({ full_name: r.full_name, permissions: { admin: (r.admin || []).includes(login), push: true, pull: true } })),
+      });
+    }
+    // As the app: every repository of the installation the token was made for.
+    if (method === 'GET' && pathname === '/installation/repositories') {
+      const id = String(headers.authorization || '').replace(/^(?:token|Bearer) ghs_test_/, '');
+      const all = (oauth.repositories || {})[id] || [];
+      return json(200, { total_count: all.length, repositories: all.slice(0, Number(searchParams.get('per_page') || 30)).map((r) => ({ full_name: r.full_name })) });
+    }
     if (method === 'GET' && pathname === '/user/installations') {
       const token = String(headers.authorization || '').replace(/^Bearer /, '');
       const installations = oauth.installations[token];
@@ -92,7 +132,7 @@ export function createMockGitHub({
     }
 
     if (method === 'POST' && /^\/app\/installations\/\d+\/access_tokens$/.test(pathname)) {
-      return json(201, { token: 'ghs_test', expires_at: new Date(Date.now() + 3600e3).toISOString(), permissions: {}, repository_selection: 'selected' });
+      return json(201, { token: `ghs_test_${pathname.split('/')[3]}`, expires_at: new Date(Date.now() + 3600e3).toISOString(), permissions: {}, repository_selection: 'selected' });
     }
 
     const match = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);

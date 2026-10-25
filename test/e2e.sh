@@ -133,8 +133,8 @@ merge_pull_request() {
 # --- Run 1: the first run documents the whole project, and comments nothing ---
 run_docturnal run1
 [ "$(remote_sha)" != none ] || fail "run 1 did not push docturnal/update"
-expect_count "run 1 summaries" '"kind":"summary"' 4
-expect_count "run 1 summaries with the comment model" '"model":"comment-model","kind":"summary"' 4
+expect_count "run 1 summaries, one per folder" '"kind":"folder"' 3
+expect_count "run 1 summaries with the comment model" '"model":"comment-model","kind":"folder"' 3
 expect_count "run 1 comments" '"kind":"comments"' 0
 expect_count "run 1 accuracy checks" '"kind":"accuracy"' 0
 expect_count "run 1 layers" '"kind":"layers"' 1
@@ -177,7 +177,7 @@ expect_count "run 1b comment model only for comments" '"model":"comment-model","
 # The docs model is loaded once, then checks the comments in each commented file.
 expect_count "run 1b docs model loaded before the check" '"model":"docs-model","kind":"load"' 1
 expect_count "run 1b accuracy checks with the docs model" '"model":"docs-model","kind":"accuracy"' 4
-expect_count "run 1b summaries" '"kind":"summary"' 0
+expect_count "run 1b summaries" '"kind":"folder"' 0
 contains "$(remote_file .docturnal/state.json)" '"comments": [' "run 1b state.json records Docturnal's comments"
 LAST_RUN="$(remote_file .docturnal/last-run.md)"
 [ "$(head -n 1 <<< "$LAST_RUN")" = "# Docturnal: comments and documentation" ] || fail "run 1b title"
@@ -408,14 +408,14 @@ grep -q '^max-parallel=3$' "$P/plan.out" || fail "run 13 plan max-parallel"
 expect_count "run 13 plan makes no model calls" '"kind"' 0
 for shard in 0 1 2; do
   run_job "work$shard" work INPUT_SHARD=$shard
-  expect_count "run 13 worker $shard summaries" '"kind":"summary"' 15
+  expect_count "run 13 worker $shard summaries, one folder call for its 15 files" '"kind":"folder"' 1
   expect_count "run 13 worker $shard uses only the comment model" '"model":"docs-model"' 0
   grep -q 'pushed' "$RUN_LOG" && fail "run 13 worker $shard pushed"
 done
 [ "$(git --git-dir="$P/remote.git" rev-parse -q --verify refs/heads/docturnal/update || echo none)" = none ] || fail "run 13 pushed before the finish"
 run_job finish finish
 expect_count "run 13 finish writes the docs" '"kind":"layers"' 1
-expect_count "run 13 finish reads nothing again" '"kind":"summary"' 0
+expect_count "run 13 finish reads nothing again" '"kind":"folder"' 0
 grep -q 'pushed docturnal/update' "$RUN_LOG" || fail "run 13 finish did not push"
 P_STATE="$(MSYS2_ARG_CONV_EXCL='docturnal/' git --git-dir="$P/remote.git" show docturnal/update:.docturnal/state.json)"
 [ "$(node -e "const s = JSON.parse(process.argv[1]); console.log(Object.values(s.files).filter((e) => typeof e.summary === 'string').length)" "$P_STATE")" = "45" ] || fail "run 13 lost or repeated files"

@@ -171,14 +171,24 @@ describe('pre-check', () => {
     assert.strictEqual(precheck().outputs.changed, 'false');
   });
 
-  it('runs when a generated doc is missing', () => {
+  it('does not add to docturnal/update while it has a commit from someone else', () => {
     const cwd = clone();
     git(cwd, 'checkout', '-q', 'docturnal/update');
-    const docs = fs.readdirSync(path.join(cwd, 'docs')).filter((name) => name !== 'README.md');
-    assert.ok(docs.length > 0);
-    git(cwd, 'rm', '-q', `docs/${docs[0]}`);
-    git(cwd, 'commit', '-qm', 'Remove a generated doc');
+    fs.appendFileSync(path.join(cwd, 'README.md'), '\nA reviewer note.\n');
+    git(cwd, 'commit', '-qam', 'A reviewer edits the pull request');
     git(cwd, 'push', '-q', 'origin', 'docturnal/update');
+    const result = precheck();
+    assert.strictEqual(result.outputs.changed, 'false');
+    assert.match(result.log, /^docturnal\/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed\.$/m);
+  });
+
+  it('runs when a generated doc is missing', () => {
+    // The pull request, with the reviewer's commit, is merged; then someone deletes a doc.
+    git(seed, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'docturnal/update');
+    const docs = fs.readdirSync(path.join(seed, 'docs')).filter((name) => name !== 'README.md');
+    assert.ok(docs.length > 0);
+    git(seed, 'rm', '-q', `docs/${docs[0]}`);
+    pushSeed('Remove a generated doc');
 
     const result = precheck();
     assert.strictEqual(result.outputs.changed, 'true');

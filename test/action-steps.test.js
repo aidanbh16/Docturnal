@@ -103,7 +103,7 @@ test('the default mode runs the same steps as before Docturnal for teams', () =>
     'Check for changes',
     'Select models',
     'Restore Ollama models cache',
-    'Find the Ollama version',
+    'Find the pinned Ollama release',
     'Restore Ollama install cache',
     'Install Ollama',
     'Start Ollama',
@@ -116,11 +116,11 @@ test('the default mode runs the same steps as before Docturnal for teams', () =>
   assert.deepStrictEqual(names(quiet), ['Check for changes']);
 });
 
-test('a self-hosted runner never uses actions/cache or the version check, but installs and starts Ollama itself', () => {
+test('a self-hosted runner never uses actions/cache, but installs the pinned Ollama and starts it itself', () => {
   const selfHosted = running({ environment: 'self-hosted', version: '' });
   assert.deepStrictEqual(usesCache(selfHosted), []);
   assert.deepStrictEqual(names(selfHosted), [
-    'Check for changes', 'Select models', 'Install Ollama', 'Start Ollama', 'Pull models', 'Install dependencies', 'Run Docturnal',
+    'Check for changes', 'Select models', 'Find the pinned Ollama release', 'Install Ollama', 'Start Ollama', 'Pull models', 'Install dependencies', 'Run Docturnal',
   ]);
   assert.strictEqual(usesCache(running()).length, 2);
 });
@@ -153,12 +153,12 @@ test('the plan job checks for changes and plans the work, with no models, and up
 
 test('a work job downloads the plan, sets up its models, does its shard, and uploads its results', () => {
   assert.deepStrictEqual(names(running({ mode: 'work' })), [
-    'Check for changes', 'Download the plan', 'Select models', 'Restore Ollama models cache', 'Find the Ollama version', 'Restore Ollama install cache',
+    'Check for changes', 'Download the plan', 'Select models', 'Restore Ollama models cache', 'Find the pinned Ollama release', 'Restore Ollama install cache',
     'Install Ollama', 'Start Ollama', 'Pull models', 'Install dependencies', 'Run Docturnal', 'Upload the work results',
   ]);
   const upload = steps().find((s) => s.name === 'Upload the work results');
   assert.match(ACTION, /name: docturnal-shard-\$\{\{ inputs\.shard \}\}\n {8}path: \$\{\{ runner\.temp \}\}\/docturnal-results\/shard-\$\{\{ inputs\.shard \}\}\.json\n {8}retention-days: 1\n/);
-  assert.strictEqual(upload.uses, 'actions/upload-artifact@v7');
+  assert.strictEqual(upload.uses, 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2');
 });
 
 test('the cleanup job only deletes the artifacts: no download, models, or run', () => {
@@ -172,4 +172,24 @@ test('the finish job downloads everything, finishes, and always deletes the arti
   // The deletion runs even when the finish fails.
   assert.strictEqual(steps().find((s) => s.name === "Delete the run's artifacts").if, "always() && (inputs.mode == 'finish' || inputs.mode == 'cleanup')");
   assert.match(ACTION, /name: docturnal-plan\n {8}path: \$\{\{ runner\.temp \}\}\/docturnal-plan\n {8}retention-days: 1\n/);
+});
+
+test('every action action.yml uses is pinned to a full commit SHA, with its version in a comment', () => {
+  const references = [...ACTION.matchAll(/^\s*uses:\s*(.+)$/gm)].map((m) => m[1]);
+  assert.ok(references.length >= 6);
+  for (const reference of references) assert.match(reference, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, reference);
+});
+
+test('Ollama is pinned: no install script, no latest-version lookup, no service, no sudo', () => {
+  const code = ACTION.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  assert.doesNotMatch(code, /install\.sh|releases\/latest|systemctl|sudo/);
+  const find = steps().find((s) => s.name === 'Find the pinned Ollama release');
+  const version = find.env.OLLAMA_VERSION.replace(/'/g, '');
+  const pins = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pins', 'ollama.json'), 'utf8'));
+  assert.ok(pins[version], `pins/ollama.json has checksums for the pinned version ${version}`);
+  for (const arch of ['amd64', 'arm64']) assert.match(pins[version][arch].sha256, /^[0-9a-f]{64}$/);
+  // The install cache key names the version and the checksum.
+  assert.match(ACTION, /key: docturnal-ollama-install-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ steps\.ollama\.outputs\.key \}\}\n/);
+  // Every pulled model is verified before the run.
+  assert.match(ACTION, /node "\$GITHUB_ACTION_PATH\/src\/verify-models\.js" \$verify\n/);
 });

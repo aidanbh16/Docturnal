@@ -27,11 +27,15 @@ export type Choices = Omit<Settings, 'repos'>;
 
 export const DEFAULT_SETTINGS: Choices = { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', existingCode: 'gradual' };
 
-// The schedule is copied into the settings key's metadata, so the hourly cron can find due
-// installations from the key list without reading every entry.
+// The schedule, and the choices a run needs, are copied into the settings key's metadata, so
+// the hourly cron finds due installations and what to send them from the key list alone,
+// without one read per installation. Keys saved before the choices were copied have only the
+// schedule; the cron reads those.
 export interface ScheduleMetadata {
   time: number;
   timeZone: string;
+  commentLevel?: CommentLevel;
+  existingCode?: ExistingCode;
 }
 
 const PREFIX = 'install:';
@@ -125,7 +129,7 @@ export class SettingsStore {
 
   // Saves the settings page's choices. It never touches the repository keys.
   async putChoices(installationId: number, choices: Choices): Promise<void> {
-    const metadata: ScheduleMetadata = { time: choices.time, timeZone: choices.timeZone };
+    const metadata: ScheduleMetadata = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode };
     const value: Choices = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode };
     await this.kv.put(this.settingsKey(installationId), JSON.stringify(value), { metadata });
   }
@@ -148,26 +152,28 @@ export class SettingsStore {
 
   // Yields every installation with at least one repository, its repositories, and its
   // schedule from the settings key's metadata, or the default schedule without one.
-  async *schedules(): AsyncGenerator<{ installationId: number; schedule: ScheduleMetadata; repos: string[] }> {
-    const installations = new Map<number, { repos: string[]; schedule: ScheduleMetadata }>();
+  async *schedules(): AsyncGenerator<{ installationId: number; schedule: ScheduleMetadata; repos: string[]; hasSettings: boolean }> {
+    const installations = new Map<number, { repos: string[]; schedule: ScheduleMetadata; hasSettings: boolean }>();
     for await (const key of this.keys<ScheduleMetadata>(PREFIX)) {
       const match = KEY.exec(key.name);
       if (!match) continue;
       const installationId = Number(match[1]);
-      const entry = installations.get(installationId) ?? { repos: [], schedule: { time: DEFAULT_SETTINGS.time, timeZone: DEFAULT_SETTINGS.timeZone } };
+      const entry = installations.get(installationId) ?? { repos: [], schedule: { time: DEFAULT_SETTINGS.time, timeZone: DEFAULT_SETTINGS.timeZone }, hasSettings: false };
       if (match[2] !== undefined) {
         entry.repos.push(match[2]);
       } else {
         const meta = key.metadata;
+        entry.hasSettings = true;
         entry.schedule = {
           time: meta && isValidHour(meta.time) ? meta.time : DEFAULT_SETTINGS.time,
           timeZone: meta && isValidTimeZone(meta.timeZone) ? meta.timeZone : DEFAULT_SETTINGS.timeZone,
+          ...(meta && isCommentLevel(meta.commentLevel) && isExistingCode(meta.existingCode) ? { commentLevel: meta.commentLevel, existingCode: meta.existingCode } : {}),
         };
       }
       installations.set(installationId, entry);
     }
     for (const [installationId, entry] of installations) {
-      if (entry.repos.length) yield { installationId, schedule: entry.schedule, repos: entry.repos.sort() };
+      if (entry.repos.length) yield { installationId, schedule: entry.schedule, repos: entry.repos.sort(), hasSettings: entry.hasSettings };
     }
   }
 }

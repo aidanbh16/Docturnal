@@ -11,7 +11,8 @@ export const WORKFLOW_FILE = 'docturnal.yml';
 // - 2: adds the concurrency group, so a second run waits for the first.
 // - 3: actions/checkout v7, which runs on Node.js 24 instead of the deprecated Node.js 20.
 // - 4: the existing-code input, for the "Existing code" setting.
-export const WORKFLOW_VERSION = 4;
+// - 5: actions/checkout pinned to a full commit SHA instead of a version tag.
+export const WORKFLOW_VERSION = 5;
 
 // The job's timeout leaves at least 20 minutes after the Action's time budget, for setup and
 // the commit, so a run never loses its work to the timeout.
@@ -54,7 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${JOB_TIMEOUT_MINUTES}
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to a full commit SHA, so the code that checks out your repository cannot change
+      # without a new version of this workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: ${actionRepository}@v1

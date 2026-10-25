@@ -18,6 +18,29 @@ const DROP_LABELS = {
 
 const VERIFIERS = { typescript: 'Yes (TypeScript)', python: 'Yes (Python)' };
 
+// File names, headings, and layer names come from the repository, and this text becomes a
+// pull request description under the app's name. code() puts a name in a code span its own
+// backticks cannot end; plainText() escapes Markdown, mentions, and autolinks.
+const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/g;
+
+function code(text, { table = false } = {}) {
+  let value = String(text).replace(CONTROL, ' ');
+  if (table) value = value.replace(/\|/g, '\\|');
+  const longest = Math.max(0, ...(value.match(/`+/g) || []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = value.startsWith('`') || value.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${value}${pad}${fence}`;
+}
+
+function plainText(text) {
+  return String(text)
+    .replace(CONTROL, ' ')
+    .replace(/[\\`*_[\]<>#!|~]/g, '\\$&')
+    .replace(/@/g, '&#64;')
+    .replace(/:\/\//g, ':&#47;&#47;')
+    .replace(/\bwww\./gi, (m) => `${m.slice(0, 3)}&#46;`);
+}
+
 function cell(text) {
   return String(text).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
 }
@@ -85,7 +108,7 @@ function progressLines(p) {
   if (p.pending.docs) holds.push('documentation for the whole project');
   if (p.pending.changed.length) holds.push(`comments on ${plural(p.pending.changed.length, 'new or changed file')}`);
   if (p.pending.batch) {
-    const where = p.pending.batch.layers.length ? ` in the ${listOf(p.pending.batch.layers)} ${p.pending.batch.layers.length === 1 ? 'layer' : 'layers'}` : '';
+    const where = p.pending.batch.layers.length ? ` in the ${listOf(p.pending.batch.layers.map(plainText))} ${p.pending.batch.layers.length === 1 ? 'layer' : 'layers'}` : '';
     holds.push(`batch ${p.pending.batch.number} of existing code, ${plural(p.pending.batch.files.length, 'file')}${where}`);
   }
   lines.push(`- **This pull request:** ${holds.length ? listOf(holds) : 'updates to the documentation'}.`);
@@ -124,24 +147,24 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
     lines.push('', '## Comments added', '', '| File | Comments added | Checked by a parser | Proposed comments |', '| --- | --- | --- | --- |');
     for (const file of processed) {
       const proposals = file.stats ? proposalSummary(file.stats) : '-';
-      lines.push(`| \`${cell(file.path)}\` | ${file.added} | ${VERIFIERS[file.verifier] || 'No, placement rules only'} | ${cell(proposals)} |`);
+      lines.push(`| ${code(file.path, { table: true })} | ${file.added} | ${VERIFIERS[file.verifier] || 'No, placement rules only'} | ${cell(proposals)} |`);
     }
   }
 
   if (docs.updated.length || docs.removed.length) {
     lines.push('', '## Docs', '');
-    for (const doc of docs.updated) lines.push(`- Updated \`${doc.path}\`${doc.fallback ? ' (written with the fallback model)' : ''}`);
+    for (const doc of docs.updated) lines.push(`- Updated ${code(doc.path)}${doc.fallback ? ' (written with the fallback model)' : ''}`);
     for (const doc of docs.removed) {
       lines.push(/(^|\/)README\.md$/.test(doc)
-        ? `- Removed \`${doc}\` because the main document is now \`README.md\` at the repository root`
-        : `- Removed \`${doc}\` because its layer no longer exists`);
+        ? `- Removed ${code(doc)} because the main document is now \`README.md\` at the repository root`
+        : `- Removed ${code(doc)} because its layer no longer exists`);
     }
   }
 
   // The README lists sections by heading only, never their text.
   const readme = docs.readme;
   if (readme && (readme.updated.length || readme.polished.length || readme.kept.length || readme.notReadded.length)) {
-    const list = (items) => items.map((h) => `"${cell(h)}"`).join(', ');
+    const list = (items) => items.map((h) => `"${plainText(String(h).replace(/\s+/g, ' ').trim())}"`).join(', ');
     lines.push('', '## README', '');
     if (readme.updated.length) lines.push(`- Updated: ${list(readme.updated)}${readme.fallback ? ' (written with the fallback model)' : ''}`);
     if (readme.polished.length) lines.push(`- Polished for clarity: ${list(readme.polished)}`);
@@ -160,20 +183,20 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   if (rejected.length) {
     lines.push('', '## Comments rejected by the safety check', '', '| File | Line | Reason |', '| --- | --- | --- |');
     for (const r of rejected.slice(0, MAX_REJECTION_ROWS)) {
-      lines.push(`| \`${cell(r.path)}\` | ${Number.isInteger(r.line) ? r.line : '-'} | ${cell(r.reason)} |`);
+      lines.push(`| ${code(r.path, { table: true })} | ${Number.isInteger(r.line) ? r.line : '-'} | ${cell(r.reason)} |`);
     }
     if (rejected.length > MAX_REJECTION_ROWS) lines.push('', `${rejected.length - MAX_REJECTION_ROWS} more are not shown.`);
   }
 
   if (skipped.length) {
     lines.push('', '## Files skipped', '');
-    for (const item of skipped) lines.push(`- \`${item.path}\`: skipped, ${item.reason}`);
+    for (const item of skipped) lines.push(`- ${code(item.path)}: skipped, ${item.reason}`);
   }
 
   const waiting = [...leftOver, ...docs.pending];
   if (waiting.length) {
     lines.push('', '## Left for the next run', '');
-    for (const item of waiting) lines.push(`- \`${item.path}\`: ${item.reason}`);
+    for (const item of waiting) lines.push(`- ${code(item.path)}: ${item.reason}`);
   }
 
   lines.push('', '## Models', '', `- Comment model: \`${models.comment}\``, `- Docs model: \`${models.docs}\``, `- Comment level: ${models.level}`);
@@ -183,4 +206,4 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { DOCS_TITLE, UPDATE_TITLE, buildReport, progressLines, proposalSummary, pullRequestTitle };
+module.exports = { DOCS_TITLE, UPDATE_TITLE, buildReport, code, plainText, progressLines, proposalSummary, pullRequestTitle };

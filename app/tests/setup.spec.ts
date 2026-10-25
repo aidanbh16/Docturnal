@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { createHandler, type Env } from '../src/index';
@@ -6,6 +7,17 @@ import { FakeKV } from './fake-kv';
 import { createMockGitHub } from './mock-github.mjs';
 
 const ORIGIN = 'https://docturnal.example';
+// The settings page asks GitHub as the app how many repositories an installation has.
+const PEM = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+// Installation 2 is on the acme organization, with two repositories: dana has admin on both,
+// as an owner would; erin has admin on one and read access to the other; frank sees and
+// administers one of them but cannot see the other.
+const ACME = {
+  2: [
+    { full_name: 'acme/api', admin: ['dana', 'erin', 'frank'] },
+    { full_name: 'acme/web', admin: ['dana'], read: ['erin'] },
+  ],
+};
 const START = Date.parse('2026-10-22T12:00:00Z');
 
 // failExchanges: how many code exchanges fail before GitHub answers normally, with failWith
@@ -17,11 +29,21 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
     oauth: {
       clientSecret,
       // Each code works once, like GitHub's.
-      codes: { 'owner-code': 'token-owner', 'other-code': 'token-other', 'fresh-code': 'token-owner' },
-      installations: {
-        'token-owner': [{ id: 1, account: { login: 'octo' } }],
-        'token-other': [{ id: 99, account: { login: 'mallory' } }],
+      codes: {
+        'owner-code': 'token-owner', 'other-code': 'token-other', 'fresh-code': 'token-owner',
+        'collaborator-code': 'token-collaborator', 'dana-code': 'token-dana', 'erin-code': 'token-erin', 'frank-code': 'token-frank',
       },
+      installations: {
+        'token-owner': [{ id: 1, account: { login: 'octo', type: 'User' } }],
+        'token-other': [{ id: 99, account: { login: 'mallory', type: 'User' } }],
+        // A collaborator on one of octo's repositories sees octo's installation too.
+        'token-collaborator': [{ id: 1, account: { login: 'octo', type: 'User' } }],
+        'token-dana': [{ id: 2, account: { login: 'acme', type: 'Organization' } }],
+        'token-erin': [{ id: 2, account: { login: 'acme', type: 'Organization' } }],
+        'token-frank': [{ id: 2, account: { login: 'acme', type: 'Organization' } }],
+      },
+      logins: { 'token-owner': 'octo', 'token-other': 'mallory', 'token-collaborator': 'carol', 'token-dana': 'dana', 'token-erin': 'erin', 'token-frank': 'frank' },
+      repositories: ACME,
     },
   });
   const kv = new FakeKV();
@@ -30,7 +52,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
   let now = START;
   const env = {
     APP_ID: '12345',
-    PRIVATE_KEY: 'unused',
+    PRIVATE_KEY: PEM,
     WEBHOOK_SECRET: 'webhook-secret',
     CLIENT_ID: 'Iv1.client',
     CLIENT_SECRET: 'client-secret',
@@ -87,14 +109,51 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
     const setCookie = response.headers.get('set-cookie') ?? '';
     expect(setCookie).toMatch(/HttpOnly; Secure; SameSite=Lax; Max-Age=900/);
     const cookie = setCookie.split(';')[0];
-    const form = await (await get('/setup', cookie)).text();
+    const formResponse = await get('/setup', cookie);
+    const csp = formResponse.headers.get('content-security-policy') ?? '';
+    const form = await formResponse.text();
     const csrf = form.match(/name="csrf" value="([^"]+)"/)![1];
-    return { cookie, csrf, form };
+    return { cookie, csrf, form, csp };
   }
   return { gh, kv, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
 }
 
 const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' };
+
+describe('who may change the settings', () => {
+  it('a personal account: the owner may, a collaborator on one of its repositories may not', async () => {
+    const t = setup();
+    const owner = await t.get('/setup?code=owner-code&installation_id=1&setup_action=install');
+    expect(owner.status).toBe(303);
+    const collaborator = await t.get('/setup?code=collaborator-code&installation_id=1&setup_action=install');
+    expect(collaborator.status).toBe(403);
+    expect(collaborator.headers.get('set-cookie')).toBeNull();
+    expect(await collaborator.text()).toContain("Only octo, the account Docturnal is installed on, can change them.");
+    expect(t.logs).toContain('setup 1: rejected, not the account owner');
+    // Both sign-in tokens are revoked once the checks are done, whether the user may or not.
+    expect(t.gh.state.revoked).toEqual(['token-owner', 'token-collaborator']);
+    expect(t.logs.some((l: string) => l.includes('could not revoke'))).toBe(false);
+  });
+
+  it('an organization: someone with admin access to every repository, such as an owner, may', async () => {
+    const t = setup();
+    const response = await t.get('/setup?code=dana-code&installation_id=2&setup_action=install');
+    expect(response.status).toBe(303);
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    expect(await (await t.get('/setup', cookie)).text()).toContain('<strong>acme</strong>');
+  });
+
+  it('an organization: a collaborator without admin on every repository may not, and nor may one who cannot see them all', async () => {
+    const t = setup();
+    for (const [code, reason] of [['erin-code', 'no admin access to one of the repositories'], ['frank-code', 'admin access to 1 of 2 repositories']]) {
+      const response = await t.get(`/setup?code=${code}&installation_id=2&setup_action=install`);
+      expect(response.status).toBe(403);
+      expect(response.headers.get('set-cookie')).toBeNull();
+      expect(await response.text()).toContain('only someone with admin access to all of them, such as an owner of acme, can change them.');
+      expect(t.logs).toContain(`setup 2: rejected, ${reason}`);
+    }
+  });
+});
 
 describe('setup page sign-in', () => {
   it('lets the owner sign in after install and save settings', async () => {
@@ -115,7 +174,7 @@ describe('setup page sign-in', () => {
     const page = await saved.text();
     expect(page).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
     expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' });
-    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles' });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' });
     expect(t.logs).toContain('setup 1: saved 2 AM America/Los_Angeles, heavy comments, existing code none');
     expect(t.kv.repos(1)).toEqual(['octo/hello']);
 
@@ -172,9 +231,15 @@ describe('setup page sign-in', () => {
 });
 
 // Runs the page's inline script with a minimal DOM, the given browser time zone, and a fetch
-// that sends the request to the Worker with the session cookie, as the browser would.
-async function runPageScript(t: ReturnType<typeof setup>, form: string, cookie: string, browserZone: string) {
-  const script = form.match(/<script>([\s\S]*?)<\/script>/)![1];
+// that sends the request to the Worker with the session cookie, as the browser would. It
+// enforces the page's Content-Security-Policy as a browser does: the script runs only with
+// the policy's nonce, and fetch reaches only the page's own origin.
+async function runPageScript(t: ReturnType<typeof setup>, form: string, cookie: string, browserZone: string, csp: string) {
+  const allowed = csp.match(/script-src 'nonce-([^']+)'/)?.[1];
+  const tag = form.match(/<script nonce="([^"]+)">([\s\S]*?)<\/script>/);
+  expect(tag, 'the script carries a nonce').toBeTruthy();
+  expect(tag![1]).toBe(allowed);
+  const script = tag![2];
   const zones = [...form.matchAll(/<option value="([A-Z][^"]*)"( selected)?/g)];
   const select = { value: zones.find((m) => m[2])![1], options: zones.map((m) => ({ value: m[1] })) };
   const unsaved = { textContent: form.match(/<p class="muted" id="unsaved">([^<]*)<\/p>/)![1] };
@@ -187,6 +252,9 @@ async function runPageScript(t: ReturnType<typeof setup>, form: string, cookie: 
   const requests: URLSearchParams[] = [];
   let done: Promise<unknown> = Promise.resolve();
   const fakeFetch = (path: string, init: { method: string; body: URLSearchParams }) => {
+    // connect-src 'self'
+    expect(new URL(path, ORIGIN).origin).toBe(ORIGIN);
+    expect(csp).toContain("connect-src 'self'");
     requests.push(init.body);
     const response = t.handle(new Request(`${ORIGIN}${path}`, {
       method: init.method,
@@ -202,16 +270,46 @@ async function runPageScript(t: ReturnType<typeof setup>, form: string, cookie: 
   return { select, unsaved, requests };
 }
 
+describe('security headers', () => {
+  it('serves the settings page with a CSP whose nonce is on its only script and style, new for each response', async () => {
+    const t = setup({ settings: { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] } });
+    const { cookie, form, csp } = await t.signIn();
+    const value = csp.match(/script-src 'nonce-([A-Za-z0-9+/=]+)'/)![1];
+    expect(csp).toBe(`default-src 'none'; script-src 'nonce-${value}'; style-src 'nonce-${value}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; connect-src 'self'`);
+    expect(form.match(/<script\b[^>]*>/g)).toEqual([`<script nonce="${value}">`]);
+    expect(form.match(/<style\b[^>]*>/g)).toEqual([`<style nonce="${value}">`]);
+    // Nothing the policy would block: no inline handlers, style attributes, or other sources.
+    expect(form).not.toMatch(/\son[a-z]+=|\sstyle=|<link|<img|<iframe|src=/i);
+    const again = (await t.get('/setup', cookie)).headers.get('content-security-policy');
+    expect(again).not.toBe(csp);
+  });
+
+  it('refuses a webhook payload larger than GitHub sends, before reading or verifying it', async () => {
+    const t = setup();
+    const response = await t.handle(new Request(`${ORIGIN}/webhook`, { method: 'POST', headers: { 'content-length': String(26 * 1024 * 1024) }, body: 'x' }));
+    expect(response.status).toBe(413);
+    expect(t.logs).toContain('webhook: rejected, payload too large');
+  });
+
+  it('sends nosniff and HSTS on every response, including errors, webhooks, and unknown paths', async () => {
+    const t = setup();
+    for (const response of [await t.get('/setup'), await t.get('/setup?code=other-code&installation_id=1'), await t.get('/nowhere'), await t.handle(new Request(`${ORIGIN}/webhook`, { method: 'POST', body: '{}' }))]) {
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(response.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains');
+    }
+  });
+});
+
 describe("saving the browser's time zone", () => {
   it('saves it as soon as the page loads, keeping midnight and medium comments', async () => {
     const t = setup({ settings: { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] } });
-    const { cookie, form } = await t.signIn();
-    const { select, unsaved, requests } = await runPageScript(t, form, cookie, 'America/Los_Angeles');
+    const { cookie, form, csp } = await t.signIn();
+    const { select, unsaved, requests } = await runPageScript(t, form, cookie, 'America/Los_Angeles', csp);
 
     expect(requests.map((r) => r.get('detectedTimeZone'))).toEqual(['America/Los_Angeles']);
     expect(select.value).toBe('America/Los_Angeles');
     expect(t.kv.installation(1)).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual', repos: ['octo/hello'] });
-    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 0, timeZone: 'America/Los_Angeles' });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual' });
     expect(unsaved.textContent).toBe('Your time zone, America/Los_Angeles, is saved. If you close this page now, Docturnal runs every night at 12 AM (midnight), America/Los_Angeles time, with medium comments.');
     expect(t.logs).toContain("setup 1: saved the browser's time zone, America/Los_Angeles");
 
@@ -223,8 +321,8 @@ describe("saving the browser's time zone", () => {
 
   it('creates the entry when the install webhook has not stored one yet', async () => {
     const t = setup();
-    const { cookie, form } = await t.signIn();
-    await runPageScript(t, form, cookie, 'Europe/Berlin');
+    const { cookie, form, csp } = await t.signIn();
+    await runPageScript(t, form, cookie, 'Europe/Berlin', csp);
     // Only the settings key is written; repository keys are the webhooks' to create.
     expect([...t.kv.data.keys()]).toEqual(['install:1:settings']);
     expect(t.kv.json('install:1:settings')).toEqual({ time: 0, timeZone: 'Europe/Berlin', commentLevel: 'medium', existingCode: 'gradual' });
@@ -233,8 +331,8 @@ describe("saving the browser's time zone", () => {
   it('sends nothing when the browser is already in New York or its time zone is not listed', async () => {
     for (const zone of ['America/New_York', 'Not/A_Zone']) {
       const t = setup();
-      const { cookie, form } = await t.signIn();
-      const { requests } = await runPageScript(t, form, cookie, zone);
+      const { cookie, form, csp } = await t.signIn();
+      const { requests } = await runPageScript(t, form, cookie, zone, csp);
       expect(requests).toEqual([]);
       expect(t.kv.data.size).toBe(0);
     }

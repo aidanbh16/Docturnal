@@ -26,6 +26,17 @@ function promptOf(body) {
   return (body.messages || []).map((m) => m.content).join('\n');
 }
 
+// A folder summary: a purpose for each file in the digest, named after its first export.
+function folderReply(body) {
+  const digest = body.messages[1].content;
+  const where = (digest.match(/^Files in (?:the folder )?(.+?)\./m) || [])[1] || 'the project';
+  const files = [...digest.matchAll(/^- ([^:\n]+): (?:(?:exports|defines) ([\w$]+))?/gm)].map((m) => ({
+    name: m[1],
+    purpose: m[2] ? `Defines ${m[2]} for ${m[1]}.` : `Supports ${m[1]}.`,
+  }));
+  return { summary: `Holds the code in ${where}.`, files };
+}
+
 function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
   const prompt = promptOf(body);
@@ -34,6 +45,7 @@ function kindOf(body) {
   if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
   if (props.summary && props.symbols) return 'summary';
+  if (props.summary && props.files) return 'folder';
   if (props.layers) return 'layers';
   if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
@@ -137,6 +149,7 @@ function defaultHandler({ oomModels = [] } = {}) {
         const { summary, symbols } = commentsReply(body);
         return { summary, symbols };
       }
+      case 'folder': return folderReply(body);
       case 'blocks': return blocksReply(body);
       case 'accuracy': return accuracyReply(body);
       case 'load': return '';
@@ -149,7 +162,7 @@ function defaultHandler({ oomModels = [] } = {}) {
   };
 }
 
-// models: the names /api/tags lists. A POST to /api/pull adds the model to it, the way a
+// models: what /api/tags lists, names or { name, digest } entries. A POST to /api/pull adds the model to it, the way a
 // server pulls a model; pulls lists each one pulled.
 async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest, models = [] } = {}) {
   const requests = [];
@@ -162,7 +175,7 @@ async function startMockOllama(handler = defaultHandler(), { port = 0, onRequest
     req.on('end', async () => {
       if (req.method === 'GET' && req.url === '/api/tags') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ models: models.map((name) => ({ name })) }));
+        res.end(JSON.stringify({ models: models.map((m) => (typeof m === 'string' ? { name: m } : m)) }));
         return;
       }
       if (req.method === 'POST' && req.url === '/api/pull') {

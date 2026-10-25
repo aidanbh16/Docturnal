@@ -12,8 +12,10 @@ const path = require('path');
 
 const { findChanges } = require('./changes');
 const { readConfig, ConfigError } = require('./config');
+const { forgetKnownUrls } = require('./links');
+const { LinkError } = require('./safe-path');
 const { FinishError, finishRun } = require('./finish');
-const { prepareBranch, recentActivity } = require('./git');
+const { BaseBranchError, prepareBranch, recentActivity } = require('./git');
 const { rankFiles, selectBatch } = require('./importance');
 const { readTotalMemory, selectModels } = require('./models');
 const ollama = require('./ollama');
@@ -83,6 +85,8 @@ function makePlan({ cwd, env, config, log }) {
 
 async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ollama.chat, now = Date.now, log = console.log } = {}) {
   const config = readConfig(env);
+  // The URLs the repository has are read afresh for each run.
+  forgetKnownUrls(cwd);
   const push = !/^(false|0|no)$/i.test((env.PUSH || 'true').trim());
   const started = now();
   if (config.jobTimeoutMinutes && config.timeBudgetMinutes > config.jobTimeoutMinutes - TIMEOUT_MARGIN_MINUTES) {
@@ -90,7 +94,13 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
       'If the job times out, the run loses its work. Lower time-budget-minutes or raise timeout-minutes.');
   }
   // Every model call is logged with its duration, and the run's time budget is its only limit.
-  const chat = ollama.loggedChat(baseChat, { log, now, deadline: started + config.timeBudgetMinutes * 60000 });
+  const logged = ollama.loggedChat(baseChat, { log, now, deadline: started + config.timeBudgetMinutes * 60000 });
+  // Counted for the benchmark line.
+  const calls = { count: 0 };
+  const chat = (request) => {
+    calls.count++;
+    return logged(request);
+  };
 
   if (config.mode === 'cleanup') return { cleanup: true };
 
@@ -117,11 +127,11 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
   if (config.mode === 'all') {
     const { branch, previous, changes, plan } = makePlan({ cwd, env, config, log });
     if (!plan.hasWork) {
-      log(plan.noSource ? 'Docturnal: no source files to document or comment.' : 'Docturnal: nothing changed since the last run.');
+      log(plan.foreign ? 'Docturnal: docturnal/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed.' : plan.noSource ? 'Docturnal: no source files to document or comment.' : 'Docturnal: nothing changed since the last run.');
       return { changed: false, processed: [], leftOver: [], plan };
     }
-    const { results, docsCaller } = await processItems({ cwd, items: plan.items, previous, config, models, chat, now, started, log });
-    return finishRun({ cwd, config, env, previous, changes, plan, results, models, chat, docsCaller, now, started, log, push, branch });
+    const { results, docsCaller, folders, summaryStats } = await processItems({ cwd, items: plan.items, previous, config, models, chat, now, started, log });
+    return finishRun({ cwd, config, env, previous, changes, plan, results, folders, summaryStats, calls, models, chat, docsCaller, now, started, log, push, branch });
   }
 
   // "work" and "finish" rebuild exactly the tree the plan saw.
@@ -134,20 +144,23 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     if (!paths) throw new ConfigError(`The plan has no shard ${config.shard}.`);
     const items = paths.map((p) => plan.items.find((i) => i.path === p));
     log(`Docturnal: shard ${config.shard} of ${plan.shards.length}, ${items.length} files`);
-    const { results } = await processItems({ cwd, items, previous, config, models, chat, now, started, log });
+    const { results, folders } = await processItems({ cwd, items, previous, config, models, chat, now, started, log });
     const dir = resultsDir(env);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `shard-${config.shard}.json`), JSON.stringify({ shard: config.shard, results }));
+    fs.writeFileSync(path.join(dir, `shard-${config.shard}.json`), JSON.stringify({ shard: config.shard, results, folders }));
     return { results };
   }
 
   // finish: the results of every work job that finished are applied. A job that failed, or
   // ran out of time, uploaded nothing; its files wait for the next run.
   const results = [];
+  const folders = [];
   for (let s = 0; s < plan.shards.length; s++) {
     const file = path.join(resultsDir(env), `shard-${s}.json`);
     if (fs.existsSync(file)) {
-      results.push(...JSON.parse(fs.readFileSync(file, 'utf8')).results);
+      const shard = JSON.parse(fs.readFileSync(file, 'utf8'));
+      results.push(...shard.results);
+      folders.push(...(Array.isArray(shard.folders) ? shard.folders : []));
       continue;
     }
     log(`::warning::The work job for shard ${s} did not finish, so its ${plural(plan.shards[s].length, 'file')} wait for the next run.`);
@@ -157,7 +170,7 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     }
   }
   const changes = findChanges(cwd, config, previous);
-  return finishRun({ cwd, config, env, previous, changes, plan, results, models, chat, now, started, log, push, branch });
+  return finishRun({ cwd, config, env, previous, changes, plan, results, folders, calls, models, chat, now, started, log, push, branch });
 }
 
 function plural(count, word) {
@@ -166,7 +179,7 @@ function plural(count, word) {
 
 if (require.main === module) {
   run().catch((err) => {
-    const plain = err instanceof ConfigError || err instanceof PullRequestError || err instanceof FinishError;
+    const plain = err instanceof ConfigError || err instanceof PullRequestError || err instanceof FinishError || err instanceof BaseBranchError || err instanceof LinkError;
     console.error(`::error::${plain ? err.message : err.stack || err.message}`);
     process.exitCode = 1;
   });

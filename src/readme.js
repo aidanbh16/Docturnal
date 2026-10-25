@@ -18,6 +18,8 @@ const fs = require('fs');
 const path = require('path');
 
 const docs = require('./docs');
+const links = require('./links');
+const { isPlainPath, requirePlainPath } = require('./safe-path');
 const { hashContent } = require('./state');
 
 const README_PATH = 'README.md';
@@ -227,7 +229,14 @@ function polishPrompt(heading, body) {
 // --- Generated sections ---
 
 function readmePrompt({ projectName, layers, facts, personText, contextTokens }) {
-  const layerList = layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n') || 'None.';
+  // Each layer with its files, or, when that is too long for the prompt, its folders.
+  let layerList = layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n') || 'None.';
+  if (layerList.length > docs.charBudget(contextTokens) / 3) {
+    layerList = layers.map((l) => {
+      const dirs = [...new Set(l.files.map((f) => path.posix.dirname(f)))];
+      return `- ${l.name}: ${l.description} ${l.files.length} files, in ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? `, and ${dirs.length - 8} more folders` : ''}.`;
+    }).join('\n');
+  }
   let content = `Write the main documentation page for ${projectName}.
 
 Use exactly this structure:
@@ -265,8 +274,8 @@ ${docs.describeFacts(facts)}
 }
 
 // The model's prose for the standard sections: { intro, overview, architecture, start }.
-function readmeBodies(raw, { projectName, facts, existingPaths }) {
-  const cleaned = docs.cleanMarkdown(raw, { title: projectName, docPath: README_PATH, existingPaths });
+function readmeBodies(raw, { projectName, facts, existingPaths, knownUrls, linkStats }) {
+  const cleaned = docs.cleanMarkdown(raw, { title: projectName, docPath: README_PATH, existingPaths, knownUrls, linkStats });
   const { intro, sections } = docs.splitSections(cleaned);
   const bodies = docs.arrangeSections(sections, docs.README_SECTIONS, { extrasInto: 'overview', generated: docs.README_GENERATED });
   const { first, rest } = docs.splitIntro(intro);
@@ -276,6 +285,13 @@ function readmeBodies(raw, { projectName, facts, existingPaths }) {
     architecture: bodies.get('architecture') || '',
     start: docs.removeSubsections(bodies.get('start') || '', ['available scripts', 'scripts', 'environment variables']),
   };
+}
+
+function waitingNote(waiting) {
+  if (!waiting.length) return '';
+  const shown = waiting.slice(0, 10).map((dir) => `\`${dir}\``).join(', ');
+  const more = waiting.length > 10 ? `, and ${waiting.length - 10} more` : '';
+  return `Not described yet: ${shown}${more}. The next update adds ${waiting.length === 1 ? 'it' : 'them'}.`;
 }
 
 function sectionText(title, body) {
@@ -520,6 +536,7 @@ async function planReadme({
 
 function readReadmeState(root) {
   try {
+    requirePlainPath(root, README_STATE_PATH);
     const data = JSON.parse(fs.readFileSync(path.join(root, README_STATE_PATH), 'utf8'));
     if (!data || data.version !== README_STATE_VERSION || !Array.isArray(data.sections) || !Array.isArray(data.suppressed)) return null;
     return {
@@ -534,7 +551,14 @@ function readReadmeState(root) {
   }
 }
 
+// Whether Docturnal may read and write README.md: not when it is a symbolic link, such as one
+// to another document.
+function readmeIsPlain(root) {
+  return isPlainPath(root, README_PATH);
+}
+
 function readCurrentReadme(root) {
+  if (!readmeIsPlain(root)) return null;
   try {
     return fs.readFileSync(path.join(root, README_PATH), 'utf8');
   } catch {
@@ -549,6 +573,8 @@ function serializeState(state) {
 // Writes README.md and readme.json when they change. Returns the paths written.
 function writeReadme(root, { content, state }) {
   const written = [];
+  if (!readmeIsPlain(root)) return written;
+  requirePlainPath(root, README_STATE_PATH);
   if (content !== null) {
     fs.writeFileSync(path.join(root, README_PATH), content);
     written.push(README_PATH);
@@ -569,12 +595,16 @@ function writeReadme(root, { content, state }) {
 }
 
 // Computes the blocks, calls the model through `caller`, and plans the README.
-async function updateReadme({ root, caller, layers, facts, projectName, docsDir = 'docs', allFiles, regenerate, contextTokens = 8192, deadline, now }) {
+// waiting: folders the documentation pass has not described yet. The layers table says so,
+// and the note goes once they are described.
+async function updateReadme({ root, caller, layers, facts, projectName, docsDir = 'docs', allFiles, regenerate, contextTokens = 8192, deadline, now, linkStats = {}, waiting = [] }) {
+  // A README that is a symbolic link is left alone, with no model call.
+  if (!readmeIsPlain(root)) return { content: null, state: null, report: null, pending: null, errors: [], linked: true };
   const current = readCurrentReadme(root);
   const saved = readReadmeState(root);
   const docsBase = `${docsDir.replace(/\/$/, '')}/`;
   const blocks = {
-    layers: layers.length ? docs.layersTable(layers, docsBase) : '',
+    layers: [layers.length ? docs.layersTable(layers, docsBase) : '', waitingNote(waiting)].filter(Boolean).join('\n\n'),
     scripts: docs.scriptsTable(facts),
     tree: `\`\`\`text\n${docs.directoryTree([...new Set([...allFiles, README_PATH])])}\n\`\`\``,
   };
@@ -591,13 +621,13 @@ async function updateReadme({ root, caller, layers, facts, projectName, docsDir 
     now,
     generate: async (personText) => {
       const raw = await caller.call(README_PATH, { messages: readmePrompt({ projectName, layers, facts, personText, contextTokens }), options: docOptions });
-      return { prose: readmeBodies(raw, { projectName, facts, existingPaths }), fallback: caller.lastUsedFallback };
+      return { prose: readmeBodies(raw, { projectName, facts, existingPaths, knownUrls: links.knownUrls(root), linkStats }), fallback: caller.lastUsedFallback };
     },
     polish: (heading, body) => caller.call(`${README_PATH} (${heading})`, { messages: polishPrompt(heading, body), options: { ...docOptions, temperature: 0.2 } }),
   });
 }
 
-module.exports = {
+module.exports = { readmeIsPlain,
   MAINTAINED,
   README_PATH,
   README_STATE_PATH,

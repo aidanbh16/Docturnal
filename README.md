@@ -16,7 +16,7 @@ For each repository, the app adds `.github/workflows/docturnal.yml` to the defau
 
 ## Settings
 
-After you install the app, GitHub takes you to Docturnal's settings page. You sign in with GitHub, and the page checks that you can access the installation. Each Docturnal pull request also ends with a **Change Docturnal settings** link to the same page.
+After you install the app, GitHub takes you to Docturnal's settings page. You sign in with GitHub, and the page checks that you manage the installation: on a personal account, that it is your account; in an organization, that you have admin access to every repository Docturnal is installed on, as an owner does. The settings apply to all of those repositories, so collaborators with less access can't change them. Each Docturnal pull request also ends with a **Change Docturnal settings** link to the same page.
 
 You can choose:
 
@@ -108,17 +108,20 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 
 - **The app never reads your code.** The app only makes GitHub API calls: it commits the workflow file, starts runs, opens pull requests, and deletes its branches. It reads only two files: its own workflow file, to check its version, and `.docturnal/last-run.md`, which Docturnal writes and which never contains code.
 - **The models run on GitHub's runner.** The workflow installs Ollama on the runner, downloads the models, and runs them there, listening only on the runner itself. Your code goes to these local models and nowhere else.
-- **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic is the checkout of your repository, the downloads of Ollama, the models, and the Action's one dependency, and the push of the `docturnal/update` branch back to your repository.
+- **What runs is pinned.** Docturnal installs one fixed Ollama release from Ollama's official GitHub releases and checks every file against checksums stored in this repository, with no install script and no administrator rights. It checks each model against a fixed digest too, and the actions it uses are pinned to exact commits. If anything doesn't match, the run stops and changes nothing.
+- **Generated text adds no outside links.** Docs and comments link to a web address only when your repository already has it, and never add images from other sites or HTML.
+- **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic is the checkout of your repository, the downloads of Ollama from GitHub, the models, and the Action's one dependency, and the push of the `docturnal/update` branch back to your repository.
 - **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, and the names of the repositories it is installed on. It stores no code.
 - **Minimum permissions.** The app asks for write access to contents, workflows, pull requests, and actions, and read access to metadata.
 
 ## How nightly runs work
 
-- **Documentation first.** The first run reads every file once, with one short request each, and writes the documentation. It adds no comments.
+- **Documentation first.** The first run reads every file and writes the documentation, with one short request for each folder. For a project of up to about 1,000 source files, the documentation arrives in the first pull request. It adds no comments.
 - **New and changed code next.** Each later run compares your files with the hashes from the last run, and comments the new and changed ones before anything else.
 - **Existing code in batches.** After that, if time remains and no batch is waiting in an open pull request, the run comments one batch of existing files. It ranks them by importance: entry points, such as the files `package.json` names and route or handler files, then files many others import, complex files, and files that changed recently.
 - **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
 - **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.
+- **Only Docturnal's own work.** Docturnal runs only on your default branch. If someone adds a commit to the open Docturnal pull request, Docturnal stops adding to it until you merge or close it, so the pull request never mixes its changes with someone else's.
 - **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.
 
 ## Supported languages
@@ -130,7 +133,7 @@ A parser verifies the result for JavaScript, TypeScript, and Python. The other l
 ## Limitations
 
 - **Small models on CPUs.** GitHub's standard runners have no GPU, so Docturnal uses small code models: `qwen2.5-coder:3b` for comments and `qwen2.5-coder:7b` for documents. On runners with less memory, such as the ones for private repositories, the documents may be written with the smaller model, and the pull request says so. The comments and documents are good drafts, not expert review.
-- **Speed.** Models on a CPU are slow. In a large repository, the first run can use its whole time budget and finish the documentation on the following nights, and commenting all the existing code takes many nights, one batch each.
+- **Speed.** Models on a CPU are slow. In a very large repository, the first run writes the documentation for the folders it reached, lists the others in the README, and adds them the next night. Commenting all the existing code takes many nights, one batch each.
 - **GitHub Actions minutes.** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes. A night with nothing to do stops before Ollama is installed, which usually takes under a minute.
 
 ## Uninstalling

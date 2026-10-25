@@ -41,6 +41,7 @@ const VERSION_CHANGES: Record<number, string> = {
   2: 'Lets only one Docturnal run happen at a time in this repository. If a run starts while another one is still going, for example a run you started by hand and the nightly run, the second one waits for the first to finish. Two runs then never push their changes at the same time.',
   3: 'Uses version 7 of `actions/checkout`, which runs on Node.js 24. GitHub is retiring Node.js 20 for actions, and the older version adds a deprecation warning to every run.',
   4: 'Passes your "Existing code" setting to each run, so you can choose to have existing code commented gradually, in small batches, or only new and changed code. It also tells each run how long its job may take, so a run always commits its work before the job times out.',
+  5: 'Pins `actions/checkout` to a full commit SHA instead of a version tag. A tag can be moved to different code, and a commit SHA cannot, so the code that checks out your repository changes only with a new version of this workflow.',
 };
 
 // The changes between version `from` and the current one: one paragraph, or a list.

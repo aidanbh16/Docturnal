@@ -11,13 +11,18 @@ const path = require('path');
 const { checkComments, finishComments, needsCheck, planComments } = require('./comments');
 const { createCaller } = require('./docs');
 const ollama = require('./ollama');
+const { knownUrls } = require('./links');
 const { proposalSummary } = require('./report');
 const { hashContent } = require('./state');
-const { summarizeFile } = require('./summary');
+const { planFolderCalls, summarizeFolder } = require('./folders');
+const { languageForPath } = require('./languages');
 
 // Time kept free for the accuracy check and the docs after the last file is commented, and
 // how much of it the accuracy check may use.
 const DOCS_RESERVE_MINUTES = 25;
+// In the documentation pass, the time kept free after the last folder summary for planning the
+// layers and writing every layer doc and the README with the docs model.
+const DOCS_PASS_RESERVE_MINUTES = 40;
 const CHECK_MINUTES = 10;
 // How long Ollama keeps the docs model loaded after it is loaded ahead of the accuracy check.
 const DOCS_MODEL_KEEP_ALIVE = '30m';
@@ -41,43 +46,73 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   };
   const read = (file) => fs.readFileSync(path.join(cwd, file));
 
-  // Summaries first: they are short, and the documentation needs every one.
-  for (const item of items.filter((i) => i.kind === 'summary')) {
+  // Summaries first, one call per folder: the documentation needs every one. In the
+  // documentation pass they stop early enough that the layer docs and the README are always
+  // written; folders not reached are described on the next run.
+  const summaryItems = items.filter((i) => i.kind === 'summary');
+  const summaryStarted = now();
+  const summaryDeadline = summaryItems.length && !items.some((i) => i.kind === 'comment')
+    ? started + Math.max(config.timeBudgetMinutes - DOCS_PASS_RESERVE_MINUTES, config.timeBudgetMinutes / 3) * 60000
+    : commentDeadline;
+  const readable = [];
+  for (const item of summaryItems) {
     const buffer = read(item.path);
     const originalHash = hashContent(buffer);
-    if (now() > commentDeadline) {
-      leave(item, originalHash, 'time budget');
-      continue;
-    }
-    const before = previous.files[item.path] || {};
     const text = buffer.toString('utf8');
     if (!Buffer.from(text, 'utf8').equals(buffer)) {
       results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: 'not UTF-8' }, why: 'not UTF-8' });
       continue;
     }
+    const language = languageForPath(item.path);
+    if (!language) {
+      results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: 'unsupported language' }, why: 'unsupported language' });
+      continue;
+    }
+    readable.push({ item, originalHash, path: item.path, text, language });
+  }
+  const byPath = new Map(readable.map((r) => [r.path, r]));
+  const folderCalls = planFolderCalls(readable, config.contextTokens);
+  const folders = [];
+  let summaryCalls = 0;
+  for (const call of folderCalls) {
+    const entries = call.files.map((f) => byPath.get(f.path));
+    if (now() > summaryDeadline) {
+      for (const r of entries) leave(r.item, r.originalHash, 'time budget');
+      continue;
+    }
+    let answer;
     try {
-      const summary = await summarizeFile({ path: item.path, text, model: models.comment, contextTokens: config.contextTokens, chat });
-      if (summary.skipped) {
-        results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: summary.skipped }, why: summary.skipped });
-        continue;
-      }
-      // A file whose content is unchanged keeps its comment level and Docturnal's records.
-      const same = before.hash === originalHash;
-      if (summary.failed) {
-        // Recorded so the documentation pass can end; a later change, or a batch, reads it again.
-        const entry = { hash: originalHash, level: same ? before.level ?? null : null, summaryFailed: true };
-        if (same && before.comments) entry.comments = before.comments;
-        results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry, why: summary.failed });
-        log(`${item.path}: skipped, ${summary.failed}`);
-        continue;
-      }
-      const entry = { hash: originalHash, summary: summary.summary, symbols: summary.symbols, level: same ? before.level ?? null : null };
-      if (same && before.comments) entry.comments = before.comments;
-      results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'summarized', originalHash, entry });
+      summaryCalls++;
+      answer = await summarizeFolder({ call, model: models.comment, contextTokens: config.contextTokens, chat });
     } catch (err) {
-      leave(item, originalHash, 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
+      for (const r of entries) leave(r.item, r.originalHash, 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
+      continue;
+    }
+    if (!answer.failed && call.part === 1) folders.push({ dir: call.dir, summary: answer.summary });
+    for (const r of entries) {
+      const before = previous.files[r.path] || {};
+      // A file whose content is unchanged keeps its comment level and Docturnal's records.
+      const same = before.hash === r.originalHash;
+      const described = answer.failed ? null : answer.files.find((f) => f.path === r.path);
+      if (!described || !described.summary) {
+        // Recorded so the documentation pass can end; a later change, or a batch, reads it again.
+        const entry = { hash: r.originalHash, level: same ? before.level ?? null : null, summaryFailed: true };
+        if (same && before.comments) entry.comments = before.comments;
+        results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'skipped', originalHash: r.originalHash, entry, why: 'no usable summary' });
+        log(`${r.path}: skipped, no usable summary`);
+        continue;
+      }
+      const entry = { hash: r.originalHash, summary: described.summary, symbols: described.symbols, level: same ? before.level ?? null : null };
+      if (same && before.comments) entry.comments = before.comments;
+      results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'summarized', originalHash: r.originalHash, entry });
     }
   }
+  const summaryStats = {
+    files: summaryItems.length,
+    folders: new Set(folderCalls.map((c) => c.dir)).size,
+    calls: summaryCalls,
+    ms: now() - summaryStarted,
+  };
 
   // Comments: 1a proposes with the comment model, new and changed files before the backlog.
   // 1b checks every selected comment for accuracy, with the docs model when the time budget
@@ -107,6 +142,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       contextTokens: config.contextTokens,
       chat,
       records: (previous.files[item.path] || {}).comments || [],
+      knownUrls: knownUrls(cwd),
     });
     if (plan.failedWindows && !plan.summary && !(plan.built && plan.built.candidates.length)) {
       leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
@@ -180,7 +216,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     }
     log(`${item.path}: ${proposalSummary(result.stats, { reasons: true })}`);
   }
-  return { results, docsCaller: caller };
+  return { results, docsCaller: caller, folders, summaryStats };
 }
 
-module.exports = { DOCS_RESERVE_MINUTES, deadlines, processItems };
+module.exports = { DOCS_PASS_RESERVE_MINUTES, DOCS_RESERVE_MINUTES, deadlines, processItems };

@@ -101,7 +101,7 @@ describe('the accuracy check in a run', () => {
     // The first run documents the project and comments nothing.
     const first = await runMain();
     assert.deepStrictEqual([...new Set(mock.requests.map(kindOf))].filter((k) => k === 'comments' || k === 'accuracy'), []);
-    assert.match(first.log, /^Ollama: summary of src\/payroll\.js with comment-model, \d+\.\d s$/m);
+    assert.match(first.log, /^Ollama: summary of src, 1 file with comment-model, \d+\.\d s$/m);
     // The next run comments the first batch of existing code, and checks it.
     const { log } = await runMain();
     const kinds = mock.requests.map((r) => `${kindOf(r)} ${r.model}`);
@@ -127,7 +127,7 @@ describe('the accuracy check in a run', () => {
     assert.strictEqual(checks[0], 'docs-model');
     assert.ok(checks.length >= 2 && checks.slice(1).every((model) => model === 'comment-model'), checks.join(', '));
     assert.match(log, /^src\/payroll\.js: the accuracy check with docs-model failed \(socket hang up; code ECONNRESET\)$/m);
-    assert.match(log, /^Ollama: accuracy check for src\/payroll\.js \(1 of \d+\) with docs-model failed after \d+\.\d s: socket hang up; code ECONNRESET$/m);
+    assert.match(log, /^Ollama: accuracy check for src\/payroll\.js(?: \(1 of \d+\))? with docs-model failed after \d+\.\d s: socket hang up; code ECONNRESET$/m);
     assert.doesNotMatch(log, /deferred/);
     assert.match(log, /committed [0-9a-f]{7} and pushed docturnal\/update/);
   });

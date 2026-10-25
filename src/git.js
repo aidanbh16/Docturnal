@@ -53,12 +53,35 @@ function ensureCommit(cwd, sha, branchName) {
   git(cwd, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`]);
 }
 
+// The repository's default branch, from the event GitHub sends the workflow, or null outside
+// GitHub Actions.
+function defaultBranch(env = process.env) {
+  try {
+    const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+    const name = event && event.repository && event.repository.default_branch;
+    return typeof name === 'string' && name ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+// Whether every commit the update branch has beyond the base was made by Docturnal. A commit
+// from anyone else, such as a change pushed to the pull request, is never built on: the pull
+// request then shows Docturnal's work alone, or waits until it is merged or closed.
+function onlyDocturnalCommits(cwd, baseSha, updateSha) {
+  const result = tryGit(cwd, ['log', '--format=%ae%x00%ce', `${baseSha}..${updateSha}`]);
+  if (!result.ok) return false;
+  return result.out.split('\n').filter(Boolean).every((line) => line.split('\0').every((email) => email === BOT_EMAIL));
+}
+
 // Puts the working tree on the update branch.
 // - If origin/docturnal/update exists, check it out and merge the base branch into it.
 // - If that merge conflicts, or the branch does not exist, start fresh from the base.
 // The jobs of a parallel run pass the commits the plan saw (baseSha, and updateSha, which is
 // null when there was no update branch), so every job builds the same tree.
-// Returns { base, baseSha, updateSha, mode: 'existing' | 'fresh' | 'new', unmerged }, where
+// Returns { base, baseSha, updateSha, mode: 'existing' | 'fresh' | 'new' | 'foreign', unmerged }, where
+// 'foreign' means the branch has commits from someone other than Docturnal (see
+// onlyDocturnalCommits), so this run must not add to it; otherwise
 // unmerged counts the update branch's commits that the base does not have: more than 0
 // means its pull request is still open.
 function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase, updateSha: wantedUpdate } = {}) {
@@ -69,6 +92,12 @@ function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase,
   const baseName = base || checkedOut || process.env.GITHUB_REF_NAME;
   if (!baseName) throw new Error('Cannot tell which branch is the base branch. Set BASE_BRANCH.');
   if (baseName === branch) throw new Error(`The base branch cannot be ${branch}.`);
+  // A run started on another branch would offer that branch's changes in a pull request to the
+  // default branch, under Docturnal's name.
+  const expected = defaultBranch();
+  if (expected && baseName !== expected) {
+    throw new BaseBranchError(`Docturnal runs only on the default branch, ${expected}. This run started on ${baseName}, so it stopped.`);
+  }
 
   // Merging needs history, and actions/checkout fetches only one commit by default.
   if (git(cwd, ['rev-parse', '--is-shallow-repository']) === 'true') {
@@ -98,6 +127,10 @@ function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase,
     return { base: baseName, baseSha, updateSha: null, mode: 'new', unmerged: 0 };
   }
   const unmerged = Number(git(cwd, ['rev-list', '--count', `${baseSha}..${updateSha}`]));
+  if (unmerged > 0 && !onlyDocturnalCommits(cwd, baseSha, updateSha)) {
+    git(cwd, ['checkout', '--quiet', '-B', branch, updateSha]);
+    return { base: baseName, baseSha, updateSha, mode: 'foreign', unmerged };
+  }
   git(cwd, ['checkout', '--quiet', '-B', branch, updateSha]);
   const merge = tryGit(cwd, ['merge', '--quiet', '--no-edit', '-m', `Merge ${baseName} into ${branch}`, baseSha], { asBot: true });
   if (merge.ok) {
@@ -168,4 +201,6 @@ function recentActivity(cwd, days = 90) {
   return counts;
 }
 
-module.exports = { BOT_EMAIL, BOT_NAME, IGNORE_FILE, UPDATE_BRANCH, commitAndPush, listFiles, mergedSince, prepareBranch, recentActivity };
+class BaseBranchError extends Error {}
+
+module.exports = { BaseBranchError, BOT_EMAIL, BOT_NAME, defaultBranch, IGNORE_FILE, UPDATE_BRANCH, commitAndPush, listFiles, mergedSince, prepareBranch, recentActivity };

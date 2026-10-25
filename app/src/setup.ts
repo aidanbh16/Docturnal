@@ -26,6 +26,9 @@ export interface SetupOptions {
   log: (line: string) => void;
   now: () => number;
   sleep?: (ms: number) => Promise<void>;
+  // How many repositories the installation has, asked as the app itself (an installation
+  // token), so the count includes repositories the signed-in user cannot see.
+  installationRepoCount: (installationId: number) => Promise<number>;
 }
 
 // Right after an install or an update, GitHub may not list the installation for the user yet,
@@ -73,6 +76,28 @@ async function exchangeCode(env: SetupEnv, options: SetupOptions, code: string):
   return { error: typeof data.error === 'string' && /^[a-z_]{1,64}$/.test(data.error) ? data.error : 'unexpected response' };
 }
 
+// Revokes a user token once the sign-in has checked what it needed. A failure is logged, and
+// the token expires on its own.
+async function revokeToken(env: SetupEnv, options: SetupOptions, token: string, installationId: number): Promise<void> {
+  const api = env.GITHUB_API_URL || 'https://api.github.com';
+  try {
+    const response = await options.fetch(`${api}/applications/${encodeURIComponent(env.CLIENT_ID)}/token`, {
+      method: 'DELETE',
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Basic ${btoa(`${env.CLIENT_ID}:${env.CLIENT_SECRET}`)}`,
+        'content-type': 'application/json',
+        'user-agent': 'docturnal-app',
+        'x-github-api-version': GITHUB_API_VERSION,
+      },
+      body: JSON.stringify({ access_token: token }),
+    });
+    if (!response.ok && response.status !== 404) options.log(`setup ${installationId}: could not revoke the sign-in token (HTTP ${response.status})`);
+  } catch {
+    options.log(`setup ${installationId}: could not revoke the sign-in token (request failed)`);
+  }
+}
+
 // The one error a new code cannot fix: the app's own client ID or secret is wrong. It is a
 // configuration problem, shown at once. Every other failure gets one fresh sign-in.
 const CONFIG_ERROR = 'incorrect_client_credentials';
@@ -94,26 +119,81 @@ function isPrefetch(request: Request): boolean {
   return /prefetch|prerender/i.test(purpose);
 }
 
-// Finds the installation among the ones this user can access, or returns null.
-async function findUserInstallation(env: SetupEnv, options: SetupOptions, token: string, installationId: number): Promise<{ account: string } | null> {
+function userRequest(env: SetupEnv, options: SetupOptions, token: string, path: string): Promise<Response> {
   const api = env.GITHUB_API_URL || 'https://api.github.com';
+  return options.fetch(`${api}${path}`, {
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${token}`,
+      'user-agent': 'docturnal-app',
+      'x-github-api-version': GITHUB_API_VERSION,
+    },
+  });
+}
+
+interface FoundInstallation {
+  account: string;
+  organization: boolean;
+}
+
+// Finds the installation among the ones this user can see, or returns null. GitHub lists an
+// installation for anyone who can access one of its repositories, so this alone does not
+// mean the user may change its settings; see mayManage.
+async function findUserInstallation(env: SetupEnv, options: SetupOptions, token: string, installationId: number): Promise<FoundInstallation | null> {
   for (let page = 1; page <= 10; page++) {
-    const response = await options.fetch(`${api}/user/installations?per_page=100&page=${page}`, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${token}`,
-        'user-agent': 'docturnal-app',
-        'x-github-api-version': GITHUB_API_VERSION,
-      },
-    });
+    const response = await userRequest(env, options, token, `/user/installations?per_page=100&page=${page}`);
     if (!response.ok) return null;
-    const data = (await response.json()) as { installations?: { id: number; account?: { login?: string } }[] };
+    const data = (await response.json()) as { installations?: { id: number; target_type?: string; account?: { login?: string; type?: string } }[] };
     const installations = data.installations ?? [];
     const match = installations.find((i) => i.id === installationId);
-    if (match) return { account: match.account?.login ?? `installation ${installationId}` };
+    if (match) {
+      const type = match.account?.type ?? match.target_type;
+      return { account: match.account?.login ?? `installation ${installationId}`, organization: type !== 'User' };
+    }
     if (installations.length < 100) return null;
   }
   return null;
+}
+
+// The most repositories the organization check reads, 100 per request.
+const MAX_REPOSITORY_PAGES = 30;
+
+// Who may change an installation's settings, since they apply to every repository in it:
+// - a personal account: only that account;
+// - an organization: only someone with admin access to every repository in the
+//   installation, such as an owner. GitHub returns the user's permission on each repository
+//   the user can see; the installation's own count, asked as the app, shows whether that is
+//   all of them. Checking ownership of the organization directly would need the app's
+//   "Members" permission, which it does not have.
+// Returns null when the user may, or the reason for the log when not.
+async function mayManage(env: SetupEnv, options: SetupOptions, token: string, installationId: number, found: FoundInstallation): Promise<string | null> {
+  if (!found.organization) {
+    const response = await userRequest(env, options, token, '/user');
+    if (!response.ok) return `could not read the signed-in user (HTTP ${response.status})`;
+    const login = ((await response.json()) as { login?: string }).login ?? '';
+    return login.toLowerCase() === found.account.toLowerCase() ? null : 'not the account owner';
+  }
+  const total = await options.installationRepoCount(installationId);
+  if (total > MAX_REPOSITORY_PAGES * 100) return `the installation has ${total} repositories, more than the ${MAX_REPOSITORY_PAGES * 100} the check reads`;
+  let admin = 0;
+  for (let page = 1; page <= MAX_REPOSITORY_PAGES; page++) {
+    const response = await userRequest(env, options, token, `/user/installations/${installationId}/repositories?per_page=100&page=${page}`);
+    if (!response.ok) return `could not read the user's repositories (HTTP ${response.status})`;
+    const repositories = ((await response.json()) as { repositories?: { permissions?: { admin?: boolean } }[] }).repositories ?? [];
+    for (const repository of repositories) {
+      if (repository.permissions?.admin !== true) return 'no admin access to one of the repositories';
+      admin++;
+    }
+    if (repositories.length < 100) break;
+  }
+  if (total === 0 || admin < total) return `admin access to ${admin} of ${total} repositories`;
+  return null;
+}
+
+function notManagerMessage(found: FoundInstallation): string {
+  return found.organization
+    ? `You can't change these settings. They apply to every repository in this Docturnal installation, so only someone with admin access to all of them, such as an owner of ${found.account}, can change them.`
+    : `You can't change these settings. Only ${found.account}, the account Docturnal is installed on, can change them.`;
 }
 
 // --- Pages ---
@@ -157,18 +237,40 @@ button, .button { display: inline-block; margin-top: 24px; padding: 10px 20px; f
 ul { padding-left: 20px; }
 `;
 
+// A random nonce for each response: the page's one inline style and its one inline script
+// carry it, and the Content-Security-Policy allows nothing else.
+function nonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes));
+}
+
+export function contentSecurityPolicy(value: string): string {
+  return [
+    "default-src 'none'",
+    `script-src 'nonce-${value}'`,
+    `style-src 'nonce-${value}'`,
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+  ].join('; ');
+}
+
 function page(status: number, title: string, body: string, headers: Record<string, string> = {}): Response {
+  const value = nonce();
+  // Every value shown on the page is escaped, so the only <script> in body is the page's own.
+  const scripted = body.replaceAll('<script>', `<script nonce="${value}">`);
   const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(title)} - Docturnal</title>
-<style>${STYLE}</style>
+<style nonce="${value}">${STYLE}</style>
 </head>
 <body>
 <main>
-${body}
+${scripted}
 </main>
 </body>
 </html>`;
@@ -178,6 +280,7 @@ ${body}
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       'x-frame-options': 'DENY',
+      'content-security-policy': contentSecurityPolicy(value),
       // Not no-referrer: with no-referrer, browsers send "Origin: null" and no Referer on a
       // form submit. same-origin keeps both for our own form and sends nothing to other sites.
       'referrer-policy': 'same-origin',
@@ -355,17 +458,29 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
     // A pull request link is for an installation that exists already, so it is checked once.
     const checks = path === 'link' ? 1 : ACCESS_CHECKS;
     const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-    let access = await findUserInstallation(env, options, exchanged.token, installationId);
+    let access: FoundInstallation | null = null;
     let check = 1;
-    while (!access && check < checks) {
-      await sleep(ACCESS_RETRY_MS);
-      check++;
+    let refusal: string | null = null;
+    try {
       access = await findUserInstallation(env, options, exchanged.token, installationId);
+      while (!access && check < checks) {
+        await sleep(ACCESS_RETRY_MS);
+        check++;
+        access = await findUserInstallation(env, options, exchanged.token, installationId);
+      }
+      if (access) refusal = await mayManage(env, options, exchanged.token, installationId, access);
+    } finally {
+      // The user's token is needed only for these checks; the session never uses it.
+      await revokeToken(env, options, exchanged.token, installationId);
     }
     if (access && check > 1) options.log(`setup ${installationId} (${path}): GitHub listed the installation on check ${check}`);
     if (!access) {
       options.log(`setup ${installationId}: rejected, the signed-in user cannot access this installation${checks > 1 ? ` (${path}, after ${checks} checks)` : ''}`);
       return errorPage(403, "You can't change these settings. Sign in with a GitHub account that can manage this Docturnal installation.");
+    }
+    if (refusal) {
+      options.log(`setup ${installationId}: rejected, ${refusal}`);
+      return errorPage(403, notManagerMessage(access));
     }
     const value = await createSession(env, { installationId, account: access.account, csrf: randomToken() }, now);
     options.log(`setup ${installationId}: signed in for ${access.account}`);

@@ -7,6 +7,9 @@
 
 const fs = require('fs');
 const path = require('path');
+
+const links = require('./links');
+const { isPlainPath } = require('./safe-path');
 const ollama = require('./ollama');
 const { SKIP_DIRS } = require('./languages');
 
@@ -61,7 +64,7 @@ const RUN_SCRIPT = { npm: 'npm run', yarn: 'yarn', pnpm: 'pnpm', bun: 'bun run' 
 
 function hasMarker(content) {
   if (typeof content !== 'string') return false;
-  return content.replace(/^﻿/, '').split(/\r?\n/, 1)[0].trim() === MARKER;
+  return content.replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0].trim() === MARKER;
 }
 
 function stripEmoji(line) {
@@ -171,7 +174,8 @@ function trimChatter(lines) {
   return lines.slice(start, end);
 }
 
-// Links to files that do not exist become plain text. Web links and anchors are kept.
+// Links to files that do not exist become plain text. Anchors are kept, and web links are
+// left to links.js.
 function fixLinks(line, docPath, existingPaths) {
   if (!existingPaths) return line;
   return line.replace(/(!?)\[([^\]\n]*)\]\(([^)\s]*)(\s+"[^"]*")?\)/g, (match, bang, label, target) => {
@@ -191,8 +195,10 @@ function fixLinks(line, docPath, existingPaths) {
   });
 }
 
-// Cleans one model reply and gives it exactly one H1: `title`.
-function cleanMarkdown(raw, { title, docPath = '', existingPaths = null } = {}) {
+// Cleans one model reply and gives it exactly one H1: `title`. Web links survive only when
+// the repository already has the URL (knownUrls; none by default), and raw HTML never does.
+// linkStats.droppedLinks counts what was dropped.
+function cleanMarkdown(raw, { title, docPath = '', existingPaths = null, knownUrls = new Set(), linkStats = {} } = {}) {
   const text = unwrapWholeFence(String(raw || '').replace(/\r\n?/g, '\n').trim());
   const lines = trimChatter(text.split('\n'));
 
@@ -209,13 +215,13 @@ function cleanMarkdown(raw, { title, docPath = '', existingPaths = null } = {}) 
       continue;
     }
     if (fence) {
-      if (!dropLevel) out.push(line);
+      if (!dropLevel && links.keepCodeLine(line, knownUrls, linkStats)) out.push(line);
       continue;
     }
     const heading = line.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/);
     if (heading) {
       let level = heading[1].length;
-      const headingText = cleanHeadingText(heading[2]);
+      const headingText = cleanHeadingText(links.cleanProseLine(heading[2], knownUrls, linkStats));
       if (level === 1) {
         if (!sawH1) {
           sawH1 = true;
@@ -231,7 +237,7 @@ function cleanMarkdown(raw, { title, docPath = '', existingPaths = null } = {}) 
       if (!dropLevel && headingText) out.push('', `${'#'.repeat(level)} ${sentenceCase(headingText)}`, '');
       continue;
     }
-    if (!dropLevel) out.push(fixLinks(stripEmoji(line), docPath, existingPaths));
+    if (!dropLevel) out.push(links.cleanProseLine(fixLinks(stripEmoji(line), docPath, existingPaths), knownUrls, linkStats));
   }
 
   // Drop "In conclusion" paragraphs.
@@ -664,11 +670,71 @@ function fileListing(files, fileInfo, budget) {
   return '';
 }
 
-function layersPrompt(files, fileInfo, previous, contextTokens) {
+// The folders of a set of files, each with its files: Map(dir -> [file]).
+function filesByFolder(files) {
+  const byDir = new Map();
+  for (const file of files) {
+    const dir = path.posix.dirname(file);
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push(file);
+  }
+  return byDir;
+}
+
+// One line per folder, with its summary from the documentation pass.
+function folderListing(files, folders, budget) {
+  const lines = [...filesByFolder(files)].sort(([a], [b]) => a.localeCompare(b)).map(([dir, dirFiles]) => {
+    const summary = folders.get(dir);
+    return `- ${dir === '.' ? '.' : dir} (${dirFiles.length} ${dirFiles.length === 1 ? 'file' : 'files'})${summary ? `: ${summary}` : ''}`;
+  });
+  let out = '';
+  for (const line of lines) {
+    if (out.length + line.length + 1 > budget) break;
+    out += `${line}\n`;
+  }
+  return out.trimEnd();
+}
+
+// Plans layers from folders for a project whose files do not fit one prompt: each layer
+// names folders, and every file of a folder goes in its layer.
+function folderLayersPrompt(files, folders, previous, contextTokens) {
+  const previousText = previous.length
+    ? JSON.stringify(previous.map(({ name, description, files: f }) => ({ name, description, folders: [...new Set(f.map((x) => path.posix.dirname(x)))] })), null, 1)
+    : 'None.';
+  const listing = folderListing(files, folders, charBudget(contextTokens) - Math.min(previousText.length, charBudget(contextTokens) / 3));
+  return [
+    { role: 'system', content: `You document the architecture of software projects.\n\n${STYLE_RULES}` },
+    {
+      role: 'user',
+      content: `Group the folders of this project into 2 to 7 architecture layers. A layer is a set of folders that share one responsibility, such as "User Interface", "API Routes", or "Data Access".
+
+For each layer, give:
+- name: a short name in title case.
+- description: one sentence that says what the layer does.
+- files: the paths of its folders, exactly as listed below.
+
+Put every folder in exactly one layer.
+
+Previous layers. Keep them unless the structure of the project clearly changed:
+${previousText.slice(0, charBudget(contextTokens) / 3)}
+
+Folders:
+${listing}`,
+    },
+  ];
+}
+
+function layersPrompt(files, fileInfo, previous, contextTokens, folders = new Map()) {
   const previousText = previous.length
     ? JSON.stringify(previous.map(({ name, description, files: f }) => ({ name, description, files: f })), null, 1)
     : 'None.';
-  const listing = fileListing(files, fileInfo, charBudget(contextTokens) - previousText.length);
+  const budget = charBudget(contextTokens) - previousText.length;
+  // A large project is planned from its folders, so the prompt always fits.
+  if (folders.size && (budget < 1000 || fileListing(files, fileInfo, Infinity).length > budget)) {
+    const short = files.map((file) => `- ${file}: ${firstSentence((fileInfo.get(file) || {}).summary)}`).join('\n');
+    if (short.length > budget) return { messages: folderLayersPrompt(files, folders, previous, contextTokens), byFolder: true };
+  }
+  const listing = fileListing(files, fileInfo, budget);
   return [
     { role: 'system', content: `You document the architecture of software projects.\n\n${STYLE_RULES}` },
     {
@@ -691,16 +757,34 @@ ${listing}`,
   ];
 }
 
+// Expands the folders a folder-level plan names into their files.
+function expandFolders(raw, files) {
+  if (!raw || !Array.isArray(raw.layers)) return raw;
+  const byDir = filesByFolder(files);
+  return {
+    layers: raw.layers.map((entry) => ({
+      ...entry,
+      files: (Array.isArray(entry && entry.files) ? entry.files : []).flatMap((p) => {
+        const dir = normalizeFilePath(String(p)).replace(/\/+$/, '') || '.';
+        return byDir.get(dir) || [p];
+      }),
+    })),
+  };
+}
+
 // `call` sends one request to the docs model and returns the reply text.
-async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [] }) {
+async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], folders = new Map() }) {
   let raw = null;
   try {
+    const prompt = layersPrompt(files, fileInfo, previousLayers, contextTokens, folders);
+    const byFolder = !Array.isArray(prompt);
     const content = await call('layers', {
-      messages: layersPrompt(files, fileInfo, previousLayers, contextTokens),
+      messages: byFolder ? prompt.messages : prompt,
       format: LAYERS_SCHEMA,
       options: { temperature: 0.2, seed: 42, num_ctx: contextTokens },
     });
     raw = JSON.parse(content);
+    if (byFolder) raw = expandFolders(raw, files);
   } catch (err) {
     errors.push(`layers: ${err.message}`);
   }
@@ -756,13 +840,23 @@ function excerpts(layer, fileInfo, readSource, budget) {
   return parts.join('\n\n');
 }
 
-function layerDocPrompt({ layer, layers, fileInfo, facts, readSource, contextTokens, projectName }) {
-  const others = layers.filter((l) => l.slug !== layer.slug).map((l) => `- ${l.name}: ${l.description}`).join('\n') || 'None.';
-  const summaries = layer.files.map((file) => {
+// The files of a layer, for its doc prompt, within half the budget: each file with its
+// summary and names, then each with its summary only, then its folders with their summaries.
+function layerFileListing(layer, fileInfo, folders, budget) {
+  const full = layer.files.map((file) => {
     const info = fileInfo.get(file) || {};
     const symbols = (info.symbols || []).join(', ');
     return `- ${file}: ${String(info.summary || '').trim()}${symbols ? ` (Defines: ${symbols})` : ''}`;
   }).join('\n');
+  if (full.length <= budget) return full;
+  const short = layer.files.map((file) => `- ${file}: ${firstSentence((fileInfo.get(file) || {}).summary)}`).join('\n');
+  if (short.length <= budget) return short;
+  return folderListing(layer.files, folders, budget);
+}
+
+function layerDocPrompt({ layer, layers, fileInfo, facts, readSource, contextTokens, projectName, folders = new Map() }) {
+  const others = layers.filter((l) => l.slug !== layer.slug).map((l) => `- ${l.name}: ${l.description}`).join('\n') || 'None.';
+  const summaries = layerFileListing(layer, fileInfo, folders, Math.floor(charBudget(contextTokens) / 2));
   const head = `Write the documentation page for the "${layer.name}" layer of ${projectName}.
 
 Use exactly this structure:
@@ -806,9 +900,9 @@ Source excerpts:
 }
 
 // Assembles a layer doc from the model's reply and the generated parts.
-function buildLayerDoc(raw, { layer, layers, fileInfo, docsDir = 'docs', existingPaths = null }) {
+function buildLayerDoc(raw, { layer, layers, fileInfo, docsDir = 'docs', existingPaths = null, knownUrls, linkStats }) {
   const docPath = `${docsDir}/${layer.slug}.md`;
-  const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths });
+  const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
   const { intro, sections } = splitSections(cleaned);
   const bodies = arrangeSections(sections, LAYER_SECTIONS, { extrasInto: 'how', generated: LAYER_GENERATED });
   const { first, rest } = splitIntro(intro);
@@ -849,8 +943,11 @@ function pathsWithDirs(paths) {
   return all;
 }
 
+// A file behind a symbolic link reads as empty: it is never followed, and a doc there counts
+// as a person's, so it is never overwritten.
 function fsReader(root) {
   return (relPath) => {
+    if (!isPlainPath(root, relPath)) return '';
     try {
       return fs.readFileSync(path.join(root, relPath), 'utf8');
     } catch {
@@ -893,10 +990,20 @@ async function generateDocs({
   now = Date.now,
   projectName,
   caller: givenCaller,
+  // Counts the web links and HTML dropped from the generated text.
+  linkStats = {},
+  // Folder summaries from the documentation pass: Map(dir -> summary).
+  folders = new Map(),
 }) {
   const read = readFile || fsReader(root || '.');
   const repoFiles = allFiles || files.map((f) => f.path);
-  const fileInfo = new Map(files.map((f) => [normalizeFilePath(f.path), f]));
+  // Summaries and layer names come from a model, and parts of them are printed as they are, so
+  // they get the same link and HTML rules as the docs.
+  const known = links.knownUrls(root);
+  const plain = (text) => (typeof text === 'string' ? links.cleanProseLine(text, known, linkStats) : text);
+  const fileInfo = new Map(files.map((f) => [normalizeFilePath(f.path), { ...f, summary: plain(f.summary) }]));
+  folders = new Map([...folders].map(([dir, summary]) => [dir, plain(summary)]));
+  const timings = { layers: 0, docs: 0 };
   const sourcePaths = [...fileInfo.keys()];
   const docPathFor = (slug) => `${docsDir}/${slug}.md`;
   const humanWritten = (docPath) => {
@@ -932,9 +1039,14 @@ async function generateDocs({
     layers = normalizeLayers({ layers: previousLayers }, sourcePaths, { previous: previousLayers, fileInfo, isTaken });
   } else {
     result.replanned = true;
-    layers = await planLayers({ files: sourcePaths, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors });
+    const planStarted = now();
+    layers = await planLayers({ files: sourcePaths, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors, folders });
+    for (const layer of layers) layer.description = plain(layer.description);
+    timings.layers = now() - planStarted;
   }
   result.layers = layers;
+  result.timings = timings;
+  const docsStarted = now();
 
   const name = result.projectName;
   const existingPaths = pathsWithDirs([...repoFiles, 'README.md', ...layers.map((l) => docPathFor(l.slug))]);
@@ -959,10 +1071,10 @@ async function generateDocs({
     }
     try {
       const content = await call(docPath, {
-        messages: layerDocPrompt({ layer, layers, fileInfo, facts, readSource, contextTokens, projectName: name }),
+        messages: layerDocPrompt({ layer, layers, fileInfo, facts, readSource, contextTokens, projectName: name, folders }),
         options: docOptions,
       });
-      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, docsDir, existingPaths }), fallback: caller.lastUsedFallback });
+      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats }), fallback: caller.lastUsedFallback });
       anyLayerWritten = true;
     } catch (err) {
       result.errors.push(`${docPath}: ${err.message}`);
@@ -981,6 +1093,7 @@ async function generateDocs({
     if (!currentSlugs.has(old.slug) && hasMarker(read(docPath))) result.removed.push(docPath);
   }
   result.fallbackUsed = caller.fallbackUsed;
+  timings.docs = now() - docsStarted;
   return result;
 }
 
@@ -991,6 +1104,10 @@ function writeDocs({ root, docs = [], removed = [] }) {
   const deleted = [];
   for (const doc of docs) {
     const full = path.join(root, doc.path);
+    if (!isPlainPath(root, doc.path)) {
+      skipped.push({ path: doc.path, reason: 'a symbolic link' });
+      continue;
+    }
     let existing = null;
     try {
       existing = fs.readFileSync(full, 'utf8');
@@ -1008,6 +1125,7 @@ function writeDocs({ root, docs = [], removed = [] }) {
   }
   for (const docPath of removed) {
     const full = path.join(root, docPath);
+    if (!isPlainPath(root, docPath)) continue;
     try {
       if (hasMarker(fs.readFileSync(full, 'utf8'))) {
         fs.unlinkSync(full);
@@ -1030,6 +1148,9 @@ module.exports = {
   charBudget,
   cleanDoc,
   cleanMarkdown,
+  expandFolders,
+  layerDocPrompt,
+  layersPrompt,
   collectProjectFacts,
   createCaller,
   describeFacts,
