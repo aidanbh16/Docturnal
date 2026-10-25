@@ -1,28 +1,23 @@
 'use strict';
 
-// Action entry point. A run has three parts: the plan decides the work (see plan.js), the
-// work summarizes and comments files (work.js), and the finish applies the results, writes
-// the docs, and pushes docturnal/update (finish.js). The mode input runs all three in one job
-// ("all", the default) or one part per job of a parallel run ("plan", "work", "finish"),
-// passing the plan and the results between jobs as files.
+// Action entry point. A run decides the work (planWork in changes.js), summarizes and
+// comments files (process.js), and applies the results, writes the docs, and pushes
+// docturnal/update (apply.js).
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
-const { findChanges } = require('./changes');
+const { applyRun } = require('./apply');
+const { findChanges, planWork } = require('./changes');
 const { readConfig, ConfigError } = require('./config');
-const { forgetKnownUrls } = require('./links');
-const { LinkError } = require('./safe-path');
-const { FinishError, finishRun } = require('./finish');
 const { BaseBranchError, prepareBranch, recentActivity } = require('./git');
 const { rankFiles, selectBatch } = require('./importance');
+const { forgetKnownUrls } = require('./links');
 const { readTotalMemory, selectModels } = require('./models');
 const ollama = require('./ollama');
-const { jobCount, planWork, repositoryIsPrivate, splitShards } = require('./plan');
-const { PullRequestError } = require('./pulls');
+const { processItems } = require('./process');
+const { LinkError } = require('./safe-path');
 const { readState } = require('./state');
-const { processItems } = require('./work');
 
 // The job's timeout must leave this much time after the time budget, for setup and the commit.
 const TIMEOUT_MARGIN_MINUTES = 20;
@@ -33,19 +28,6 @@ function resolveModels(config) {
   }
   const selection = selectModels({ totalMemoryBytes: readTotalMemory(), model: config.model, docsModel: config.docsModel });
   return { comment: selection.commentModel, docs: selection.docsModel };
-}
-
-function planPath(env) {
-  return env.DOCTURNAL_PLAN || path.join(env.RUNNER_TEMP || os.tmpdir(), 'docturnal-plan', 'plan.json');
-}
-
-function resultsDir(env) {
-  return env.DOCTURNAL_RESULTS || path.join(env.RUNNER_TEMP || os.tmpdir(), 'docturnal-results');
-}
-
-function writeOutputs(env, outputs) {
-  if (!env.GITHUB_OUTPUT) return;
-  fs.appendFileSync(env.GITHUB_OUTPUT, Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(''));
 }
 
 // Orders backlog files by importance and picks one batch (see importance.js).
@@ -69,7 +51,7 @@ function backlogRanker(cwd, config, previous, changes) {
   };
 }
 
-// Prepares the branch and plans the work, for "all" and "plan".
+// Prepares the branch and plans the work.
 function makePlan({ cwd, env, config, log }) {
   const branch = prepareBranch(cwd, { base: env.BASE_BRANCH });
   log(`Docturnal: base ${branch.base} (${branch.baseSha.slice(0, 7)}), update branch ${branch.mode}`);
@@ -80,7 +62,7 @@ function makePlan({ cwd, env, config, log }) {
   log(plan.phase === 'docs'
     ? `Docturnal: documentation pass, ${plan.items.length} files to read`
     : `Docturnal: ${counts('new') + counts('changed')} new or changed files${plan.batch ? `, batch ${plan.batch.number} of existing code with ${plan.batch.files.length} files` : ''}`);
-  return { branch, previous, changes, plan };
+  return { previous, changes, plan };
 }
 
 async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ollama.chat, now = Date.now, log = console.log } = {}) {
@@ -102,84 +84,21 @@ async function run({ cwd = process.cwd(), env = process.env, chat: baseChat = ol
     return logged(request);
   };
 
-  if (config.mode === 'cleanup') return { cleanup: true };
-
-  if (config.mode === 'plan') {
-    const { plan } = makePlan({ cwd, env, config, log });
-    const jobs = jobCount(plan.items.length, { maxJobs: config.maxJobs, isPrivate: repositoryIsPrivate(env) });
-    const shards = splitShards(plan.items, jobs);
-    const file = planPath(env);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ ...plan, shards: shards.map((s) => s.map((i) => i.path)) }));
-    writeOutputs(env, {
-      'has-work': String(plan.hasWork),
-      shards: JSON.stringify(shards.map((_, i) => i)),
-      'max-parallel': String(Math.max(1, jobs)),
-      base: plan.base,
-    });
-    log(`Docturnal: ${plan.hasWork ? `${plan.items.length} files in ${plural(jobs, 'job')}` : 'nothing to do'}`);
-    return { plan, shards };
-  }
-
   const models = resolveModels(config);
   log(`Docturnal: comment level ${config.commentLevel}, comment model ${models.comment}, docs model ${models.docs}`);
 
-  if (config.mode === 'all') {
-    const { branch, previous, changes, plan } = makePlan({ cwd, env, config, log });
-    if (!plan.hasWork) {
-      log(plan.foreign ? 'Docturnal: docturnal/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed.' : plan.noSource ? 'Docturnal: no source files to document or comment.' : 'Docturnal: nothing changed since the last run.');
-      return { changed: false, processed: [], leftOver: [], plan };
-    }
-    const { results, docsCaller, folders, summaryStats } = await processItems({ cwd, items: plan.items, previous, config, models, chat, now, started, log });
-    return finishRun({ cwd, config, env, previous, changes, plan, results, folders, summaryStats, calls, models, chat, docsCaller, now, started, log, push, branch });
+  const { previous, changes, plan } = makePlan({ cwd, env, config, log });
+  if (!plan.hasWork) {
+    log(plan.foreign ? 'Docturnal: docturnal/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed.' : plan.noSource ? 'Docturnal: no source files to document or comment.' : 'Docturnal: nothing changed since the last run.');
+    return { changed: false, processed: [], leftOver: [], plan };
   }
-
-  // "work" and "finish" rebuild exactly the tree the plan saw.
-  const plan = JSON.parse(fs.readFileSync(planPath(env), 'utf8'));
-  const branch = prepareBranch(cwd, { base: plan.base, baseSha: plan.baseSha, updateSha: plan.updateSha });
-  const previous = readState(cwd);
-
-  if (config.mode === 'work') {
-    const paths = plan.shards[config.shard];
-    if (!paths) throw new ConfigError(`The plan has no shard ${config.shard}.`);
-    const items = paths.map((p) => plan.items.find((i) => i.path === p));
-    log(`Docturnal: shard ${config.shard} of ${plan.shards.length}, ${items.length} files`);
-    const { results, folders } = await processItems({ cwd, items, previous, config, models, chat, now, started, log });
-    const dir = resultsDir(env);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `shard-${config.shard}.json`), JSON.stringify({ shard: config.shard, results, folders }));
-    return { results };
-  }
-
-  // finish: the results of every work job that finished are applied. A job that failed, or
-  // ran out of time, uploaded nothing; its files wait for the next run.
-  const results = [];
-  const folders = [];
-  for (let s = 0; s < plan.shards.length; s++) {
-    const file = path.join(resultsDir(env), `shard-${s}.json`);
-    if (fs.existsSync(file)) {
-      const shard = JSON.parse(fs.readFileSync(file, 'utf8'));
-      results.push(...shard.results);
-      folders.push(...(Array.isArray(shard.folders) ? shard.folders : []));
-      continue;
-    }
-    log(`::warning::The work job for shard ${s} did not finish, so its ${plural(plan.shards[s].length, 'file')} wait for the next run.`);
-    for (const p of plan.shards[s]) {
-      const item = plan.items.find((i) => i.path === p);
-      results.push({ path: p, kind: item.kind, reason: item.reason, outcome: 'left', why: 'its work job did not finish' });
-    }
-  }
-  const changes = findChanges(cwd, config, previous);
-  return finishRun({ cwd, config, env, previous, changes, plan, results, folders, calls, models, chat, now, started, log, push, branch });
-}
-
-function plural(count, word) {
-  return `${count} ${word}${count === 1 ? '' : 's'}`;
+  const { results, docsCaller, folders, summaryStats } = await processItems({ cwd, items: plan.items, previous, config, models, chat, now, started, log });
+  return applyRun({ cwd, config, env, previous, changes, plan, results, folders, summaryStats, calls, models, chat, docsCaller, now, started, log, push });
 }
 
 if (require.main === module) {
   run().catch((err) => {
-    const plain = err instanceof ConfigError || err instanceof PullRequestError || err instanceof FinishError || err instanceof BaseBranchError || err instanceof LinkError;
+    const plain = err instanceof ConfigError || err instanceof BaseBranchError || err instanceof LinkError;
     console.error(`::error::${plain ? err.message : err.stack || err.message}`);
     process.exitCode = 1;
   });

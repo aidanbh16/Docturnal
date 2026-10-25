@@ -2,8 +2,7 @@
 
 // The work of a run: summaries for the documentation, and comments for new, changed, and
 // backlog files, each checked for accuracy. It reads files but never writes them: it returns
-// a result per file, which the finish step applies. A worker in a parallel run does one
-// shard of this and uploads its results; a single-job run applies them in the same process.
+// a result per file, which apply.js applies.
 
 const fs = require('fs');
 const path = require('path');

@@ -8,11 +8,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 MOCK_PID=""
-API_PID=""
 
 cleanup() {
   if [ -n "$MOCK_PID" ]; then kill "$MOCK_PID" 2>/dev/null || true; fi
-  if [ -n "$API_PID" ]; then kill "$API_PID" 2>/dev/null || true; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -332,95 +330,5 @@ expect_count "run 10" '"kind"' 0
 [ "$(git -C "$WORK/run10" show HEAD:README.md | sha256sum)" = "$README_BEFORE" ] || fail "run 10 changed README.md"
 [ -z "$(git -C "$WORK/run10" status --porcelain)" ] || fail "run 10 left changes in the working tree"
 pass "run 10 with nothing to do leaves README.md unchanged and polishes nothing again"
-
-# --- Runs 11 and 12: Docturnal for teams, level 1. No app: the Action opens the pull request
-# itself through a mock GitHub API, then updates it. ---
-API_STATE="$WORK/api-state.json"
-node "$ROOT/test/mock-github-api.js" --serve --port-file "$WORK/api-port" --state-file "$API_STATE" > "$WORK/api.out" 2>&1 &
-API_PID=$!
-for _ in $(seq 1 100); do
-  [ -s "$WORK/api-port" ] && break
-  sleep 0.1
-done
-[ -s "$WORK/api-port" ] || fail "mock GitHub API did not start"
-LEVEL1=(INPUT_OPEN_PR=true "GITHUB_API_URL=http://127.0.0.1:$(cat "$WORK/api-port")" GITHUB_REPOSITORY=acme/sample-shop INPUT_GITHUB_TOKEN=test-token)
-api_state() { node -e "const s = require(process.argv[1]); console.log(eval(process.argv[2]));" "$API_STATE" "$1"; }
-
-cd "$WORK/seed"
-printf '\nexport function disconnectAll(clients) {\n  return clients.map((client) => ({ ...client, connected: false }));\n}\n' >> src/db/client.js
-seed_commit "Disconnect all clients"
-run_docturnal run11 "${LEVEL1[@]}"
-grep -q '^Docturnal: opened pull request #1$' "$RUN_LOG" || fail "run 11 did not open the pull request"
-[ "$(api_state 's.pulls.length')" = "1" ] || fail "run 11 should open one pull request"
-[ "$(api_state 's.pulls[0].head + " -> " + s.pulls[0].base')" = "docturnal/update -> main" ] || fail "run 11 pull request branches"
-# The title is last-run.md's first heading, and the body is the rest.
-pr_body() { remote_file .docturnal/last-run.md | tail -n +2 | sed '/./,$!d'; }
-[ "$(api_state 's.pulls[0].title')" = "$(remote_file .docturnal/last-run.md | head -n 1 | sed 's/^# //')" ] || fail "run 11 title"
-[ "$(api_state 's.pulls[0].body')" = "$(pr_body)" ] || fail "run 11 body is not last-run.md"
-lacks "$(api_state 's.pulls[0].body')" 'Change Docturnal settings' "run 11 pull request body"
-pass "run 11 opens the pull request itself, with last-run.md as its body and no settings link"
-
-# Run 12: another change updates the same pull request.
-cd "$WORK/seed"
-printf '\nexport function countUsers(db) {\n  return db.all().length;\n}\n' >> src/api/users.js
-seed_commit "Count users"
-run_docturnal run12 "${LEVEL1[@]}"
-grep -q '^Docturnal: updated pull request #1$' "$RUN_LOG" || fail "run 12 did not update the pull request"
-[ "$(api_state 's.pulls.length')" = "1" ] || fail "run 12 opened a second pull request"
-[ "$(api_state 's.pulls[0].body')" = "$(pr_body)" ] || fail "run 12 body is not the new last-run.md"
-contains "$(api_state 's.pulls[0].body')" 'src/api/users.js' "run 12 pull request body"
-[ "$(api_state 's.requests.map((r) => r.method).join(" ")')" = "GET POST GET PATCH" ] || fail "run 12 API calls: $(api_state 's.requests.map((r) => r.method).join(" ")')"
-pass "run 12 updates the same pull request instead of opening a second one"
-
-# --- Run 13: a parallel run. The plan splits 45 files over 3 workers; each worker reads its
-# share without committing; the finish applies all results and pushes. The workers and the
-# finish pass files the way the workflow's artifacts would, through shared folders. ---
-P="$WORK/parallel"
-mkdir -p "$P"
-git init -q --bare -b main "$P/remote.git"
-git clone -q "$P/remote.git" "$P/seed" 2>/dev/null
-cd "$P/seed"
-mkdir -p src
-for i in $(seq -w 1 45); do printf 'export function part%s(x) {\n  return x + %s;\n}\n' "$i" "$i" > "src/part$i.js"; done
-git add -A
-git commit -qm "Initial commit"
-git push -q origin main 2>/dev/null
-
-# run_job NAME MODE [VAR=value ...]: one job of the parallel run, in its own fresh clone.
-run_job() {
-  local name="$1" mode="$2"
-  shift 2
-  git clone -q "$P/remote.git" "$P/$name" 2>/dev/null
-  REQUESTS_BEFORE=$(wc -l < "$LOG")
-  RUN_LOG="$P/$name.log"
-  if ! (cd "$P/$name" && env OLLAMA_HOST="$HOST" INPUT_COMMENT_LEVEL=medium INPUT_MODE="$mode" INPUT_MAX_JOBS=3 \
-        DOCTURNAL_PLAN="$P/artifacts/plan/plan.json" DOCTURNAL_RESULTS="$P/artifacts/results" GITHUB_OUTPUT="$P/$name.out" \
-        INPUT_SELECTED_COMMENT_MODEL=comment-model INPUT_SELECTED_DOCS_MODEL=docs-model "$@" \
-        node "$ROOT/src/main.js") > "$RUN_LOG" 2>&1; then
-    cat "$RUN_LOG" >&2
-    fail "$name exited with an error"
-  fi
-}
-run_job plan plan
-grep -q '^has-work=true$' "$P/plan.out" || fail "run 13 plan found no work"
-grep -q '^shards=\[0,1,2\]$' "$P/plan.out" || fail "run 13 plan shards: $(cat "$P/plan.out")"
-grep -q '^max-parallel=3$' "$P/plan.out" || fail "run 13 plan max-parallel"
-expect_count "run 13 plan makes no model calls" '"kind"' 0
-for shard in 0 1 2; do
-  run_job "work$shard" work INPUT_SHARD=$shard
-  expect_count "run 13 worker $shard summaries, one folder call for its 15 files" '"kind":"folder"' 1
-  expect_count "run 13 worker $shard uses only the comment model" '"model":"docs-model"' 0
-  grep -q 'pushed' "$RUN_LOG" && fail "run 13 worker $shard pushed"
-done
-[ "$(git --git-dir="$P/remote.git" rev-parse -q --verify refs/heads/docturnal/update || echo none)" = none ] || fail "run 13 pushed before the finish"
-run_job finish finish
-expect_count "run 13 finish writes the docs" '"kind":"layers"' 1
-expect_count "run 13 finish reads nothing again" '"kind":"folder"' 0
-grep -q 'pushed docturnal/update' "$RUN_LOG" || fail "run 13 finish did not push"
-P_STATE="$(MSYS2_ARG_CONV_EXCL='docturnal/' git --git-dir="$P/remote.git" show docturnal/update:.docturnal/state.json)"
-[ "$(node -e "const s = JSON.parse(process.argv[1]); console.log(Object.values(s.files).filter((e) => typeof e.summary === 'string').length)" "$P_STATE")" = "45" ] || fail "run 13 lost or repeated files"
-contains "$P_STATE" '"docsComplete": true' "run 13 state.json"
-contains "$(MSYS2_ARG_CONV_EXCL='docturnal/' git --git-dir="$P/remote.git" show docturnal/update:.docturnal/last-run.md)" '# Docturnal: documentation' "run 13 last-run.md"
-pass "run 13 splits a first run over 3 workers and finishes with all 45 files, none lost or repeated"
 
 echo "All end-to-end scenarios passed."

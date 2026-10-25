@@ -1,8 +1,8 @@
 'use strict';
 
 // How Docturnal covers a project: documentation first, then new and changed code, then
-// existing code in small batches ordered by importance; progress in every pull request;
-// parallel jobs for big passes; and never losing work to the job's timeout.
+// existing code in small batches ordered by importance; progress in every pull request; and
+// never losing work to the job's timeout.
 
 const assert = require('node:assert');
 const { execFile, execFileSync } = require('node:child_process');
@@ -12,9 +12,8 @@ const path = require('node:path');
 const { after, before, describe, it, test } = require('node:test');
 const { promisify } = require('node:util');
 
-const { checkCoverage } = require('../src/finish');
 const { rankFiles, selectBatch } = require('../src/importance');
-const { jobCount, planWork, repositoryIsPrivate, splitShards } = require('../src/plan');
+const { planWork } = require('../src/changes');
 const { progressLines, pullRequestTitle } = require('../src/report');
 const { emptyPending, emptyState } = require('../src/state');
 const { startMockOllama } = require('./mock-ollama');
@@ -140,60 +139,6 @@ test('a batch stays within the most important file\'s layer, and fills from the 
   const ranked = ['db/1.js', 'api/1.js', 'db/2.js', 'api/2.js', 'db/3.js', 'db/4.js', 'api/3.js'].map((p) => ({ path: p }));
   assert.deepStrictEqual(selectBatch(ranked, layers, 3), { files: ['db/1.js', 'db/2.js', 'db/3.js'], layers: ['Data'] });
   assert.deepStrictEqual(selectBatch(ranked, layers, 6), { files: ['db/1.js', 'db/2.js', 'db/3.js', 'db/4.js', 'api/1.js', 'api/2.js'], layers: ['Data', 'API'] });
-});
-
-// --- Shards and worker counts ---
-
-test('shards hold every file exactly once and are about equal in size', () => {
-  const items = Array.from({ length: 97 }, (_, i) => ({ path: `f${i}.js`, size: (i * 37) % 5000 }));
-  for (const jobs of [1, 3, 8]) {
-    const shards = splitShards(items, jobs);
-    assert.strictEqual(shards.length, jobs);
-    const all = shards.flat().map((i) => i.path);
-    assert.strictEqual(all.length, items.length);
-    assert.strictEqual(new Set(all).size, items.length);
-    const loads = shards.map((s) => s.reduce((sum, i) => sum + i.size + 1000, 0));
-    assert.ok(Math.max(...loads) - Math.min(...loads) <= 6000, `${jobs}: ${loads}`);
-    // Each shard keeps the plan's order, so new and changed files stay first.
-    for (const shard of shards) {
-      const indexes = shard.map((i) => items.indexOf(i));
-      assert.deepStrictEqual(indexes, [...indexes].sort((a, b) => a - b));
-    }
-  }
-});
-
-test('one job below 40 files; then up to 8 for a public repository, 2 for a private one, or max-jobs', () => {
-  assert.strictEqual(jobCount(0), 0);
-  assert.strictEqual(jobCount(39, { isPrivate: false }), 1);
-  assert.strictEqual(jobCount(40, { isPrivate: false }), 2);
-  assert.strictEqual(jobCount(500, { isPrivate: false }), 8);
-  assert.strictEqual(jobCount(500, { isPrivate: true }), 2);
-  assert.strictEqual(jobCount(500, { isPrivate: true, maxJobs: 5 }), 5);
-  assert.strictEqual(jobCount(45, { isPrivate: false, maxJobs: 3 }), 3);
-
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docturnal-event-'));
-  try {
-    const event = (repository) => {
-      fs.writeFileSync(path.join(dir, 'event.json'), JSON.stringify({ repository }));
-      return { GITHUB_EVENT_PATH: path.join(dir, 'event.json') };
-    };
-    assert.strictEqual(repositoryIsPrivate(event({ private: true })), true);
-    assert.strictEqual(repositoryIsPrivate(event({ private: false })), false);
-    // Unknown counts as private, so a run never spends more minutes than it should.
-    assert.strictEqual(repositoryIsPrivate(event({})), true);
-    assert.strictEqual(repositoryIsPrivate({}), true);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('the finish refuses results that lose or duplicate a file', () => {
-  const plan = { items: [{ path: 'a.js' }, { path: 'b.js' }, { path: 'c.js' }] };
-  const r = (p) => ({ path: p, outcome: 'commented' });
-  assert.doesNotThrow(() => checkCoverage(plan, [r('a.js'), r('b.js'), r('c.js')]));
-  assert.throws(() => checkCoverage(plan, [r('a.js'), r('b.js')]), /1 missing \(c\.js\)\. Nothing was committed\./);
-  assert.throws(() => checkCoverage(plan, [r('a.js'), r('b.js'), r('c.js'), r('b.js')]), /1 duplicated \(b\.js\)/);
-  assert.throws(() => checkCoverage(plan, [r('a.js'), r('b.js'), r('c.js'), r('d.js')]), /1 not in the plan \(d\.js\)/);
 });
 
 // --- Progress ---
@@ -378,94 +323,6 @@ describe('coverage over several runs', () => {
   });
 });
 
-describe('a parallel run: plan, three workers, and finish', () => {
-  const repo = gitRepo();
-  let mock;
-  const plan = () => path.join(repo.work, 'plan', 'plan.json');
-  before(async () => {
-    mock = await startMockOllama();
-    const files = {};
-    for (let i = 0; i < 45; i++) files[`src/m${String(i).padStart(2, '0')}.js`] = fn(`m${i}`);
-    repo.commit(files, 'Initial commit');
-  });
-  after(async () => {
-    await mock.close();
-    fs.rmSync(repo.work, { recursive: true, force: true });
-  });
-
-  const modeEnv = (mode, extra = {}) => ({
-    INPUT_MODE: mode,
-    DOCTURNAL_PLAN: plan(),
-    DOCTURNAL_RESULTS: path.join(repo.work, 'results'),
-    INPUT_MAX_JOBS: '3',
-    ...extra,
-  });
-
-  it('a failed worker: finish commits what the others did, and its files wait for the next run', async () => {
-    const planned = await runMain(repo, repo.clone(), mock, { ...modeEnv('plan'), GITHUB_OUTPUT: path.join(repo.work, 'out-1') });
-    assert.strictEqual(planned.code, 0, planned.stderr);
-    assert.match(fs.readFileSync(path.join(repo.work, 'out-1'), 'utf8'), /^has-work=true\nshards=\[0,1,2\]\nmax-parallel=3\nbase=main\n$/);
-    // Workers 0 and 1 finish; worker 2 fails before writing its results.
-    for (const shard of [0, 1]) {
-      const work = await runMain(repo, repo.clone(), mock, modeEnv('work', { INPUT_SHARD: String(shard) }));
-      assert.strictEqual(work.code, 0, work.stderr);
-    }
-    const lost = JSON.parse(fs.readFileSync(plan(), 'utf8')).shards[2];
-    const finish = await runMain(repo, repo.clone(), mock, modeEnv('finish'));
-    assert.strictEqual(finish.code, 0, finish.stderr);
-    assert.match(finish.log, new RegExp(`::warning::The work job for shard 2 did not finish, so its ${lost.length} files wait for the next run\\.`));
-    const state = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
-    assert.strictEqual(state.docsComplete, false);
-    for (const file of lost) assert.strictEqual(state.files[file], undefined);
-    assert.strictEqual(Object.keys(state.files).length, 45 - lost.length);
-    assert.match(repo.file('docturnal/update', '.docturnal/last-run.md'), /its work job did not finish/);
-    // The next tests start from a first run again.
-    repo.git(repo.remote, 'update-ref', '-d', 'refs/heads/docturnal/update');
-    fs.rmSync(path.join(repo.work, 'results'), { recursive: true, force: true });
-  });
-
-  it('results that lose one file or repeat another stop the finish from committing anything', async () => {
-    await runMain(repo, repo.clone(), mock, { ...modeEnv('plan'), GITHUB_OUTPUT: path.join(repo.work, 'out-t') });
-    for (const shard of [0, 1, 2]) await runMain(repo, repo.clone(), mock, modeEnv('work', { INPUT_SHARD: String(shard) }));
-    // Shard 2 loses its first result, and shard 0 gets a copy of one of shard 1's.
-    const file = (n) => path.join(repo.work, 'results', `shard-${n}.json`);
-    const read = (n) => JSON.parse(fs.readFileSync(file(n), 'utf8'));
-    const two = read(2);
-    const lost = two.results.shift().path;
-    fs.writeFileSync(file(2), JSON.stringify(two));
-    const zero = read(0);
-    const repeated = read(1).results[0];
-    zero.results.push(repeated);
-    fs.writeFileSync(file(0), JSON.stringify(zero));
-    const finish = await runMain(repo, repo.clone(), mock, modeEnv('finish'));
-    assert.notStrictEqual(finish.code, 0);
-    assert.match(finish.stderr, new RegExp(`::error::The work results do not match the plan: 1 missing \\(${lost.replace('.', '\\.')}\\); 1 duplicated \\(${repeated.path.replace('.', '\\.')}\\)\\. Nothing was committed\\.`));
-    assert.throws(() => repo.git(repo.remote, 'rev-parse', '--verify', 'refs/heads/docturnal/update'));
-    fs.rmSync(path.join(repo.work, 'results'), { recursive: true, force: true });
-  });
-
-  it('three workers each read a third of the files, and the finish merges them with none lost or repeated', async () => {
-    const planned = await runMain(repo, repo.clone(), mock, { ...modeEnv('plan'), GITHUB_OUTPUT: path.join(repo.work, 'out-2') });
-    assert.strictEqual(planned.code, 0, planned.stderr);
-    const shards = JSON.parse(fs.readFileSync(plan(), 'utf8')).shards;
-    assert.deepStrictEqual(shards.map((s) => s.length), [15, 15, 15]);
-    for (const shard of [0, 1, 2]) {
-      const work = await runMain(repo, repo.clone(), mock, modeEnv('work', { INPUT_SHARD: String(shard) }));
-      assert.strictEqual(work.code, 0, work.stderr);
-      assert.match(work.log, new RegExp(`shard ${shard} of 3, 15 files`));
-      // Workers never commit or push.
-      assert.doesNotMatch(work.log, /committed|pushed/);
-    }
-    const finish = await runMain(repo, repo.clone(), mock, modeEnv('finish'));
-    assert.strictEqual(finish.code, 0, finish.stderr);
-    assert.match(finish.log, /pushed docturnal\/update/);
-    const state = JSON.parse(repo.file('docturnal/update', '.docturnal/state.json'));
-    assert.strictEqual(Object.keys(state.files).length, 45);
-    assert.ok(Object.values(state.files).every((e) => typeof e.summary === 'string'));
-    assert.strictEqual(state.docsComplete, true);
-  });
-});
-
 describe('the time budget', () => {
   const repo = gitRepo();
   let mock;
@@ -514,39 +371,10 @@ describe('the time budget', () => {
   });
 });
 
-// --- Artifacts ---
-
-test('the finish deletes the run\'s Docturnal artifacts, and only warns when it cannot', async () => {
-  const { deleteRunArtifacts } = require('../src/artifacts');
-  const calls = [];
-  const fetchFn = async (url, init = {}) => {
-    calls.push(`${init.method || 'GET'} ${url}`);
-    if (!init.method) {
-      return { ok: true, status: 200, json: async () => ({ artifacts: [{ id: 1, name: 'docturnal-plan' }, { id: 2, name: 'docturnal-shard-0' }, { id: 3, name: 'coverage-report' }] }) };
-    }
-    return { ok: true, status: 204 };
-  };
-  const logs = [];
-  const env = { GITHUB_API_URL: 'https://ghe.example/api/v3', GITHUB_REPOSITORY: 'acme/app', GITHUB_RUN_ID: '42' };
-  assert.strictEqual(await deleteRunArtifacts({ env, token: 't', fetchFn, log: (l) => logs.push(l) }), 2);
-  assert.deepStrictEqual(calls, [
-    'GET https://ghe.example/api/v3/repos/acme/app/actions/runs/42/artifacts?per_page=100',
-    'DELETE https://ghe.example/api/v3/repos/acme/app/actions/artifacts/1',
-    'DELETE https://ghe.example/api/v3/repos/acme/app/actions/artifacts/2',
-  ]);
-  assert.deepStrictEqual(logs, ['Docturnal: deleted 2 artifacts of this run']);
-
-  // Without actions: write, GitHub refuses; the run is not failed for it.
-  const refused = async () => ({ ok: false, status: 403 });
-  const warnings = [];
-  assert.strictEqual(await deleteRunArtifacts({ env, token: 't', fetchFn: refused, log: (l) => warnings.push(l) }), 0);
-  assert.match(warnings[0], /^::warning::Docturnal could not delete this run's artifacts \(listing them returned 403\)\. They expire after one day\. Give the workflow "actions: write" permission/);
-});
-
 // --- States from before gradual coverage ---
 
 describe('a state from before gradual coverage', () => {
-  const { docsDone } = require('../src/plan');
+  const { docsDone } = require('../src/changes');
   const { hashContent, readState } = require('../src/state');
 
   function legacyRepo(files, stateFiles) {

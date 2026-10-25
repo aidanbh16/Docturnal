@@ -66,7 +66,7 @@ function readPending(value) {
 // A missing or broken state file means a first run: everything is processed again.
 // In a state from before gradual coverage, a file with a summary was commented at the level
 // then. Whether its documentation is complete is unknown (null) when it has layers: a first
-// run cut short also has layers. docsDone in plan.js decides from the files.
+// run cut short also has layers. docsDone in changes.js decides from the files.
 function readState(root) {
   let data;
   try {

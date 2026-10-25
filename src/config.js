@@ -6,7 +6,6 @@ const path = require('path');
 
 const COMMENT_LEVELS = ['low', 'medium', 'heavy', 'off'];
 const EXISTING_CODE = ['gradual', 'none'];
-const MODES = ['all', 'plan', 'work', 'finish', 'cleanup'];
 
 class ConfigError extends Error {}
 
@@ -43,12 +42,6 @@ function readWholeNumber(env, name, inputName, fallback) {
   return Number(raw);
 }
 
-function readBoolean(env, name, inputName, fallback) {
-  const raw = readInput(env, name, String(fallback)).toLowerCase();
-  if (raw !== 'true' && raw !== 'false') throw new ConfigError(`Invalid ${inputName} "${raw}". Use true or false.`);
-  return raw === 'true';
-}
-
 // Keeps paths inside the repo: no absolute paths and no ".." segments.
 function readRepoPath(env, name, inputName, fallback) {
   const raw = readInput(env, name, fallback);
@@ -81,23 +74,12 @@ function readConfig(env = process.env) {
     selectedDocsModel: readInput(env, 'SELECTED_DOCS_MODEL', null),
     docsMayFallback: readInput(env, 'DOCS_MAY_FALLBACK', 'false') === 'true',
     fallbackDocsModel: readInput(env, 'FALLBACK_DOCS_MODEL', null),
-    // Docturnal for teams, without the app: open the pull request from the Action.
-    openPr: readBoolean(env, 'OPEN_PR', 'open-pr', false),
-    githubToken: readInput(env, 'GITHUB_TOKEN', ''),
-    // Docturnal for teams: an Ollama server of your own instead of one on the runner.
-    ollamaUrl: readInput(env, 'OLLAMA_URL', ''),
     // Existing code: comment it in small batches ("gradual"), or only new and changed code.
     existingCode: readChoice(env, 'EXISTING_CODE', 'existing-code', EXISTING_CODE, 'gradual'),
     backlogBatchSize: readPositiveInt(env, 'BACKLOG_BATCH_SIZE', 'backlog-batch-size', 15),
-    // Which part of a run this job does: all of it, or the plan, one shard of work, or the
-    // finish of a parallel run.
-    mode: readChoice(env, 'MODE', 'mode', MODES, 'all'),
-    shard: readWholeNumber(env, 'SHARD', 'shard', 0),
-    // 0: decide from the repository, 8 jobs for a public one and 2 for a private one.
-    maxJobs: readWholeNumber(env, 'MAX_JOBS', 'max-jobs', 0),
     // The job's timeout-minutes, when the workflow passes it, to check the time budget's margin.
     jobTimeoutMinutes: readWholeNumber(env, 'JOB_TIMEOUT_MINUTES', 'job-timeout-minutes', 0),
   };
 }
 
-module.exports = { COMMENT_LEVELS, EXISTING_CODE, MODES, ConfigError, readConfig };
+module.exports = { COMMENT_LEVELS, EXISTING_CODE, ConfigError, readConfig };

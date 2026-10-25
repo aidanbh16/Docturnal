@@ -8,11 +8,10 @@
 
 const fs = require('fs');
 
-const { findChanges } = require('./changes');
+const { docsDone, findChanges, nothingToCover, openPending } = require('./changes');
 const { readConfig, ConfigError } = require('./config');
 const { BaseBranchError, prepareBranch } = require('./git');
 const { LinkError } = require('./safe-path');
-const { docsDone, nothingToCover, openPending } = require('./plan');
 const { readState } = require('./state');
 
 function plural(count, word) {
@@ -22,16 +21,6 @@ function plural(count, word) {
 // Returns { changed, base, reasons }.
 function precheck({ cwd = process.cwd(), env = process.env, log = console.log } = {}) {
   const config = readConfig(env);
-  // The cleanup job of a parallel run only deletes artifacts.
-  if (config.mode === 'cleanup') {
-    log('Docturnal: cleanup job');
-    return { changed: false, base: '', reasons: [] };
-  }
-  // The jobs after a parallel run's plan only run when the plan found work.
-  if (config.mode === 'work' || config.mode === 'finish') {
-    log(`Docturnal: ${config.mode} job`);
-    return { changed: true, base: env.BASE_BRANCH || '', reasons: [] };
-  }
   const branch = prepareBranch(cwd, { base: env.BASE_BRANCH });
   if (branch.mode === 'foreign') {
     log(`docturnal/update has commits from someone other than Docturnal, so Docturnal does not add to it until its pull request is merged or closed.`);

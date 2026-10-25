@@ -39,17 +39,14 @@ function isAuto(value) {
 }
 
 // `model` and `docsModel` are the escape-hatch inputs; anything other than "auto" wins.
-// With an Ollama server of your own (ollamaUrl), the runner's memory says nothing about the
-// server, so it is not read: the inputs are the settings, with the usual models for "auto".
-function selectModels({ totalMemoryBytes, model, docsModel, ollamaUrl = '' }) {
-  const external = Boolean((ollamaUrl || '').trim());
-  const ramGib = external ? null : totalMemoryBytes / GIB;
+function selectModels({ totalMemoryBytes, model, docsModel }) {
+  const ramGib = totalMemoryBytes / GIB;
   const docsAuto = isAuto(docsModel);
   return {
     ramGib,
     commentModel: isAuto(model) ? COMMENT_MODEL : model.trim(),
     docsModel: docsAuto ? DOCS_MODEL : docsModel.trim(),
-    docsMayFallback: !external && docsAuto && ramGib < DOCS_MODEL_MIN_GIB,
+    docsMayFallback: docsAuto && ramGib < DOCS_MODEL_MIN_GIB,
     fallbackDocsModel: FALLBACK_DOCS_MODEL,
   };
 }
@@ -58,49 +55,30 @@ function formatSummary(selection) {
   const fallback = selection.docsMayFallback
     ? ` (may fall back to ${selection.fallbackDocsModel})`
     : '';
-  if (selection.ramGib === null) {
-    return `Docturnal: Ollama server from ollama-url, comment model ${selection.commentModel}, docs model ${selection.docsModel}`;
-  }
   return `Docturnal: RAM ${selection.ramGib.toFixed(1)} GiB, ` +
     `comment model ${selection.commentModel}, docs model ${selection.docsModel}${fallback}`;
 }
 
-// Whether this job needs the docs model. A worker of a parallel run whose shard has only
-// summaries uses the comment model alone, so it does not pull or load the docs model.
-function needsDocsModel(env = process.env) {
-  if ((env.INPUT_MODE || 'all') !== 'work' || !env.DOCTURNAL_PLAN) return true;
-  try {
-    const plan = JSON.parse(fs.readFileSync(env.DOCTURNAL_PLAN, 'utf8'));
-    const shard = plan.shards[Number(env.INPUT_SHARD || 0)] || [];
-    return shard.some((p) => (plan.items.find((i) => i.path === p) || {}).kind !== 'summary');
-  } catch {
-    return true;
-  }
-}
-
-function writeOutputs(selection, outputPath, pullDocsModel = true) {
+function writeOutputs(selection, outputPath) {
   const lines = [
     `comment-model=${selection.commentModel}`,
     `docs-model=${selection.docsModel}`,
     `docs-may-fallback=${selection.docsMayFallback}`,
     `fallback-docs-model=${selection.fallbackDocsModel}`,
-    `ram-gib=${selection.ramGib === null ? '' : selection.ramGib.toFixed(1)}`,
-    `pull-docs-model=${pullDocsModel}`,
+    `ram-gib=${selection.ramGib.toFixed(1)}`,
   ];
   fs.appendFileSync(outputPath, lines.join('\n') + '\n');
 }
 
 function main() {
-  const ollamaUrl = process.env.INPUT_OLLAMA_URL || '';
   const selection = selectModels({
-    totalMemoryBytes: ollamaUrl.trim() ? null : readTotalMemory(),
+    totalMemoryBytes: readTotalMemory(),
     model: process.env.INPUT_MODEL,
     docsModel: process.env.INPUT_DOCS_MODEL,
-    ollamaUrl,
   });
   console.log(formatSummary(selection));
   if (process.env.GITHUB_OUTPUT) {
-    writeOutputs(selection, process.env.GITHUB_OUTPUT, needsDocsModel());
+    writeOutputs(selection, process.env.GITHUB_OUTPUT);
   }
 }
 
@@ -117,6 +95,5 @@ module.exports = {
   readTotalMemory,
   selectModels,
   formatSummary,
-  needsDocsModel,
   writeOutputs,
 };

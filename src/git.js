@@ -47,12 +47,6 @@ function remoteBranchExists(cwd, branch) {
   return tryGit(cwd, ['ls-remote', '--exit-code', '--heads', 'origin', branch]).ok;
 }
 
-// Makes sure a commit is here, fetching the branch it came from when it is not.
-function ensureCommit(cwd, sha, branchName) {
-  if (tryGit(cwd, ['cat-file', '-e', `${sha}^{commit}`]).ok) return;
-  git(cwd, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`]);
-}
-
 // The repository's default branch, from the event GitHub sends the workflow, or null outside
 // GitHub Actions.
 function defaultBranch(env = process.env) {
@@ -77,14 +71,12 @@ function onlyDocturnalCommits(cwd, baseSha, updateSha) {
 // Puts the working tree on the update branch.
 // - If origin/docturnal/update exists, check it out and merge the base branch into it.
 // - If that merge conflicts, or the branch does not exist, start fresh from the base.
-// The jobs of a parallel run pass the commits the plan saw (baseSha, and updateSha, which is
-// null when there was no update branch), so every job builds the same tree.
 // Returns { base, baseSha, updateSha, mode: 'existing' | 'fresh' | 'new' | 'foreign', unmerged }, where
 // 'foreign' means the branch has commits from someone other than Docturnal (see
 // onlyDocturnalCommits), so this run must not add to it; otherwise
 // unmerged counts the update branch's commits that the base does not have: more than 0
 // means its pull request is still open.
-function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase, updateSha: wantedUpdate } = {}) {
+function prepareBranch(cwd, { base, branch = UPDATE_BRANCH } = {}) {
   git(cwd, ['config', 'user.name', BOT_NAME]);
   git(cwd, ['config', 'user.email', BOT_EMAIL]);
 
@@ -104,10 +96,7 @@ function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase,
     git(cwd, ['fetch', '--quiet', '--unshallow', '--no-tags', 'origin']);
   }
   let baseSha;
-  if (wantedBase) {
-    ensureCommit(cwd, wantedBase, baseName);
-    baseSha = wantedBase;
-  } else if (checkedOut === baseName) {
+  if (checkedOut === baseName) {
     baseSha = git(cwd, ['rev-parse', 'HEAD']);
   } else {
     git(cwd, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${baseName}:refs/remotes/origin/${baseName}`]);
@@ -115,10 +104,7 @@ function prepareBranch(cwd, { base, branch = UPDATE_BRANCH, baseSha: wantedBase,
   }
 
   let updateSha = null;
-  if (wantedUpdate !== undefined) {
-    updateSha = wantedUpdate;
-    if (updateSha) ensureCommit(cwd, updateSha, branch);
-  } else if (remoteBranchExists(cwd, branch)) {
+  if (remoteBranchExists(cwd, branch)) {
     git(cwd, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
     updateSha = git(cwd, ['rev-parse', `refs/remotes/origin/${branch}`]);
   }

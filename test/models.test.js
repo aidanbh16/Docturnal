@@ -87,25 +87,8 @@ test('writes outputs in GITHUB_OUTPUT format', () => {
       'docs-may-fallback=true',
       'fallback-docs-model=qwen2.5-coder:3b',
       'ram-gib=7.8',
-      'pull-docs-model=true',
       '',
     ].join('\n')
   );
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test('a worker whose shard has only summaries does not need the docs model', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docturnal-plan-'));
-  const plan = path.join(dir, 'plan.json');
-  fs.writeFileSync(plan, JSON.stringify({
-    items: [{ path: 'a.js', kind: 'summary' }, { path: 'b.js', kind: 'summary' }, { path: 'c.js', kind: 'comment' }],
-    shards: [['a.js', 'b.js'], ['c.js']],
-  }));
-  const env = (shard) => ({ INPUT_MODE: 'work', INPUT_SHARD: String(shard), DOCTURNAL_PLAN: plan });
-  assert.strictEqual(models.needsDocsModel(env(0)), false);
-  assert.strictEqual(models.needsDocsModel(env(1)), true);
-  // A single-job run and the finish job always need it, for the docs.
-  assert.strictEqual(models.needsDocsModel({}), true);
-  assert.strictEqual(models.needsDocsModel({ INPUT_MODE: 'finish', DOCTURNAL_PLAN: plan }), true);
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -1,9 +1,8 @@
 'use strict';
 
 // The end of a run: applies the results of the work, merges the state, writes the layer docs
-// and the README, writes last-run.md, then commits and pushes docturnal/update (and opens the
-// pull request with open-pr). In a parallel run, the finish job does this with every worker's
-// results; it applies nothing unless they cover the plan exactly.
+// and the README, writes last-run.md, then commits and pushes docturnal/update. The app opens
+// the pull request.
 
 const fs = require('fs');
 const path = require('path');
@@ -12,35 +11,14 @@ const { docExists, needsComments } = require('./changes');
 const { createCaller, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, mergedSince } = require('./git');
 const { requirePlainPath } = require('./safe-path');
-const { openOrUpdatePullRequest } = require('./pulls');
 const { updateReadme, writeReadme } = require('./readme');
 const { buildReport, pullRequestTitle } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, emptyPending, hashContent, sameState, writeState } = require('./state');
 
-class FinishError extends Error {}
-
-// Checks that the results cover the plan's files exactly once each.
-function checkCoverage(plan, results) {
-  const expected = plan.items.map((i) => i.path);
-  const seen = new Map();
-  for (const r of results) seen.set(r.path, (seen.get(r.path) || 0) + 1);
-  const missing = expected.filter((p) => !seen.has(p));
-  const duplicated = [...seen].filter(([, n]) => n > 1).map(([p]) => p);
-  const unplanned = [...seen.keys()].filter((p) => !expected.includes(p));
-  if (missing.length || duplicated.length || unplanned.length) {
-    const parts = [];
-    if (missing.length) parts.push(`${missing.length} missing (${missing.slice(0, 5).join(', ')})`);
-    if (duplicated.length) parts.push(`${duplicated.length} duplicated (${duplicated.slice(0, 5).join(', ')})`);
-    if (unplanned.length) parts.push(`${unplanned.length} not in the plan (${unplanned.slice(0, 5).join(', ')})`);
-    throw new FinishError(`The work results do not match the plan: ${parts.join('; ')}. Nothing was committed.`);
-  }
-}
-
 // The time the README keeps for itself at the end of the budget.
 const README_RESERVE_MINUTES = 8;
 
-async function finishRun({ cwd, config, env, previous, changes, plan, results, folders: newFolders = [], summaryStats, calls, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true, branch }) {
-  checkCoverage(plan, results);
+async function applyRun({ cwd, config, env, previous, changes, plan, results, folders: newFolders = [], summaryStats, calls, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true }) {
   const { current, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme, ignoreHash } = changes;
 
   // Apply each changed file, but only onto the content the work started from.
@@ -269,15 +247,7 @@ async function finishRun({ cwd, config, env, previous, changes, plan, results, f
       ? `Docturnal: committed ${commit.sha.slice(0, 7)}${commit.pushed ? ' and pushed docturnal/update' : ' (PUSH=false, not pushed)'}`
       : 'Docturnal: nothing to commit.');
   }
-
-  // Docturnal for teams, without the app: the Action opens the pull request itself. In the
-  // default mode (open-pr false) the app does, and this API is never called.
-  let pullRequest = null;
-  if (config.openPr && commit.pushed) {
-    pullRequest = await openOrUpdatePullRequest({ root: cwd, base: branch.base, token: config.githubToken, env });
-    log(`Docturnal: ${pullRequest.action} pull request #${pullRequest.number}`);
-  }
-  return { changed: commit.committed, processed, leftOver, docs: docsReport, commit, pullRequest, state: next, progress, title };
+  return { changed: commit.committed, processed, leftOver, docs: docsReport, commit, state: next, progress, title };
 }
 
-module.exports = { FinishError, checkCoverage, finishRun };
+module.exports = { applyRun };

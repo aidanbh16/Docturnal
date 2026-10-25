@@ -11,11 +11,32 @@ const { readCandidates } = require('../src/changes');
 const { readConfig } = require('../src/config');
 const { listFiles } = require('../src/git');
 const { selectBatch } = require('../src/importance');
-const { jobCount, splitShards } = require('../src/plan');
 const { readState } = require('../src/state');
-const { summarizeFile } = require('../src/summary');
 const { defaultHandler, startMockOllama } = require('./mock-ollama');
 const { fn, gitRepo, runAction } = require('./git-repo');
+
+// Runs Docturnal in a fresh clone, in this process, and calls event() just before its first
+// model call: something that happens while a run is going.
+async function runDuring(repo, mock, event, extra = {}) {
+  const { run } = require('../src/main');
+  const logs = [];
+  let first = true;
+  const chat = async (request) => {
+    if (first) {
+      first = false;
+      event();
+    }
+    const res = await fetch(`http://${mock.host}/api/chat`, { method: 'POST', body: JSON.stringify({ ...request, stream: false }) });
+    return (await res.json()).message.content;
+  };
+  await run({
+    cwd: repo.clone(),
+    env: { ...repo.gitEnv, BASE_BRANCH: repo.branch, INPUT_COMMENT_LEVEL: 'medium', INPUT_SELECTED_COMMENT_MODEL: 'comment-model', INPUT_SELECTED_DOCS_MODEL: 'docs-model', ...extra },
+    chat,
+    log: (l) => logs.push(l),
+  });
+  return logs.join('\n');
+}
 
 const summaries = (mock) => mock.requests.filter((r) => r.messages && r.messages[0] && r.messages[0].content.startsWith('You describe one folder'));
 const commentRequests = (mock) => mock.requests.filter((r) => r.format && r.format.properties && r.format.properties.comments && r.format.properties.summary);
@@ -75,18 +96,6 @@ test('one source file: documented on the first run, commented in batch 1 on the 
   }
 });
 
-test('job counts at 39, 40, 41, and 500+ files, public and private', () => {
-  const at = (n, isPrivate) => jobCount(n, { isPrivate });
-  assert.deepStrictEqual([39, 40, 41, 500, 5000].map((n) => at(n, false)), [1, 2, 3, 8, 8]);
-  assert.deepStrictEqual([39, 40, 41, 500, 5000].map((n) => at(n, true)), [1, 2, 2, 2, 2]);
-  // 600 files split over 8 shards: each file once, in a few milliseconds.
-  const items = Array.from({ length: 600 }, (_, i) => ({ path: `src/dir${i % 30}/f${i}.js`, size: 200 + (i % 97) * 50 }));
-  const started = Date.now();
-  const shards = splitShards(items, 8);
-  assert.ok(Date.now() - started < 500);
-  assert.strictEqual(new Set(shards.flat().map((i) => i.path)).size, 600);
-});
-
 test('every file in one layer: a batch takes the batch size from that layer', () => {
   const files = Array.from({ length: 20 }, (_, i) => `src/f${String(i).padStart(2, '0')}.js`);
   const batch = selectBatch(files.map((p) => ({ path: p })), [{ name: 'Core', files }], 15);
@@ -114,31 +123,21 @@ test('a default branch named master works the same', async () => {
   }
 });
 
-describe('changes while a parallel run is going', () => {
+describe('changes while a run is going', () => {
   let mock;
   before(async () => {
     mock = await startMockOllama();
   });
   after(() => mock.close());
-  const modes = (repo, mode, extra = {}) => ({
-    INPUT_MODE: mode,
-    DOCTURNAL_PLAN: path.join(repo.work, 'plan', 'plan.json'),
-    DOCTURNAL_RESULTS: path.join(repo.work, 'results'),
-    GITHUB_OUTPUT: path.join(repo.work, `out-${mode}`),
-    ...extra,
-  });
 
-  it('a person changes, deletes, and renames files on main between the plan and the finish: the run finishes on the tree it planned', async () => {
+  it('a person changes, deletes, and renames files on main during the run: the run finishes on the tree it started from', async () => {
     const repo = gitRepo();
     try {
       repo.commit({ 'src/a.js': fn('a'), 'src/b.js': fn('b'), 'src/c.js': fn('c') }, 'Initial commit');
-      assert.strictEqual((await runAction(repo, repo.clone(), mock, modes(repo, 'plan'))).code, 0);
-      // While the work runs, a person pushes to main.
-      repo.commit({ 'src/a.js': `${fn('a')}\nexport const EDITED = 1;\n`, 'src/b.js': null, 'src/c.js': null, 'src/renamed.js': fn('c') }, 'Edit, delete, and rename');
-      assert.strictEqual((await runAction(repo, repo.clone(), mock, modes(repo, 'work'))).code, 0);
-      const finish = await runAction(repo, repo.clone(), mock, modes(repo, 'finish'));
-      assert.strictEqual(finish.code, 0, finish.stderr);
-      // The pull request holds the planned tree: the person's push is not in it yet.
+      await runDuring(repo, mock, () => {
+        repo.commit({ 'src/a.js': `${fn('a')}\nexport const EDITED = 1;\n`, 'src/b.js': null, 'src/c.js': null, 'src/renamed.js': fn('c') }, 'Edit, delete, and rename');
+      });
+      // The pull request holds the tree the run started from: the person's push is not in it yet.
       assert.deepStrictEqual(Object.keys(repo.state().files).sort(), ['src/a.js', 'src/b.js', 'src/c.js']);
       assert.doesNotMatch(repo.text('docturnal/update', 'src/a.js'), /EDITED/);
       // The next night merges main in and picks up all three changes.
@@ -155,12 +154,9 @@ describe('changes while a parallel run is going', () => {
       repo.commit({ 'src/a.js': fn('a'), 'src/b.js': fn('b') }, 'Initial commit');
       assert.strictEqual((await runAction(repo, repo.clone(), mock)).code, 0); // Docs: pull request open.
       assert.strictEqual(repo.state().pending.docs, true);
-      assert.strictEqual((await runAction(repo, repo.clone(), mock, modes(repo, 'plan'))).code, 0);
-      repo.merge(); // The person merges the docs pull request while batch 1 runs.
-      assert.strictEqual((await runAction(repo, repo.clone(), mock, modes(repo, 'work'))).code, 0);
-      const finish = await runAction(repo, repo.clone(), mock, modes(repo, 'finish'));
-      assert.strictEqual(finish.code, 0, finish.stderr);
-      assert.match(finish.log, /the open pull request was merged during the run; this run starts a new one/);
+      // The person merges the docs pull request while batch 1 runs.
+      const log = await runDuring(repo, mock, () => repo.merge());
+      assert.match(log, /the open pull request was merged during the run; this run starts a new one/);
       const state = repo.state();
       assert.strictEqual(state.pending.docs, false);
       assert.strictEqual(state.pending.batch.number, 1);
@@ -173,17 +169,15 @@ describe('changes while a parallel run is going', () => {
 
 // --- Failures ---
 
-test('the docs model cannot load in the finish job: the comment model writes the docs, and the pull request says so', async () => {
+test('the docs model cannot load: the comment model writes the docs, and the pull request says so', async () => {
   const mock = await startMockOllama(defaultHandler({ oomModels: ['oom-docs-model'] }));
   const repo = gitRepo();
   try {
     const files = {};
     for (let i = 0; i < 4; i++) files[`src/m${i}.js`] = fn(`m${i}`);
     repo.commit(files, 'Initial commit');
-    const env = (mode) => ({ INPUT_MODE: mode, DOCTURNAL_PLAN: path.join(repo.work, 'p', 'plan.json'), DOCTURNAL_RESULTS: path.join(repo.work, 'r'), INPUT_SELECTED_DOCS_MODEL: 'oom-docs-model', GITHUB_OUTPUT: path.join(repo.work, `o-${mode}`) });
-    for (const mode of ['plan', 'work']) assert.strictEqual((await runAction(repo, repo.clone(), mock, env(mode))).code, 0);
-    const finish = await runAction(repo, repo.clone(), mock, env('finish'));
-    assert.strictEqual(finish.code, 0, finish.stderr);
+    const result = await runAction(repo, repo.clone(), mock, { INPUT_SELECTED_DOCS_MODEL: 'oom-docs-model' });
+    assert.strictEqual(result.code, 0, result.stderr);
     const lastRun = repo.text('docturnal/update', '.docturnal/last-run.md');
     assert.match(lastRun, /\(written with the fallback model\)/);
     assert.match(lastRun, /The docs model could not load/);
@@ -306,24 +300,6 @@ test('symlinks, submodules, and Git LFS pointer files are left out', () => {
   }
 });
 
-test('a huge file is read for its summary from its start, within the context budget', async () => {
-  const text = Array.from({ length: 20000 }, (_, i) => `export const v${i} = ${i};`).join('\n');
-  let prompt = '';
-  const result = await summarizeFile({
-    path: 'src/huge.js',
-    text,
-    model: 'm',
-    contextTokens: 8192,
-    chat: async ({ messages }) => {
-      prompt = messages[1].content;
-      return JSON.stringify({ summary: 'Many constants.', symbols: [] });
-    },
-  });
-  assert.strictEqual(result.summary, 'Many constants.');
-  assert.match(prompt, /The file is longer; this is its start\./);
-  assert.ok(prompt.length < (8192 - 1500) * 3 + 200);
-});
-
 // --- States from every earlier version ---
 
 test('state.json from every earlier version reads without losing what it recorded', () => {
@@ -363,7 +339,6 @@ test('state.json from every earlier version reads without losing what it recorde
 
 describe('review fixes', () => {
   const { kindOf } = require('./mock-ollama');
-  const modeEnv = (repo, mode) => ({ INPUT_MODE: mode, DOCTURNAL_PLAN: path.join(repo.work, 'p', 'plan.json'), DOCTURNAL_RESULTS: path.join(repo.work, 'r'), GITHUB_OUTPUT: path.join(repo.work, `o-${mode}`) });
 
   it('a file the model can never summarize is recorded, and the documentation pass still ends', async () => {
     const base = defaultHandler();
@@ -449,23 +424,23 @@ describe('review fixes', () => {
     }
   });
 
-  it('a commit a person adds to docturnal/update during a parallel run is never overwritten', async () => {
+  it('a commit a person adds to docturnal/update during a run is never overwritten', async () => {
     const mock = await startMockOllama();
     const repo = gitRepo();
     try {
       repo.commit({ 'src/a.js': fn('a'), 'src/b.js': fn('b') }, 'Initial commit');
       await runAction(repo, repo.clone(), mock); // Docs: the pull request is open.
-      for (const mode of ['plan', 'work']) assert.strictEqual((await runAction(repo, repo.clone(), mock, modeEnv(repo, mode))).code, 0);
-      // A reviewer commits a suggestion to the pull request.
-      const reviewer = repo.clone();
-      repo.git(reviewer, 'checkout', '-q', 'docturnal/update');
-      fs.appendFileSync(path.join(reviewer, 'README.md'), '\nA reviewer note.\n');
-      repo.git(reviewer, 'commit', '-qam', 'Reviewer suggestion');
-      repo.git(reviewer, 'push', '-q', 'origin', 'docturnal/update');
-      const theirs = repo.git(reviewer, 'rev-parse', 'HEAD');
-      const finish = await runAction(repo, repo.clone(), mock, modeEnv(repo, 'finish'));
-      assert.strictEqual(finish.code, 0, finish.stderr);
-      assert.match(finish.log, /::warning::docturnal\/update changed while this run was going/);
+      // A reviewer commits a suggestion to the pull request while the next run is going.
+      let theirs = null;
+      const log = await runDuring(repo, mock, () => {
+        const reviewer = repo.clone();
+        repo.git(reviewer, 'checkout', '-q', 'docturnal/update');
+        fs.appendFileSync(path.join(reviewer, 'README.md'), '\nA reviewer note.\n');
+        repo.git(reviewer, 'commit', '-qam', 'Reviewer suggestion');
+        repo.git(reviewer, 'push', '-q', 'origin', 'docturnal/update');
+        theirs = repo.git(reviewer, 'rev-parse', 'HEAD');
+      });
+      assert.match(log, /::warning::docturnal\/update changed while this run was going/);
       assert.strictEqual(repo.git(repo.remote, 'rev-parse', 'refs/heads/docturnal/update'), theirs);
     } finally {
       await mock.close();
@@ -479,11 +454,9 @@ describe('review fixes', () => {
     try {
       repo.commit({ 'src/a.js': fn('a'), 'src/b.js': fn('b') }, 'Initial commit');
       await runAction(repo, repo.clone(), mock); // Docs.
-      for (const mode of ['plan', 'work']) assert.strictEqual((await runAction(repo, repo.clone(), mock, modeEnv(repo, mode))).code, 0);
-      repo.git(repo.remote, 'update-ref', '-d', 'refs/heads/docturnal/update'); // The app deletes it on close.
-      const finish = await runAction(repo, repo.clone(), mock, modeEnv(repo, 'finish'));
-      assert.strictEqual(finish.code, 0, finish.stderr);
-      assert.match(finish.log, /did not push/);
+      // The app deletes the branch when its pull request is closed, while the next run is going.
+      const log = await runDuring(repo, mock, () => repo.git(repo.remote, 'update-ref', '-d', 'refs/heads/docturnal/update'));
+      assert.match(log, /did not push/);
       assert.strictEqual(repo.hasBranch('docturnal/update'), false);
     } finally {
       await mock.close();

@@ -504,8 +504,11 @@ test('commentFile survives a malformed model response', async () => {
 });
 
 test('the Ollama client refuses non-local hosts', () => {
-  assert.throws(() => baseUrl('example.com:11434'), /only talks to a local server/);
+  for (const host of ['example.com:11434', '10.0.0.5:11434', 'https://127.0.0.1:11434']) {
+    assert.throws(() => baseUrl(host), /Docturnal only talks to the Ollama server on the runner itself/, host);
+  }
   assert.strictEqual(baseUrl('127.0.0.1:11434'), 'http://127.0.0.1:11434');
+  assert.strictEqual(baseUrl('localhost:11434'), 'http://localhost:11434');
 });
 
 // --- File selection ---
