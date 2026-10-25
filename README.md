@@ -1,3 +1,5 @@
+<!-- This README is maintained by Docturnal. Your additions and deletions are kept. -->
+
 # Docturnal
 
 Your codebase, documented overnight.
@@ -8,11 +10,39 @@ Docturnal is a GitHub App that adds comments to your code and keeps your documen
 
 The models that write the comments and documents run on GitHub's own runner, inside your repository's workflow. Your code is not sent to any outside service. Nothing reaches your code until you merge the pull request.
 
+## Architecture
+
+Docturnal consists of several layers that work together to achieve its goals:
+
+| Layer               | Description                                                                 | Files (Count) | Location      |
+|---------------------|----------------------------------------------------------------------------|---------------|---------------|
+| GitHub Integration  | Manages interactions with the GitHub API, including handling requests, scheduling tasks, and managing session tokens. | 8             | `app/src`     |
+| Ollama Management   | Handles scripts for managing Ollama releases and models, including hashing archive files and computing checksums. | 3             | `scripts`     |
+| Comment Engine      | Supports the core functionality of the software project, including parsing, analyzing, and processing code comments. | 31            | `src`         |
+| Tests               | Converts PKCS#1 to PKCS#8 for WebCrypto. | 34            | `app/scripts`, `app/tests`, `test` |
+
+<!-- docturnal:layers -->
+| Layer | Description |
+| --- | --- |
+| [GitHub Integration](docs/github-integration.md) | Manages interactions with the GitHub API, including handling requests, scheduling tasks, and managing session tokens. |
+| [Ollama Management](docs/ollama-management.md) | Handles scripts for managing Ollama releases and models, including hashing archive files and computing checksums. |
+| [Comment Engine](docs/comment-engine.md) | Supports the core functionality of the software project, including parsing, analyzing, and processing code comments. |
+| [Tests](docs/tests.md) | Converts PKCS#1 to PKCS#8 for WebCrypto. |
+<!-- /docturnal:layers -->
+
 ## Install
 
 Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/docturnal-app) and choose your repositories. That is the only step.
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
+
+### Available scripts
+
+<!-- docturnal:scripts -->
+| Command | Runs |
+| --- | --- |
+| `npm run test` | `node --test` |
+<!-- /docturnal:scripts -->
 
 ## Settings
 
@@ -162,6 +192,28 @@ To work on it, you need Node.js 20 or later:
 - Run the Action tests with `npm test`.
 - Run the end-to-end runs against a local git remote with `bash test/e2e.sh`.
 - Run the app tests with `npm test` in the `app` folder.
+
+<!-- docturnal:tree -->
+```text
+.
+├── app/
+│   ├── scripts/
+│   ├── src/
+│   └── tests/
+├── pins/
+├── scripts/
+├── src/
+├── test/
+├── .docturnalignore
+├── .gitignore
+├── CLAUDE.md
+├── LICENSE
+├── README.md
+├── action.yml
+├── package-lock.json
+└── package.json
+```
+<!-- /docturnal:tree -->
 
 ## License
 
