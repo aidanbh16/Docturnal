@@ -45,6 +45,20 @@ function referencedDigests(manifest) {
   return [manifest.config, ...(Array.isArray(manifest.layers) ? manifest.layers : [])].map((blob) => (blob && typeof blob.digest === 'string' ? blob.digest : String(blob && blob.digest)));
 }
 
+// Compares the digests a saved manifest names with the pin. Ollama 0.40 also keeps the
+// registry manifest itself as a blob, so the pinned manifest digest is the one extra allowed;
+// its file is then hashed like every other blob. Returns { expected, missing, extra,
+// manifestBlob }, where manifestBlob is that extra blob to hash, or null.
+function compareBlobs(pin, actual) {
+  const expected = pin.blobs.map((b) => b.digest);
+  const missing = expected.filter((d) => !actual.includes(d));
+  const manifestBlob = DIGEST.test(pin.manifest || '') && actual.includes(pin.manifest) && !expected.includes(pin.manifest)
+    ? { kind: 'manifest', digest: pin.manifest }
+    : null;
+  const extra = actual.filter((d) => !expected.includes(d) && !(manifestBlob && d === manifestBlob.digest));
+  return { expected, missing, extra, manifestBlob };
+}
+
 const describe = (digests) => (digests.length ? [...digests].sort().join(', ') : 'none');
 
 // Checks one model's files in the models folder against its pin. Returns the total size of
@@ -59,10 +73,8 @@ async function verifyFiles(modelsDir, name, pin) {
   } catch {
     throw new ModelDigestError(`${name} has no readable manifest in the models folder, so Docturnal does not run it.`);
   }
-  const expected = pin.blobs.map((b) => b.digest);
   const actual = referencedDigests(manifest);
-  const missing = expected.filter((d) => !actual.includes(d));
-  const extra = actual.filter((d) => !expected.includes(d));
+  const { expected, missing, extra, manifestBlob } = compareBlobs(pin, actual);
   if (missing.length || extra.length || new Set(actual).size !== actual.length) {
     throw new ModelDigestError(
       `The blobs of ${name} in the models folder do not match pins/models.json, so Docturnal does not run it. ` +
@@ -71,7 +83,7 @@ async function verifyFiles(modelsDir, name, pin) {
     );
   }
   let bytes = 0;
-  for (const blob of pin.blobs) {
+  for (const blob of manifestBlob ? [...pin.blobs, manifestBlob] : pin.blobs) {
     const file = path.join(modelsDir, 'blobs', blob.digest.replace(':', '-'));
     let hash;
     try {
@@ -109,4 +121,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ModelDigestError, readPins, referencedDigests, verifyFiles, verifyModels };
+module.exports = { ModelDigestError, compareBlobs, readPins, referencedDigests, verifyFiles, verifyModels };

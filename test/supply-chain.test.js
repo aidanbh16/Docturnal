@@ -290,6 +290,53 @@ describe('the model pins', () => {
     await rejectsWith(modelsFolder({ write: rest }), new RegExp(`^The license file of qwen2\\.5-coder:3b is missing from the models folder, so Docturnal does not run it\\. Expected ${digest(license)}\\.$`));
   });
 
+  it('the exact blobs from the real 3b run, the five pinned ones plus the manifest blob, pass; 7b likewise', () => {
+    const { compareBlobs } = require('../src/verify-models');
+    // As the runner reported for qwen2.5-coder:3b under Ollama 0.40.11.
+    const actual3b = [
+      'sha256:bb967eff3bda079d4ee62c09c5ef0b2e71a6a75934a4c92a13c755fcfd655703',
+      'sha256:4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba',
+      'sha256:66b9ea09bd5b7099cbb4fc820f31b575c0366fa439b08245566692c6784e281e',
+      'sha256:1e65450c30670713aa47fe23e8b9662bdf4065e81cc8e3cbfaa98924fcc0d320',
+      'sha256:45fc3ea7579acf3021044fc8c4c5dd5969ebc3ca2a68219b5075662cc949a4f1',
+      'sha256:f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225',
+    ];
+    const result3b = compareBlobs(pinned['qwen2.5-coder:3b'], actual3b);
+    assert.deepStrictEqual([result3b.missing, result3b.extra], [[], []]);
+    // The manifest blob is then hashed like the others.
+    assert.deepStrictEqual(result3b.manifestBlob, { kind: 'manifest', digest: 'sha256:f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225' });
+    const pin7b = pinned['qwen2.5-coder:7b'];
+    assert.strictEqual(pin7b.manifest, 'sha256:dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364');
+    const result7b = compareBlobs(pin7b, [...pin7b.blobs.map((b) => b.digest), pin7b.manifest]);
+    assert.deepStrictEqual([result7b.missing, result7b.extra, result7b.manifestBlob.digest], [[], [], pin7b.manifest]);
+    // Without the manifest blob, as other Ollama versions save it, the pinned blobs alone pass too.
+    const plain = compareBlobs(pin7b, pin7b.blobs.map((b) => b.digest));
+    assert.deepStrictEqual([plain.missing, plain.extra, plain.manifestBlob], [[], [], null]);
+  });
+
+  it('the manifest blob passes when its file hashes to the pinned manifest digest, and fails when tampered', async () => {
+    const withManifest = [layer('model'), layer('template'), layer('license'), { mediaType: 'application/vnd.docker.distribution.manifest.v2+json', digest: pin.manifest, size: registryManifest.length }];
+    const write = (dir, content) => fs.writeFileSync(path.join(dir, 'blobs', pin.manifest.replace(':', '-')), content);
+    const dir = modelsFolder({ layers: withManifest });
+    try {
+      write(dir, registryManifest);
+      assert.strictEqual(await verifyFiles(dir, 'qwen2.5-coder:3b', pin), Object.values(blobs).reduce((n, b) => n + b.length, 0) + registryManifest.length);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const tampered = modelsFolder({ layers: withManifest });
+    write(tampered, Buffer.from('{"layers":[]}'));
+    await rejectsWith(tampered, new RegExp(`^The manifest file of qwen2\\.5-coder:3b does not match its digest, so Docturnal does not run it\\. Expected ${pin.manifest}, got ${digest(Buffer.from('{"layers":[]}'))}\\.$`));
+  });
+
+  it('an unknown extra blob still fails, next to the manifest blob', async () => {
+    const unknown = Buffer.from('something else');
+    const extras = [{ digest: pin.manifest }, { mediaType: 'application/vnd.ollama.image.adapter', digest: digest(unknown), size: unknown.length }];
+    const dir = modelsFolder({ layers: [layer('model'), layer('template'), layer('license'), ...extras] });
+    fs.writeFileSync(path.join(dir, 'blobs', pin.manifest.replace(':', '-')), registryManifest);
+    await rejectsWith(dir, new RegExp(`Not pinned: ${digest(unknown)}\\.$`));
+  });
+
   it('a pulled model is checked through the server and the models folder, and one not pulled, or not pinned, fails', async () => {
     const dir = modelsFolder();
     const mock = await startMockOllama(undefined, { models: [{ name: 'qwen2.5-coder:3b', digest: 'anything: the saved manifest\'s hash is not checked' }] });
