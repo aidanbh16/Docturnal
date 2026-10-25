@@ -39,54 +39,13 @@ inputs:
     required: false
     default: '90'
   model:
-    description: >-
-      The comment model. Leave as auto and Docturnal picks it. With ollama-url, set it to any
-      model your server can run.
+    description: The comment model. Leave as auto and Docturnal picks it.
     required: false
     default: auto
   docs-model:
-    description: >-
-      The documentation model. Leave as auto and Docturnal picks it. With ollama-url, set it to
-      any model your server can run, such as a larger one on a GPU.
+    description: The documentation model. Leave as auto and Docturnal picks it.
     required: false
     default: auto
-  # Docturnal for teams. With the defaults below, the Action behaves as it does with the app.
-  open-pr:
-    description: >-
-      Docturnal for teams: "true" makes the Action open or update the pull request itself,
-      for use without the Docturnal app. Needs pull-requests write permission.
-    required: false
-    default: 'false'
-  github-token:
-    description: The token the Action uses to open the pull request when open-pr is "true".
-    required: false
-    default: ${{ github.token }}
-  ollama-url:
-    description: >-
-      Docturnal for teams: the URL of an Ollama server of your own, such as
-      http://ollama.internal:11434. Your source code is sent to it, so it must be inside your
-      network: Docturnal refuses a host that resolves to a public address unless
-      allow-public-ollama is "true". When set, Docturnal does not install or start Ollama.
-    required: false
-    default: ''
-  allow-public-ollama:
-    description: >-
-      Only for ollama-url: "true" lets Docturnal send your source code to a server on a public
-      address. Leave it "false" unless you are sure that server is yours.
-    required: false
-    default: 'false'
-  pull-models:
-    description: >-
-      Only for ollama-url: "true" asks your server to pull missing models; "false" fails and
-      names the missing model instead.
-    required: false
-    default: 'true'
-  models-dir:
-    description: >-
-      Only for self-hosted runners without ollama-url: the folder that keeps the models between
-      runs. Defaults to ~/.docturnal/models.
-    required: false
-    default: ''
   existing-code:
     description: >-
       Existing code: "gradual" comments it in small batches after the first run documents the
@@ -97,40 +56,78 @@ inputs:
     description: The most existing files one batch comments.
     required: false
     default: '15'
-  # Parallel runs. The default, "all", does a whole run in this one job.
-  mode:
-    description: >-
-      Which part of a run this job does: all (the default, the whole run), or for a parallel
-      run, plan, work (one shard), finish, or cleanup (deletes the run's artifacts when the run
-      was cancelled and finish did not run).
-    required: false
-    default: all
-  shard:
-    description: For mode work, the shard to process, from the plan's shards output.
-    required: false
-    default: '0'
-  max-jobs:
-    description: >-
-      For mode plan, the most worker jobs. Empty: 8 for a public repository, 2 for a private
-      one, to keep within its Actions minutes.
-    required: false
-    default: ''
   job-timeout-minutes:
     description: >-
       The job's timeout-minutes. Docturnal warns when time-budget-minutes leaves less than 20
       minutes before it, since a job that times out loses its work.
     required: false
     default: ''
+  # Internal: used for testing Docturnal. Not supported for users. With the defaults below,
+  # the Action behaves as it does with the Docturnal app.
+  open-pr:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. "true" makes the Action
+      open or update the pull request itself.
+    required: false
+    default: 'false'
+  github-token:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. The token for open-pr.
+    required: false
+    default: ${{ github.token }}
+  ollama-url:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. An Ollama server on a
+      private network; a host that resolves to a public address is refused unless
+      allow-public-ollama is "true".
+    required: false
+    default: ''
+  allow-public-ollama:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. "true" allows ollama-url
+      to resolve to a public address.
+    required: false
+    default: 'false'
+  pull-models:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. With ollama-url, "true"
+      asks the server to pull missing models.
+    required: false
+    default: 'true'
+  models-dir:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. On a self-hosted runner,
+      the folder that keeps the models between runs.
+    required: false
+    default: ''
+  mode:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. all (the default) does the
+      whole run in one job; plan, work, finish, and cleanup are the parts of a parallel run.
+    required: false
+    default: all
+  shard:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. For mode work, the shard
+      to process.
+    required: false
+    default: '0'
+  max-jobs:
+    description: >-
+      Internal: used for testing Docturnal. Not supported for users. For mode plan, the most
+      work jobs.
+    required: false
+    default: ''
 
 outputs:
   has-work:
-    description: For mode plan, "true" when the plan found work.
+    description: Internal, for mode plan. "true" when the plan found work.
     value: ${{ steps.run.outputs.has-work }}
   shards:
-    description: For mode plan, the shards for the work jobs' matrix, such as [0,1,2].
+    description: Internal, for mode plan. The shards for the work jobs' matrix.
     value: ${{ steps.run.outputs.shards }}
   max-parallel:
-    description: For mode plan, how many work jobs may run at once.
+    description: Internal, for mode plan. How many work jobs may run at once.
     value: ${{ steps.run.outputs.max-parallel }}
 
 runs:

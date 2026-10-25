@@ -12,10 +12,10 @@ Core promises. Every design decision protects these:
 
 - **Free.** It runs only on GitHub's standard hosted runner, with no paid services.
 - **Private.** Code never leaves the GitHub runner. No outside model servers or AI APIs, and no telemetry.
-
-These promises describe the default mode, with the GitHub App. Docturnal for teams (see the section of that name) is an opt-in exception that a user turns on only in their own workflow file.
 - **Zero setup.** Installing the app is the only step. Users never configure models, tokens, or secrets. An optional settings page lets them choose the run time, time zone, comment level, and what to do with existing code; the defaults are midnight, America/New_York, medium, and commenting existing code gradually. While the settings are still the defaults, opening the page saves the browser's time zone right away, so closing it gives midnight in the user's own time zone.
 - **Safe.** The model never rewrites source files. A pull request is the only way changes reach the user's code, and a person always reviews it.
+
+Docturnal's only offering is the public GitHub App. Running the Action without the app, on self-hosted runners, with an Ollama server of one's own, or as parallel jobs exists only for testing Docturnal (see "Internal testing modes") and is never offered or documented for users. A fully self-hosted version of the whole app may come later, if a company asks for one; nothing in between will be offered.
 
 ## The three parts
 
@@ -25,11 +25,11 @@ This is one public repo with three parts.
 
 - A composite action. `action.yml` is at the repo root, and the code is in `src/`.
 - Runs nightly on GitHub's standard hosted runner (`ubuntu-latest`), started by the app through `workflow_dispatch`. The workflow file has no schedule.
-- The `mode` input runs a whole run in one job (`all`, the default) or one part of a parallel run: `plan` (`src/plan.js`) decides the work and splits it into shards, each `work` job (`src/work.js`) processes one shard and uploads its results as an artifact without committing, and `finish` (`src/finish.js`) checks that the results cover the plan exactly, applies them, writes the docs, and pushes. Every job builds the same tree from the commits the plan recorded.
+- Every run uses `mode: all`, the default: one job plans the work (`src/plan.js`), does it (`src/work.js`), and applies it, writes the docs, and pushes (`src/finish.js`). The other modes are internal (see "Internal testing modes").
 - Installs Ollama, pulls the models, adds comments, writes documentation, and pushes the result to `docturnal/update`.
 - Caches between runs the Ollama models and the Ollama install. The install cache is keyed on the latest Ollama version, read from GitHub's release redirect, and holds only the binary and its CPU libraries. On a miss, or when the version cannot be read, the official installer runs.
 - Uses the current major versions of the actions it depends on (`actions/cache` in `action.yml`, `actions/checkout` in the workflow template), so runs show no runtime deprecation warnings.
-- **Never opens pull requests.** It only pushes a branch. The one exception is Docturnal for teams, with `open-pr: "true"`.
+- **Never opens pull requests.** It only pushes a branch. The internal `open-pr` input, used only for testing, is the one exception.
 
 ### 2. GitHub App backend (`app/`)
 
@@ -37,9 +37,9 @@ This is one public repo with three parts.
 - On install, it queues each selected repo (Cloudflare Queue, one repo per message), commits `.github/workflows/docturnal.yml`, and starts the first run.
 - An hourly cron (minute 7) dispatches `docturnal.yml` for every installation whose chosen local hour has arrived, passing `comment-level`, and `existing-code` to templates from version 4 on, as `workflow_dispatch` inputs. Daylight saving time is handled with `Intl.DateTimeFormat`. A repo is skipped that night if a Docturnal run is already queued, pending, or in progress. Every GitHub API call sends `X-GitHub-Api-Version: 2026-03-10`.
 - Serves the optional settings page at `/setup` (GitHub sign-in, then a check with `GET /user/installations` that the user can access the installation). Settings live in Cloudflare KV, and no key is ever read and written back: one empty key per repo, which webhooks create and delete, and one settings key with the time, time zone, comment level, and existing-code choice (`gradual` or `none`), written only by the settings page (without it, the defaults apply). The cron finds each installation's repos by listing keys by prefix. Nothing else, and never code. Uninstalling deletes every key with the installation's prefix.
-- The workflow template (version 4) has three jobs: `plan`, `work` (a matrix of the plan's shards, with its `max-parallel`), `finish`, which runs when the plan found work and the run was not cancelled, and `cleanup`, which deletes the artifacts when it was. Each job's `timeout-minutes` leaves at least 20 minutes after the time budget, and the workflow has `actions: write` so `finish` can delete the run's artifacts. The template carries a version line (`# Docturnal workflow version N.`), and its `concurrency` group lets only one run happen at a time per repo. A repo with an older version gets the current one through a pull request titled "Update Docturnal workflow", proposed once per version, at setup or before its nightly run, and listing every change since the repo's version. Raise `WORKFLOW_VERSION` in `app/src/workflow.ts` whenever the template changes, and describe the change in `VERSION_CHANGES` in `app/src/handlers.ts`.
+- The workflow template (version 4) has one job, `docturnal`, which runs the Action in its default mode with the `comment-level` and `existing-code` inputs, `time-budget-minutes: "90"`, and `job-timeout-minutes: "120"`. Its `timeout-minutes: 120` leaves at least 20 minutes after the time budget. The workflow has only `contents: write`, and no artifacts. Version 4 adds the `existing-code` input to version 3; the Worker sends that input only to version 4 or later, because GitHub rejects a dispatch with an input the workflow doesn't declare. The template carries a version line (`# Docturnal workflow version N.`), and its `concurrency` group lets only one run happen at a time per repo. A repo with an older version gets the current one through a pull request titled "Update Docturnal workflow", proposed once per version, at setup or before its nightly run, and listing every change since the repo's version. Raise `WORKFLOW_VERSION` in `app/src/workflow.ts` whenever the template changes, and describe the change in `VERSION_CHANGES` in `app/src/handlers.ts`.
 - When the Action pushes `docturnal/update`, the app opens the pull request under its own name, or updates the open one. Its title is `last-run.md`'s first heading ("Docturnal: documentation" or "Docturnal: comments and documentation"), and its body is the rest.
-- When a pull request from one of Docturnal's branches (`docturnal/update`, `docturnal/setup`, `docturnal/workflow-update`) in the same repository closes, merged or not, the app deletes that branch. It keeps `docturnal/update` while a Docturnal run is queued, pending, or in progress, and the next closed pull request deletes it then. A branch that is already gone counts as deleted. The next run after a deletion starts fresh from the base branch.
+- When a pull request from one of Docturnal's branches (`docturnal/update`, `docturnal/setup`, `docturnal/workflow-update`) in the same repository closes, merged or not, the app deletes that branch. After a merge, it keeps `docturnal/update` while a Docturnal run is queued, pending, or in progress, and the next closed pull request deletes it then. A pull request closed without merging loses its branch at once, so a run going then can't push the declined changes back. A branch that is already gone counts as deleted. The next run after a deletion starts fresh from the base branch.
 - Only makes GitHub API calls. It never reads, stores, or forwards source code.
 
 ### 3. Tests (`test/`)
@@ -58,19 +58,16 @@ User installs the app
 
 Every hour at minute 7 (Worker cron)
   -> For each installation whose chosen local hour has arrived, the Worker dispatches
-     docturnal.yml with its comment-level input
+     docturnal.yml with its comment-level and existing-code inputs
 
 Each dispatched run
   -> Action runs on the hosted runner, using the workflow's GITHUB_TOKEN
-  -> Plan job: pre-check (no model, no Ollama install): checks out docturnal/update (if it
-     exists) and merges the base branch into it, reads .docturnal/state.json, and finds the
-     work: the documentation pass, new and changed files, and one batch of existing code
-  -> No work: logs "No changes since the last run", and the other jobs are skipped
-  -> Work jobs, in parallel: summaries or comments for one shard each, uploaded as artifacts
-  -> Finish job: applies every shard, docs + state + .docturnal/last-run.md
-     (a work job that failed or timed out leaves its files for the next run)
-     -> pushes docturnal/update only if it is still what the plan saw,
-        then deletes the run's artifacts
+  -> Pre-check (no model, no Ollama install): checks out docturnal/update (if it exists)
+     and merges the base branch into it, reads .docturnal/state.json, and finds the work:
+     the documentation pass, new and changed files, and one batch of existing code
+  -> No work: logs "No changes since the last run" and skips every later step
+  -> Work: summaries or comments, then docs + state + .docturnal/last-run.md
+     -> pushes docturnal/update only if it is still what the run started from
 
 GitHub sends a `push` webhook for docturnal/update to the Worker
   -> Worker reads .docturnal/last-run.md from that branch
@@ -139,11 +136,11 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 
 ## Model rules
 
-- Docturnal only ever uses Ollama on GitHub's standard hosted runner. Do not add support for paid or larger runners, self-hosted runners, outside model servers, or AI APIs, and do not add options for them. The only exceptions are the ones Docturnal for teams defines: self-hosted runners, and one Ollama server of the user's own on a private network. Never AI APIs.
+- Docturnal only ever uses Ollama on GitHub's standard hosted runner. Do not add support for paid or larger runners, self-hosted runners, outside model servers, or AI APIs, and do not add options for them. The internal testing modes may use self-hosted runners and one Ollama server on a private network, for testing only. Never AI APIs.
 - Two roles:
   - **Comment model:** a small, fast code model, because it handles many calls.
   - **Docs model:** the largest model that fits the runner's available memory, because it handles few calls.
-- Model choice is automatic. The Action detects the available memory at run time and picks from a ranked candidate list in `src/`. Users never configure models, except with `ollama-url` in Docturnal for teams, where `model` and `docs-model` are settings.
+- Model choice is automatic. The Action detects the available memory at run time and picks from a ranked candidate list in `src/`. Users never configure models.
 - Ollama listens only on `127.0.0.1`. Use a fixed seed and low temperature for repeatable output.
 - Every call goes through `src/ollama.js`, which uses `node:http` with `stream: true`, not `fetch`. A large model on a CPU runner can take minutes to load and answer, so the client has no timeout of its own: the run's time budget is the only limit on a call. Every call uses the same `num_ctx`, so Ollama never reloads a model to change it.
 - Each call is logged with what it was for, the model, and its duration, and a failure also with its error and cause. Prompts, code, and replies are never logged.
@@ -180,9 +177,9 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 - **The first run documents the project.** Until the documentation is complete, each run reads every file without a summary for its current content, with one short call per file to the comment model for a summary and symbols, and writes the layer docs and the README with the docs model. It adds no comments. Its pull request is titled "Docturnal: documentation" and says comments follow in small batches.
 - **New and changed code first.** After that, files that are new or whose hash differs from the state are commented, checked, and re-summarized every run, and their layer docs updated. They always come before the backlog.
 - **Existing code in batches.** Files that are up to date but not commented at the current level form the backlog; a change of level puts every file back in it, and at `off`, the files with Docturnal's comments, to remove them. With "Existing code" set to `gradual`, after the changed files and if time remains, a run adds one batch of at most `backlog-batch-size` files (15). Never more than one open Docturnal pull request: while the open one holds a batch (the update branch has commits the base does not), no other batch is added, though changed files still are. A batch is ordered by importance (`src/importance.js`): entry points (`package.json` main, bin, and exports, index files, route and handler files), fan-in from the import graph (TypeScript's import scanner for JavaScript and TypeScript, simple patterns for other languages), complexity, and commits in the last 90 days. It is kept within the layer of its most important file, filled from the next layers only when that one is smaller than a batch. With `none`, there are no batches.
-- **Parallel jobs.** The plan uses one work job below 40 files, otherwise up to 8 for a public repository and 2 for a private one (from the event's `repository.private`; unknown counts as private), or `max-jobs`. Shards are balanced by file size. A worker loads only the models it needs: summary-only shards use the comment model alone. Artifacts hold code-derived content, so they are uploaded with `retention-days: 1` and deleted by `finish` when it is done.
-- **A failed work job.** The other work jobs keep going (`fail-fast: false`), and `finish` applies every shard that uploaded results; the files of a shard with no results wait for the next run. `finish` is skipped only when the run is cancelled, and then a `cleanup` job deletes the artifacts.
-- **The push.** `finish` replaces `docturnal/update` with `--force-with-lease` against the commit the plan saw (or "must not exist" when there was none). If a person added a commit to it during the run, or the app deleted it because its pull request was closed without merging, the push is refused and the run's work waits for the next run. The app keeps the branch of a merged pull request while a run is going, and deletes a declined one's at once.
+- **Parallel jobs (internal, for testing only; the app's workflow never uses them).** The plan uses one work job below 40 files, otherwise up to 8 for a public repository and 2 for a private one (from the event's `repository.private`; unknown counts as private), or `max-jobs`. Shards are balanced by file size. A worker loads only the models it needs: summary-only shards use the comment model alone. Artifacts hold code-derived content, so they are uploaded with `retention-days: 1` and deleted by `finish` when it is done.
+- **A failed work job (parallel jobs only).** The other work jobs keep going (`fail-fast: false`), and `finish` applies every shard that uploaded results; the files of a shard with no results wait for the next run. `finish` is skipped only when the run is cancelled, and then a `cleanup` job deletes the artifacts.
+- **The push.** The run replaces `docturnal/update` with `--force-with-lease` against the commit it started from (or "must not exist" when there was none). If a person added a commit to it during the run, or the app deleted it because its pull request was closed without merging, the push is refused and the run's work waits for the next run. The app keeps the branch of a merged pull request while a run is going, and deletes a declined one's at once.
 - **An open pull request.** `docturnal/update` holds an open pull request when it has commits the base lacks and merging the base into it leaves changes; after a squash or rebase merge it leaves none.
 - **Files the model can't summarize.** An unusable summary (with a fixed seed, it would be the same every night) is recorded as `summaryFailed`, so the documentation pass can end; the file is still commented in a batch. The pass is done when the state says so, or when every code file has an entry.
 - **A batch that changed no file** doesn't hold the next batch back.
@@ -194,13 +191,14 @@ Docturnal may replace or remove comments it wrote itself, and never anyone else'
 - A night with no changes makes no model calls, no commit, and no push, and leaves the state timestamp alone. A pre-check step (`src/precheck.js`, Node built-ins only) runs first: it sets up the branch, loads the state, and hashes the in-scope files with the same code as `main.js`. It outputs `changed=true` when it is the first run or the documentation is not complete, a file is new, changed, or deleted, existing code waits for a batch and no batch is open, a generated doc is missing, a person edited `README.md` (so their section gets polished), or a `docs/README.md` with the marker is left to remove. Otherwise it logs "No changes since the last run", and every later step, including model selection and the Ollama install, is skipped.
 - Write `.docturnal/last-run.md` as the pull request's title (its first heading) and body. It opens with a progress section: the documentation's status, "Comments: X of Y files", what the pull request holds (the documentation, changed files, batch N and its layers), and what comes next. Below that, it lists comments added per file and whether a parser checked each file, a count per file of comments proposed, dropped by placement rules, anchor not found, dropped by the length limit or the density limit, inaccurate, restates the code, rejected by the safety check, and added, and of Docturnal's earlier comments kept, restyled, and removed (never comment text or code), files skipped and why, docs updated or removed, the README sections updated, polished, kept in your wording, and not re-added because you removed them (by heading only), comments rejected by the safety check, files left for the next run, and the models used. It follows the same writing style as the docs.
 
-## Docturnal for teams (opt-in)
+## Internal testing modes
 
-For organizations that cannot install third-party GitHub Apps or process code on GitHub-hosted runners. The app stays the default, and with these inputs at their defaults the Action behaves exactly as it does with the app. User documentation: `docs/teams.md`.
+These exist only for testing Docturnal, for example from `test/github/` in a scratch repository. They are never offered to users: no user documentation mentions them, and `action.yml` marks their inputs "Internal: used for testing Docturnal. Not supported for users." With these inputs at their defaults, the Action behaves exactly as it does with the app. Do not build features on them. A fully self-hosted version of the whole app may come later if a company asks; nothing in between will be offered.
 
-- **Level 1, the Action without the app.** The user commits the workflow file. `open-pr: "true"` makes the Action open the pull request from `docturnal/update` after the push, or update the open one, with the `github-token` input and `.docturnal/last-run.md` as the body, and no settings link (`src/pulls.js`). A 403 because "Allow GitHub Actions to create and approve pull requests" is off, or because the token lacks `pull-requests: write`, fails the run with one line naming the setting; the pushed branch stays. With `open-pr` false, the pull request API is never called. Without the app nothing deletes branches, so the docs tell users to turn on "Automatically delete head branches". Settings come from the workflow file: the cron line and `comment-level`.
-- **Level 2, self-hosted runners.** Linux x64 and arm64. Without `ollama-url`, the Action uses the Ollama on the `PATH` or installs it, starts its own server on a free port, keeps models in `models-dir` (default `~/.docturnal/models`), and pulls only models that are missing there. `actions/cache` and the Ollama version check run only when `runner.environment` is `github-hosted`, so a self-hosted runner never uploads models or Ollama to GitHub's cache.
-- **`ollama-url`.** One Ollama server of the user's own (`src/server.js`). Nothing installs, starts, or caches Ollama, RAM-based model selection is skipped, and `model` and `docs-model` are settings. Before any code is sent, the host is resolved and allowed only if every address is loopback or private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10). Each request opens a new connection that checks the addresses again. A public address fails the run unless `allow-public-ollama` is "true". The log shows the host and its addresses, never code. Missing models are pulled through the server's `/api/pull`, or with `pull-models: "false"` the run fails and names the model. The runner contacts nothing about Ollama except that server. The default mode keeps the loopback-only rule.
+- **Parallel modes.** `mode` `plan`, `work`, `finish`, and `cleanup`, with `shard` and `max-jobs` (see "Parallel jobs" under Nightly behavior). `test/github/docturnal-beta.yml` uses them.
+- **Without the app.** A test workflow file is committed by hand. `open-pr: "true"` makes the Action open the pull request from `docturnal/update` after the push, or update the open one, with the `github-token` input and `.docturnal/last-run.md` as the body, and no settings link (`src/pulls.js`). A 403 because "Allow GitHub Actions to create and approve pull requests" is off, or because the token lacks `pull-requests: write`, fails the run with one line naming the setting; the pushed branch stays. With `open-pr` false, the pull request API is never called. Settings come from the workflow file.
+- **Self-hosted runners.** Linux x64 and arm64. Without `ollama-url`, the Action uses the Ollama on the `PATH` or installs it, starts its own server on a free port, keeps models in `models-dir` (default `~/.docturnal/models`), and pulls only models that are missing there. `actions/cache` and the Ollama version check run only when `runner.environment` is `github-hosted`, so a self-hosted runner never uploads models or Ollama to GitHub's cache.
+- **`ollama-url`.** One Ollama server on a private network (`src/server.js`). Nothing installs, starts, or caches Ollama, RAM-based model selection is skipped, and `model` and `docs-model` are settings. Before any code is sent, the host is resolved and allowed only if every address is loopback or private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10). Each request opens a new connection that checks the addresses again. A public address fails the run unless `allow-public-ollama` is "true". The log shows the host and its addresses, never code. Missing models are pulled through the server's `/api/pull`, or with `pull-models: "false"` the run fails and names the model. The runner contacts nothing about Ollama except that server. The default mode keeps the loopback-only rule.
 - **GitHub Enterprise Server.** All GitHub API calls use `GITHUB_API_URL` from the runner, and git uses the remote that `actions/checkout` set up. The API version header is sent only to `https://api.github.com`.
 
 ## Names
@@ -222,9 +220,9 @@ For organizations that cannot install third-party GitHub Apps or process code on
 | README block markers | `<!-- docturnal:layers -->`, `<!-- docturnal:scripts -->`, `<!-- docturnal:tree -->`, each closed by `<!-- /docturnal:NAME -->` |
 | PR body | `.docturnal/last-run.md` |
 | PR titles | `Docturnal: documentation`, `Docturnal: comments and documentation` |
-| Run artifacts | `docturnal-plan`, `docturnal-shard-<n>` |
+| Run artifacts (internal parallel modes) | `docturnal-plan`, `docturnal-shard-<n>` |
 | Ignore file | `.docturnalignore` at the repository root |
-| Teams inputs | `open-pr`, `github-token`, `ollama-url`, `allow-public-ollama`, `pull-models`, `models-dir` |
+| Internal testing inputs | `open-pr`, `github-token`, `ollama-url`, `allow-public-ollama`, `pull-models`, `models-dir`, `mode`, `shard`, `max-jobs` |
 | Doc marker (layer docs) | `<!-- Generated by Docturnal. Edits to this file are replaced the next time its layer changes. -->` |
 
 Do not rename these. Other parts and users' repos depend on them.
@@ -236,9 +234,10 @@ action.yml          Composite action definition (repo root)
 package.json        Runtime dependency: typescript only
 src/                Action code (Node 20+, plain CommonJS, no build step)
 app/                GitHub App backend (Cloudflare Worker)
-test/               Tests for the Action and app, including the mock Ollama server
-docs/               Docturnal's own documentation, such as docs/teams.md
+test/               Tests for the Action and app, including the mock Ollama server;
+                    test/github/ holds a scratch-repository test kit for the internal modes
 README.md           Project README
+LICENSE             All rights reserved; source published for verification only
 .docturnalignore    Paths Docturnal skips in its own repository (test fixtures)
 CLAUDE.md           This file
 ```

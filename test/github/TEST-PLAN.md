@@ -13,11 +13,18 @@ git tag -f beta
 git push -f origin beta
 ```
 
-Create the scratch repository with the script. It writes 61 source files in 4 folders (`src/api`, `src/core`, `src/data`, `src/util`) that import each other, plus a file with a space in its path, one with a Unicode name, and one with Windows line endings. With `--create`, it also creates the repository on GitHub, pushes it, and turns on the setting that lets the workflow's token open pull requests. You need the `gh` CLI, signed in.
+Create the scratch repository with the script. It writes 61 source files in 4 folders (`src/api`, `src/core`, `src/data`, `src/util`) that import each other, plus a file with a space in its path, one with a Unicode name, and one with Windows line endings. With `--create`, it also creates the repository on GitHub with the `gh` CLI, pushes it, and turns on the setting that lets the workflow's token open pull requests.
+
+Without `gh`, create an empty public repository on GitHub (no README, license, or `.gitignore`), then build and push:
 
 ```sh
-bash test/github/make-scratch-repo.sh ../docturnal-scratch --create aidanbh16/docturnal-scratch
+bash test/github/make-scratch-repo.sh ../docturnal-scratch
+cd ../docturnal-scratch
+git remote add origin https://github.com/aidanbh16/docturnal-scratch.git
+git push -u origin main
 ```
+
+Then turn on the setting by hand: in the repository, open **Settings**, then **Actions**, then **General**. Under **Workflow permissions**, select **Allow GitHub Actions to create and approve pull requests**, and click **Save**.
 
 The workflow it installs is `test/github/docturnal-beta.yml`. It runs only when you start it, from the repository's **Actions** tab, under **Docturnal**, with **Run workflow**. Don't install the Docturnal app on this repository: the workflow opens its own pull requests, and the app would dispatch its own runs.
 

@@ -14,15 +14,6 @@ Select **Install** on the [Docturnal GitHub App page](https://github.com/apps/do
 
 For each repository, the app adds `.github/workflows/docturnal.yml` to the default branch and starts the first run. If branch protection stops the app from committing to the default branch, it opens a pull request titled "Set up Docturnal" with the workflow file instead. The first run starts when you merge it.
 
-## Docturnal for teams
-
-If your organization does not allow third-party GitHub Apps, or does not allow your code to be processed on GitHub-hosted runners, you can run Docturnal without the app:
-
-- **Level 1:** you add the workflow file yourself, and the Action opens the pull request.
-- **Level 2:** the same, on your own self-hosted runner, with the models on that runner or on an Ollama server in your network. Your code and the models never leave your machines.
-
-The settings then live in your workflow file. See [Docturnal for teams](docs/teams.md) for the setup, two complete workflow files, and the network access each mode needs.
-
 ## Settings
 
 After you install the app, GitHub takes you to Docturnal's settings page. You sign in with GitHub, and the page checks that you can access the installation. Each Docturnal pull request also ends with a **Change Docturnal settings** link to the same page.
@@ -118,7 +109,6 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 - **The app never reads your code.** The app only makes GitHub API calls: it commits the workflow file, starts runs, opens pull requests, and deletes its branches. It reads only two files: its own workflow file, to check its version, and `.docturnal/last-run.md`, which Docturnal writes and which never contains code.
 - **The models run on GitHub's runner.** The workflow installs Ollama on the runner, downloads the models, and runs them there, listening only on the runner itself. Your code goes to these local models and nowhere else.
 - **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic is the checkout of your repository, the downloads of Ollama, the models, and the Action's one dependency, and the push of the `docturnal/update` branch back to your repository.
-- **Parallel jobs pass results through artifacts.** A run that uses several jobs passes its plan and each job's results to the last job as GitHub Actions artifacts of the run. They contain content from your code, such as the commented files, so they are kept for one day at most, and the last job deletes them as soon as it is done. They stay in your repository's Actions storage on GitHub, like the run's logs.
 - **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, and the names of the repositories it is installed on. It stores no code.
 - **Minimum permissions.** The app asks for write access to contents, workflows, pull requests, and actions, and read access to metadata.
 
@@ -128,9 +118,8 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 - **New and changed code next.** Each later run compares your files with the hashes from the last run, and comments the new and changed ones before anything else.
 - **Existing code in batches.** After that, if time remains and no batch is waiting in an open pull request, the run comments one batch of existing files. It ranks them by importance: entry points, such as the files `package.json` names and route or handler files, then files many others import, complex files, and files that changed recently.
 - **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
-- **Big passes run in parallel.** When a run has 40 or more files to read or comment, such as the first run, it splits them across several jobs that run at once: up to 8 for a public repository and 2 for a private one. A last job applies every job's results and opens the pull request. If any job fails, the last job doesn't run, so a pull request never holds part of a run.
 - **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.
-- **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. Every job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.
+- **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.
 
 ## Supported languages
 
@@ -142,7 +131,7 @@ A parser verifies the result for JavaScript, TypeScript, and Python. The other l
 
 - **Small models on CPUs.** GitHub's standard runners have no GPU, so Docturnal uses small code models: `qwen2.5-coder:3b` for comments and `qwen2.5-coder:7b` for documents. On runners with less memory, such as the ones for private repositories, the documents may be written with the smaller model, and the pull request says so. The comments and documents are good drafts, not expert review.
 - **Speed.** Models on a CPU are slow. In a large repository, the first run can use its whole time budget and finish the documentation on the following nights, and commenting all the existing code takes many nights, one batch each.
-- **GitHub Actions minutes.** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes. To keep that use small, a private repository's runs use at most 2 jobs at once, and each job installs Ollama and loads its models once.
+- **GitHub Actions minutes.** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes. A night with nothing to do stops before Ollama is installed, which usually takes under a minute.
 
 ## Uninstalling
 
@@ -173,4 +162,6 @@ To work on it, you need Node.js 20 or later:
 
 ## License
 
-The license has not been chosen yet.
+Copyright (c) 2026 Aidan Holton. All rights reserved.
+
+The source code is published so you can verify what Docturnal does with your code. It is not open source: you may use Docturnal only by installing the official [Docturnal app](https://github.com/apps/docturnal-app), or under a separate written license from the author. See [LICENSE](LICENSE).

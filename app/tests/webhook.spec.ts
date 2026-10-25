@@ -634,7 +634,7 @@ describe('push to docturnal/update', () => {
 });
 
 describe('workflow template', () => {
-  it('has no schedule, takes comment-level and existing-code as dispatch inputs, and passes them to every job', () => {
+  it('has no schedule, and takes comment-level and existing-code as dispatch inputs', () => {
     expect(WORKFLOW).not.toMatch(/schedule:|cron:/);
     expect(WORKFLOW).toContain(`on:
   workflow_dispatch:
@@ -649,57 +649,39 @@ describe('workflow template', () => {
         type: choice
         options: ["gradual", "none"]
         default: "gradual"`);
-    // Deleting the run's artifacts needs actions: write.
-    expect(WORKFLOW).toContain('permissions:\n  contents: write\n  # Lets the finish and cleanup jobs delete this run\'s artifacts, which hold content from your code.\n  actions: write\n');
-    expect(WORKFLOW.match(/      - uses: actions\/checkout@v7\n        with:\n          fetch-depth: 0\n/g)).toHaveLength(3);
-    const inputs = "          comment-level: ${{ inputs['comment-level'] || 'medium' }}\n          existing-code: ${{ inputs['existing-code'] || 'gradual' }}\n";
-    for (const mode of ['plan', 'work', 'finish', 'cleanup']) expect(WORKFLOW).toContain(`          mode: ${mode}\n`);
-    expect(WORKFLOW.split(inputs)).toHaveLength(4);
+    expect(WORKFLOW).toContain('permissions:\n  contents: write\n\n');
+    expect(WORKFLOW).not.toContain('actions: write');
   });
 
-  it('plans, works on shards in parallel, and finishes with what the workers did', () => {
-    expect(WORKFLOW).toContain(`  plan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    outputs:
-      has-work: \${{ steps.docturnal.outputs.has-work }}
-      shards: \${{ steps.docturnal.outputs.shards }}
-      max-parallel: \${{ steps.docturnal.outputs.max-parallel }}`);
-    expect(WORKFLOW).toContain(`  work:
-    needs: plan
-    if: needs.plan.outputs.has-work == 'true' && needs.plan.outputs.shards != '[]'
+  it('runs one job, whose timeout leaves at least 20 minutes after the time budget, with no artifacts', () => {
+    expect(WORKFLOW).toContain(`jobs:
+  docturnal:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      # The other work jobs keep going when one fails, and finish applies what they did.
-      fail-fast: false
-      max-parallel: \${{ fromJSON(needs.plan.outputs.max-parallel) }}
-      matrix:
-        shard: \${{ fromJSON(needs.plan.outputs.shards) }}`);
-    expect(WORKFLOW).toContain(`  finish:
-    needs: [plan, work]
-    if: \${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has-work == 'true' }}`);
-    // Each job's timeout leaves at least 20 minutes after the 90-minute time budget.
-    expect(WORKFLOW.match(/          time-budget-minutes: "90"\n          job-timeout-minutes: "120"\n/g)).toHaveLength(2);
-    expect(WORKFLOW.match(/timeout-minutes: 120\n/g)!.length).toBe(2);
-    // When the run is cancelled, finish is skipped, and cleanup deletes what the work jobs uploaded.
-    expect(WORKFLOW).toContain(`  cleanup:
-    needs: [plan, work, finish]
-    if: always() && needs.plan.outputs.has-work == 'true' && needs.finish.result == 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: acme/docturnal@v1
         with:
-          mode: cleanup
+          comment-level: \${{ inputs['comment-level'] || 'medium' }}
+          existing-code: \${{ inputs['existing-code'] || 'gradual' }}
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
 `);
+    expect(WORKFLOW.endsWith('          job-timeout-minutes: "120"\n')).toBe(true);
+    expect(WORKFLOW.split('\njobs:\n')[1].match(/^  [\w-]+:$/gm)).toEqual(['  docturnal:']);
+    expect(WORKFLOW).not.toMatch(/mode:|artifact|matrix|needs:/);
   });
 });
 
-// Earlier templates, from the current one: only the version line and what the tests read
-// differ. Version 3 had one job; version 2 used actions/checkout@v4; version 1 also had no
-// version line and no concurrency block.
-const WORKFLOW_V3 = WORKFLOW.replace(`# Docturnal workflow version ${WORKFLOW_VERSION}.\n`, '# Docturnal workflow version 3.\n');
+// Earlier templates, from the current one. Version 3 had no existing-code input and no time
+// budget; version 2 used actions/checkout@v4; version 1 also had no version line and no
+// concurrency block.
+const WORKFLOW_V3 = WORKFLOW
+  .replace(`# Docturnal workflow version ${WORKFLOW_VERSION}.\n`, '# Docturnal workflow version 3.\n')
+  .replace(/\n      existing-code:\n(?:        .*\n){4}/, '\n')
+  .replace(/\n          existing-code: .*\n          time-budget-minutes: .*\n          job-timeout-minutes: .*\n/, '\n');
 const WORKFLOW_V2 = WORKFLOW_V3
   .replace('# Docturnal workflow version 3.\n', '# Docturnal workflow version 2.\n')
   .replaceAll('actions/checkout@v7', 'actions/checkout@v4');
@@ -713,6 +695,9 @@ describe('workflow versions', () => {
     expect(WORKFLOW).toContain(`\n# Docturnal workflow version ${WORKFLOW_VERSION}.\n`);
     expect(WORKFLOW_VERSION).toBe(4);
     expect(WORKFLOW_V1).not.toContain('concurrency');
+    expect(WORKFLOW_V3).not.toContain('existing-code');
+    expect(WORKFLOW_V3).not.toContain('time-budget-minutes');
+    expect(WORKFLOW_V3).toContain("          comment-level: ${{ inputs['comment-level'] || 'medium' }}\n");
     expect(WORKFLOW_V2).toContain('actions/checkout@v4');
     expect(templateVersion(WORKFLOW, 'acme/docturnal')).toBe(4);
     expect(templateVersion(WORKFLOW_V3, 'acme/docturnal')).toBe(3);
@@ -734,12 +719,11 @@ describe('workflow versions', () => {
     expect(t.gh.state.pulls[0].body).toContain('updates `.github/workflows/docturnal.yml` to version 4');
     expect(t.gh.state.pulls[0].body).toContain('The new version makes these changes:\n\n- Lets only one Docturnal run happen at a time');
     expect(t.gh.state.pulls[0].body).toContain('\n- Uses version 7 of `actions/checkout`, which runs on Node.js 24.');
-    expect(t.gh.state.pulls[0].body).toContain('\n- Splits each run into a plan, work, and finish job');
+    expect(t.gh.state.pulls[0].body).toContain('\n- Passes your "Existing code" setting to each run');
     expect(t.gh.state.pulls[0].body.endsWith(SETTINGS_LINK)).toBe(true);
-    expect(t.logs).toContain('setup octo/hello: the workflow is version 1, opened update pull request #1');
-  });
+    expect(t.logs).toContain('setup octo/hello: the workflow is version 1, opened update pull request #1');  });
 
-  it('proposes version 4 to a repository on version 3, for the parallel jobs only', async () => {
+  it('proposes version 4 to a repository on version 3, for the Existing code setting only', async () => {
     const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V3 } });
     t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
     await t.cron('2026-01-15T05:07:00Z');
@@ -747,8 +731,8 @@ describe('workflow versions', () => {
     const repo = t.gh.state.repos.get('octo/hello');
     expect(repo.files.get(`docturnal/workflow-update:${WORKFLOW_PATH}`)).toBe(WORKFLOW);
     const body = t.gh.state.pulls[0].body;
-    expect(body).toContain('The new version splits each run into a plan, work, and finish job');
-    expect(body).toContain('"actions: write" permission');
+    expect(body).toContain('The new version passes your "Existing code" setting to each run');
+    expect(body).not.toMatch(/parallel|artifact|actions: write/);
     expect(body).not.toContain('actions/checkout');
     expect(body).toContain('<!-- docturnal-workflow-version: 4 -->');
     // Version 3 runs as before until the pull request is merged, without the existing-code input.

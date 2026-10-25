@@ -176,10 +176,12 @@ export function createMockGitHub({
       }
       const workflow = repo.files.get(fileKey(body.ref, `.github/workflows/${dispatch[1]}`));
       if (workflow === undefined) return json(404, { message: 'Not Found' });
+      // Like GitHub, a dispatch with an input the workflow does not declare is rejected.
       const inputs = body.inputs || {};
-      if (Object.keys(inputs).length && !/workflow_dispatch:\s*\n\s+inputs:/.test(workflow)) {
-        return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(Object.keys(inputs))}` });
-      }
+      const declared = /workflow_dispatch:\s*\n\s+inputs:\n((?:\s{6,}.*\n)*)/.exec(workflow);
+      const names = declared ? [...declared[1].matchAll(/^ {6}([\w-]+):$/gm)].map((m) => m[1]) : [];
+      const unexpected = Object.keys(inputs).filter((name) => !names.includes(name));
+      if (unexpected.length) return json(422, { message: `Unexpected inputs provided: ${JSON.stringify(unexpected)}` });
       state.dispatches.push({ repo: fullName, workflow: dispatch[1], ref: body.ref, inputs });
       // Version 2026-03-10 answers 200 with the run details; 2022-11-28 answers 204.
       if (currentVersion !== '2026-03-10') return json(204);
