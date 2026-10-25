@@ -94,7 +94,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
   return { gh, kv, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
 }
 
-const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy' };
+const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' };
 
 describe('setup page sign-in', () => {
   it('lets the owner sign in after install and save settings', async () => {
@@ -114,8 +114,9 @@ describe('setup page sign-in', () => {
     expect(saved.status).toBe(200);
     const page = await saved.text();
     expect(page).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
-    expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy' });
+    expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' });
     expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles' });
+    expect(t.logs).toContain('setup 1: saved 2 AM America/Los_Angeles, heavy comments, existing code none');
     expect(t.kv.repos(1)).toEqual(['octo/hello']);
 
     // Saved settings are shown next time, without the browser suggestion.
@@ -209,7 +210,7 @@ describe("saving the browser's time zone", () => {
 
     expect(requests.map((r) => r.get('detectedTimeZone'))).toEqual(['America/Los_Angeles']);
     expect(select.value).toBe('America/Los_Angeles');
-    expect(t.kv.installation(1)).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', repos: ['octo/hello'] });
+    expect(t.kv.installation(1)).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual', repos: ['octo/hello'] });
     expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 0, timeZone: 'America/Los_Angeles' });
     expect(unsaved.textContent).toBe('Your time zone, America/Los_Angeles, is saved. If you close this page now, Docturnal runs every night at 12 AM (midnight), America/Los_Angeles time, with medium comments.');
     expect(t.logs).toContain("setup 1: saved the browser's time zone, America/Los_Angeles");
@@ -226,7 +227,7 @@ describe("saving the browser's time zone", () => {
     await runPageScript(t, form, cookie, 'Europe/Berlin');
     // Only the settings key is written; repository keys are the webhooks' to create.
     expect([...t.kv.data.keys()]).toEqual(['install:1:settings']);
-    expect(t.kv.json('install:1:settings')).toEqual({ time: 0, timeZone: 'Europe/Berlin', commentLevel: 'medium' });
+    expect(t.kv.json('install:1:settings')).toEqual({ time: 0, timeZone: 'Europe/Berlin', commentLevel: 'medium', existingCode: 'gradual' });
   });
 
   it('sends nothing when the browser is already in New York or its time zone is not listed', async () => {
@@ -256,6 +257,25 @@ describe("saving the browser's time zone", () => {
     expect((await t.post({ csrf: 'wrong', detectedTimeZone: 'Asia/Tokyo' }, cookie)).status).toBe(403);
     expect((await t.post({ csrf, detectedTimeZone: 'Mars/Olympus' }, cookie)).status).toBe(400);
     expect(t.kv.data.size).toBe(0);
+  });
+});
+
+describe('the Existing code setting', () => {
+  it('shows both choices with the saved one selected, "Comment gradually" by default', async () => {
+    const t = setup();
+    const { form } = await t.signIn();
+    expect(form).toContain('<legend>Existing code</legend>');
+    expect(form).toContain('<input type="radio" name="existingCode" value="gradual" checked><div>Comment gradually<span>After the first pull request documents your code, Docturnal comments your existing files in small batches, the most important first. This is the default.</span></div>');
+    expect(form).toContain('<input type="radio" name="existingCode" value="none"><div>Only new and changed code<span>Docturnal comments only the code you add or change.</span></div>');
+  });
+
+  it('keeps the stored choice when an older form without the field is sent, and refuses an unknown value', async () => {
+    const t = setup({ settings: { time: 1, timeZone: 'UTC', commentLevel: 'low', existingCode: 'none', repos: ['octo/hello'] } });
+    const { cookie, csrf } = await t.signIn();
+    const { existingCode: _, ...older } = SAVE;
+    expect((await t.post({ ...older, csrf }, cookie)).status).toBe(200);
+    expect(t.kv.json('install:1:settings')).toMatchObject({ existingCode: 'none', commentLevel: 'heavy' });
+    expect((await t.post({ ...SAVE, existingCode: 'everything', csrf }, cookie)).status).toBe(400);
   });
 });
 

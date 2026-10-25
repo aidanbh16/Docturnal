@@ -1,0 +1,115 @@
+# A parallel Docturnal workflow for testing the beta tag on GitHub. Copy it to a scratch
+# repository as .github/workflows/docturnal.yml. It runs only when you start it by hand.
+name: Docturnal
+
+on:
+  workflow_dispatch:
+    inputs:
+      comment-level:
+        description: "Comment level: low, medium, heavy, or off."
+        type: choice
+        options: ["low", "medium", "heavy", "off"]
+        default: "medium"
+      existing-code:
+        description: "Existing code: gradual or none."
+        type: choice
+        options: ["gradual", "none"]
+        default: "gradual"
+      max-jobs:
+        description: "The most work jobs at once. Empty: 8 for a public repository, 2 for a private one."
+        default: ""
+      break-shard:
+        description: "To test a failed worker: the shard number whose job fails before it starts. Empty: none."
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Lets the finish and cleanup jobs delete this run's artifacts.
+  actions: write
+
+concurrency:
+  group: docturnal
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      has-work: ${{ steps.docturnal.outputs.has-work }}
+      shards: ${{ steps.docturnal.outputs.shards }}
+      max-parallel: ${{ steps.docturnal.outputs.max-parallel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: docturnal
+        uses: aidanbh16/Docturnal@beta
+        with:
+          mode: plan
+          max-jobs: ${{ inputs.max-jobs }}
+          comment-level: ${{ inputs.comment-level }}
+          existing-code: ${{ inputs.existing-code }}
+      - name: Show the plan's outputs
+        run: |
+          echo "has-work: ${{ steps.docturnal.outputs.has-work }}"
+          echo "shards: ${{ steps.docturnal.outputs.shards }}"
+          echo "max-parallel: ${{ steps.docturnal.outputs.max-parallel }}"
+
+  work:
+    needs: plan
+    if: needs.plan.outputs.has-work == 'true' && needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      # The other work jobs keep going when one fails, and finish applies what they did.
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max-parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Fail on purpose (test only)
+        if: inputs.break-shard != '' && format('{0}', matrix.shard) == inputs.break-shard
+        run: |
+          echo "Failing shard ${{ matrix.shard }} on purpose, before it does any work."
+          exit 1
+      - uses: aidanbh16/Docturnal@beta
+        with:
+          mode: work
+          shard: ${{ matrix.shard }}
+          comment-level: ${{ inputs.comment-level }}
+          existing-code: ${{ inputs.existing-code }}
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
+
+  finish:
+    needs: [plan, work]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has-work == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: aidanbh16/Docturnal@beta
+        with:
+          mode: finish
+          open-pr: "true"
+          comment-level: ${{ inputs.comment-level }}
+          existing-code: ${{ inputs.existing-code }}
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
+
+  cleanup:
+    needs: [plan, work, finish]
+    if: always() && needs.plan.outputs.has-work == 'true' && needs.finish.result == 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: aidanbh16/Docturnal@beta
+        with:
+          mode: cleanup

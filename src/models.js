@@ -65,13 +65,27 @@ function formatSummary(selection) {
     `comment model ${selection.commentModel}, docs model ${selection.docsModel}${fallback}`;
 }
 
-function writeOutputs(selection, outputPath) {
+// Whether this job needs the docs model. A worker of a parallel run whose shard has only
+// summaries uses the comment model alone, so it does not pull or load the docs model.
+function needsDocsModel(env = process.env) {
+  if ((env.INPUT_MODE || 'all') !== 'work' || !env.DOCTURNAL_PLAN) return true;
+  try {
+    const plan = JSON.parse(fs.readFileSync(env.DOCTURNAL_PLAN, 'utf8'));
+    const shard = plan.shards[Number(env.INPUT_SHARD || 0)] || [];
+    return shard.some((p) => (plan.items.find((i) => i.path === p) || {}).kind !== 'summary');
+  } catch {
+    return true;
+  }
+}
+
+function writeOutputs(selection, outputPath, pullDocsModel = true) {
   const lines = [
     `comment-model=${selection.commentModel}`,
     `docs-model=${selection.docsModel}`,
     `docs-may-fallback=${selection.docsMayFallback}`,
     `fallback-docs-model=${selection.fallbackDocsModel}`,
     `ram-gib=${selection.ramGib === null ? '' : selection.ramGib.toFixed(1)}`,
+    `pull-docs-model=${pullDocsModel}`,
   ];
   fs.appendFileSync(outputPath, lines.join('\n') + '\n');
 }
@@ -86,7 +100,7 @@ function main() {
   });
   console.log(formatSummary(selection));
   if (process.env.GITHUB_OUTPUT) {
-    writeOutputs(selection, process.env.GITHUB_OUTPUT);
+    writeOutputs(selection, process.env.GITHUB_OUTPUT, needsDocsModel());
   }
 }
 
@@ -103,5 +117,6 @@ module.exports = {
   readTotalMemory,
   selectModels,
   formatSummary,
+  needsDocsModel,
   writeOutputs,
 };

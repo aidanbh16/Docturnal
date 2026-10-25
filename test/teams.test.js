@@ -43,22 +43,25 @@ function lastRunDir(text) {
 
 test('open-pr opens the pull request the first time and updates it the second time, with no settings link', async () => {
   const api = await startMockGitHubApi();
-  const root = lastRunDir('# Docturnal update\n\nThis pull request adds 3 comments to 1 file.\n');
+  // last-run.md's first heading is the title, and the rest is the body.
+  const root = lastRunDir('# Docturnal: documentation\n\nThis pull request documents the project.\n');
   const env = { GITHUB_API_URL: api.url, GITHUB_REPOSITORY: 'acme/payroll' };
   try {
     const first = await openOrUpdatePullRequest({ root, base: 'main', token: 'test-token', env });
     assert.deepStrictEqual(first, { number: 1, action: 'opened' });
     assert.deepStrictEqual(api.state.pulls[0], {
-      repo: 'acme/payroll', number: 1, state: 'open', title: 'Docturnal: comments and documentation', head: 'docturnal/update', base: 'main',
-      body: '# Docturnal update\n\nThis pull request adds 3 comments to 1 file.\n',
+      repo: 'acme/payroll', number: 1, state: 'open', title: 'Docturnal: documentation', head: 'docturnal/update', base: 'main',
+      body: 'This pull request documents the project.\n',
     });
     assert.doesNotMatch(api.state.pulls[0].body, /Change Docturnal settings|setup\?installation_id/);
 
-    fs.writeFileSync(path.join(root, '.docturnal/last-run.md'), '# Docturnal update\n\nThis pull request adds 5 comments to 2 files.\n');
+    fs.writeFileSync(path.join(root, '.docturnal/last-run.md'), '# Docturnal: comments and documentation\n\nThis pull request adds 5 comments to 2 files.\n');
     const second = await openOrUpdatePullRequest({ root, base: 'main', token: 'test-token', env });
     assert.deepStrictEqual(second, { number: 1, action: 'updated' });
     assert.strictEqual(api.state.pulls.length, 1);
     assert.match(api.state.pulls[0].body, /5 comments to 2 files/);
+    // The title follows the pull request's content.
+    assert.strictEqual(api.state.pulls[0].title, 'Docturnal: comments and documentation');
     assert.deepStrictEqual(api.state.requests.map((r) => `${r.method} ${r.path}${r.query}`), [
       'GET /repos/acme/payroll/pulls?state=open&head=acme%3Adocturnal%2Fupdate',
       'POST /repos/acme/payroll/pulls',
@@ -77,7 +80,7 @@ test('the 403 for pull requests from GitHub Actions names the setting to turn on
     ['permissions', /^Docturnal pushed docturnal\/update, but the token cannot open pull requests in acme\/payroll\. Add "pull-requests: write" to the permissions in the workflow file\.$/],
   ]) {
     const api = await startMockGitHubApi({ refuse });
-    const root = lastRunDir('# Docturnal update\n');
+    const root = lastRunDir('# Docturnal: documentation\n');
     try {
       await assert.rejects(
         openOrUpdatePullRequest({ root, base: 'main', token: 'test-token', env: { GITHUB_API_URL: api.url, GITHUB_REPOSITORY: 'acme/payroll' } }),
@@ -96,7 +99,7 @@ test('the 403 for pull requests from GitHub Actions names the setting to turn on
 
 test('GITHUB_API_URL is respected, as on GitHub Enterprise Server, and only GitHub.com gets the API version header', async () => {
   const api = await startMockGitHubApi({ prefix: '/api/v3' });
-  const root = lastRunDir('# Docturnal update\n');
+  const root = lastRunDir('# Docturnal: documentation\n');
   try {
     await openOrUpdatePullRequest({ root, base: 'develop', token: 'test-token', env: { GITHUB_API_URL: api.url, GITHUB_REPOSITORY: 'corp/billing' } });
     assert.ok(api.state.requests.every((r) => r.path.startsWith('/api/v3/repos/corp/billing/pulls')));
@@ -150,7 +153,7 @@ test('model selection with ollama-url skips the runner memory and uses the model
     encoding: 'utf8',
   });
   assert.strictEqual(log.trim(), 'Docturnal: Ollama server from ollama-url, comment model llama3.1:70b, docs model qwen2.5-coder:7b');
-  assert.match(fs.readFileSync(out, 'utf8'), /^comment-model=llama3\.1:70b\ndocs-model=qwen2\.5-coder:7b\ndocs-may-fallback=false\nfallback-docs-model=qwen2\.5-coder:3b\nram-gib=\n$/);
+  assert.match(fs.readFileSync(out, 'utf8'), /^comment-model=llama3\.1:70b\ndocs-model=qwen2\.5-coder:7b\ndocs-may-fallback=false\nfallback-docs-model=qwen2\.5-coder:3b\nram-gib=\npull-docs-model=true\n$/);
   fs.rmSync(out);
 });
 
@@ -350,7 +353,9 @@ describe('open-pr in a run', () => {
     assert.strictEqual(first.code, 0, first.stderr);
     assert.match(first.log, /^Docturnal: opened pull request #1$/m);
     const lastRun = git(remote, 'show', 'docturnal/update:.docturnal/last-run.md');
-    assert.strictEqual(api.state.pulls[0].body.trim(), lastRun.trim());
+    const [heading, ...rest] = lastRun.split('\n');
+    assert.strictEqual(api.state.pulls[0].title, heading.replace(/^# /, ''));
+    assert.strictEqual(api.state.pulls[0].body.trim(), rest.join('\n').trim());
     assert.strictEqual(api.state.pulls[0].base, 'main');
 
     commit('src/net.js', 'export function net(gross, tax) {\n  return gross - tax;\n}\n');

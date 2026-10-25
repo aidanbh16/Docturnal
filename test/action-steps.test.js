@@ -39,9 +39,10 @@ function steps() {
 // A small evaluator for the expressions action.yml uses: context paths, 'strings', ==, !=,
 // &&, ||, and parentheses. Missing values are '', as in GitHub Actions.
 function evaluate(expression, context) {
-  const tokens = expression.match(/'[^']*'|==|!=|&&|\|\||\(|\)|[\w.-]+/g);
+  const tokens = expression.replace(/\balways\(\)/g, "'always'").match(/'[^']*'|==|!=|&&|\|\||\(|\)|[\w.-]+/g);
   let i = 0;
   const value = (token) => {
+    if (token === "'always'") return true;
     if (token.startsWith("'")) return token.slice(1, -1);
     return token.split('.').reduce((obj, key) => (obj && obj[key] !== undefined ? obj[key] : ''), context);
   };
@@ -85,10 +86,10 @@ function evaluate(expression, context) {
 }
 
 // The steps that run in a mode, on a night with changes.
-function running({ environment = 'github-hosted', ollamaUrl = '', version = '0.40.11' } = {}) {
+function running({ environment = 'github-hosted', ollamaUrl = '', version = '0.40.11', mode = 'all', hasWork = 'true', changed = 'true' } = {}) {
   const context = {
-    steps: { precheck: { outputs: { changed: 'true' } }, ollama: { outputs: { version } } },
-    inputs: { 'ollama-url': ollamaUrl },
+    steps: { precheck: { outputs: { changed } }, ollama: { outputs: { version } }, run: { outputs: { 'has-work': hasWork } } },
+    inputs: { 'ollama-url': ollamaUrl, mode },
     runner: { environment },
   };
   return steps().filter((s) => !s.if || Boolean(evaluate(s.if, context)));
@@ -143,4 +144,32 @@ test('the run talks to ollama-url when it is set, and to the local server otherw
   for (const [input, value] of [['open-pr', "'false'"], ['ollama-url', "''"], ['allow-public-ollama', "'false'"], ['pull-models', "'true'"]]) {
     assert.match(ACTION, new RegExp(`\\n  ${input}:\\n[\\s\\S]*?\\n    default: ${value}\\n`), input);
   }
+});
+
+test('the plan job checks for changes and plans the work, with no models, and uploads the plan only when there is work', () => {
+  assert.deepStrictEqual(names(running({ mode: 'plan' })), ['Check for changes', 'Install dependencies', 'Run Docturnal', 'Upload the plan']);
+  assert.deepStrictEqual(names(running({ mode: 'plan', hasWork: 'false' })), ['Check for changes', 'Install dependencies', 'Run Docturnal']);
+});
+
+test('a work job downloads the plan, sets up its models, does its shard, and uploads its results', () => {
+  assert.deepStrictEqual(names(running({ mode: 'work' })), [
+    'Check for changes', 'Download the plan', 'Select models', 'Restore Ollama models cache', 'Find the Ollama version', 'Restore Ollama install cache',
+    'Install Ollama', 'Start Ollama', 'Pull models', 'Install dependencies', 'Run Docturnal', 'Upload the work results',
+  ]);
+  const upload = steps().find((s) => s.name === 'Upload the work results');
+  assert.match(ACTION, /name: docturnal-shard-\$\{\{ inputs\.shard \}\}\n {8}path: \$\{\{ runner\.temp \}\}\/docturnal-results\/shard-\$\{\{ inputs\.shard \}\}\.json\n {8}retention-days: 1\n/);
+  assert.strictEqual(upload.uses, 'actions/upload-artifact@v7');
+});
+
+test('the cleanup job only deletes the artifacts: no download, models, or run', () => {
+  assert.deepStrictEqual(names(running({ mode: 'cleanup', changed: 'false' })), ['Check for changes', "Delete the run's artifacts"]);
+});
+
+test('the finish job downloads everything, finishes, and always deletes the artifacts', () => {
+  const finish = names(running({ mode: 'finish' }));
+  assert.deepStrictEqual(finish.slice(0, 3), ['Check for changes', 'Download the plan', 'Download the work results']);
+  assert.deepStrictEqual(finish.slice(-2), ['Run Docturnal', "Delete the run's artifacts"]);
+  // The deletion runs even when the finish fails.
+  assert.strictEqual(steps().find((s) => s.name === "Delete the run's artifacts").if, "always() && (inputs.mode == 'finish' || inputs.mode == 'cleanup')");
+  assert.match(ACTION, /name: docturnal-plan\n {8}path: \$\{\{ runner\.temp \}\}\/docturnal-plan\n {8}retention-days: 1\n/);
 });

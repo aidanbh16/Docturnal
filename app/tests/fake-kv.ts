@@ -9,6 +9,7 @@ interface Installation {
   time: number;
   timeZone: string;
   commentLevel: string;
+  existingCode?: string;
   repos: string[];
 }
 
@@ -66,9 +67,9 @@ export class FakeKV {
   }
 
   // Writes an installation's two keys the way the app stores them.
-  seed(id: number, { time, timeZone, commentLevel, repos }: Installation): void {
+  seed(id: number, { time, timeZone, commentLevel, existingCode, repos }: Installation): void {
     for (const repo of repos) this.data.set(`install:${id}:repo:${repo}`, { value: '', metadata: null });
-    this.data.set(`install:${id}:settings`, { value: JSON.stringify({ time, timeZone, commentLevel }), metadata: { time, timeZone } });
+    this.data.set(`install:${id}:settings`, { value: JSON.stringify({ time, timeZone, commentLevel, ...(existingCode ? { existingCode } : {}) }), metadata: { time, timeZone } });
   }
 
   // The repositories that have a key, sorted.

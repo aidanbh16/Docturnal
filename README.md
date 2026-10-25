@@ -32,12 +32,17 @@ You can choose:
 - **Time:** the hour when Docturnal runs each day.
 - **Time zone:** the time zone of that hour. Daylight saving time is handled for you.
 - **Comment level:** low, medium, heavy, or off. See [Comment levels](#comment-levels).
+- **Existing code:** **Comment gradually**, the default, comments the code you already have in small batches, the most important files first. **Only new and changed code** leaves existing code alone and comments only what you add or change.
 
-The defaults are midnight, New York time, and medium comments. While the settings are still the defaults, opening the page saves your browser's time zone, so midnight is in your time zone even if you close the page without saving. The settings apply to every repository in the installation.
+The defaults are midnight, New York time, medium comments, and existing code commented gradually. While the settings are still the defaults, opening the page saves your browser's time zone, so midnight is in your time zone even if you close the page without saving. The settings apply to every repository in the installation.
 
 ## What you get
 
-Docturnal opens one pull request, titled "Docturnal: comments and documentation", from the `docturnal/update` branch. Later nights add their changes to the same pull request until you merge or close it, so you review one pull request rather than one per night. Its description lists the comments added to each file, the documents updated, the README sections changed, the files that were skipped or left for the next night, and the models used. It never includes the comment text or your code.
+- **First, documentation for the whole project.** The first pull request, titled "Docturnal: documentation", contains your `README.md` and a document for each part of your code, and no code comments.
+- **Then comments, in pull requests you can review in minutes.** Each night, new and changed code is commented first. Then, if the setting allows, one batch of existing code, at most 15 files, the most important first and kept to one part of the project where it can be. A pull request holds at most one such batch: the next batch waits until you merge or close it.
+- **Progress in every pull request.** Each one opens with how far the documentation and the comments are, such as "Comments: 45 of 300 files", what the pull request holds, and what comes next.
+
+There is never more than one open Docturnal pull request. It comes from the `docturnal/update` branch, and later nights add their changes to it until you merge or close it, so you review one pull request rather than one per night. Its title says what it holds: "Docturnal: documentation", or "Docturnal: comments and documentation" once it has comments. Its description lists the comments added to each file, the documents updated, the README sections changed, the files that were skipped or left for the next night, and the models used. It never includes the comment text or your code.
 
 After the pull request closes, merged or not, Docturnal deletes its branch. If a Docturnal run is still going at that moment, the branch stays until a later Docturnal pull request closes. The next night that finds changes starts a new pull request. Docturnal deletes its other branches, `docturnal/setup` and `docturnal/workflow-update`, the same way when their pull requests close.
 
@@ -52,7 +57,7 @@ When Docturnal's workflow file changes, the app opens a pull request titled "Upd
 | `heavy` | A block comment above every function, class, and component, a short comment on each constant, and single-line comments on calculations, loops, edge cases, and magic numbers. |
 | `off` | No comments. Docturnal only updates your documentation. |
 
-Each level limits how many single-line comments a file gets, and comments already in the file count toward the limit. Block comments above functions at `heavy` do not count toward it. Changing the level reprocesses every file on the next run.
+Each level limits how many single-line comments a file gets, and comments already in the file count toward the limit. Block comments above functions at `heavy` do not count toward it. After you change the level, files you change are commented at the new level, and existing files follow in the same small batches as existing code.
 
 ## How comments are checked
 
@@ -113,15 +118,19 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 - **The app never reads your code.** The app only makes GitHub API calls: it commits the workflow file, starts runs, opens pull requests, and deletes its branches. It reads only two files: its own workflow file, to check its version, and `.docturnal/last-run.md`, which Docturnal writes and which never contains code.
 - **The models run on GitHub's runner.** The workflow installs Ollama on the runner, downloads the models, and runs them there, listening only on the runner itself. Your code goes to these local models and nowhere else.
 - **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic is the checkout of your repository, the downloads of Ollama, the models, and the Action's one dependency, and the push of the `docturnal/update` branch back to your repository.
-- **The app stores only your settings.** It keeps the run time, time zone, comment level, and the names of the repositories it is installed on. It stores no code.
+- **Parallel jobs pass results through artifacts.** A run that uses several jobs passes its plan and each job's results to the last job as GitHub Actions artifacts of the run. They contain content from your code, such as the commented files, so they are kept for one day at most, and the last job deletes them as soon as it is done. They stay in your repository's Actions storage on GitHub, like the run's logs.
+- **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, and the names of the repositories it is installed on. It stores no code.
 - **Minimum permissions.** The app asks for write access to contents, workflows, pull requests, and actions, and read access to metadata.
 
 ## How nightly runs work
 
-- **Changed files only.** Each run compares your files with the hashes from the last run and processes only the new and changed ones. The first run processes the whole repository.
-- **Quiet nights stop early.** A short check runs first. If nothing changed, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
+- **Documentation first.** The first run reads every file once, with one short request each, and writes the documentation. It adds no comments.
+- **New and changed code next.** Each later run compares your files with the hashes from the last run, and comments the new and changed ones before anything else.
+- **Existing code in batches.** After that, if time remains and no batch is waiting in an open pull request, the run comments one batch of existing files. It ranks them by importance: entry points, such as the files `package.json` names and route or handler files, then files many others import, complex files, and files that changed recently.
+- **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
+- **Big passes run in parallel.** When a run has 40 or more files to read or comment, such as the first run, it splits them across several jobs that run at once: up to 8 for a public repository and 2 for a private one. A last job applies every job's results and opens the pull request. If any job fails, the last job doesn't run, so a pull request never holds part of a run.
 - **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.
-- **Large projects take several nights.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and leaves the rest for the next night. Files that are left over are listed in the pull request.
+- **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. Every job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.
 
 ## Supported languages
 
@@ -132,8 +141,8 @@ A parser verifies the result for JavaScript, TypeScript, and Python. The other l
 ## Limitations
 
 - **Small models on CPUs.** GitHub's standard runners have no GPU, so Docturnal uses small code models: `qwen2.5-coder:3b` for comments and `qwen2.5-coder:7b` for documents. On runners with less memory, such as the ones for private repositories, the documents may be written with the smaller model, and the pull request says so. The comments and documents are good drafts, not expert review.
-- **Speed.** Models on a CPU are slow. The first run in a large repository can use its whole time budget and continue over several nights.
-- **GitHub Actions minutes.** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes.
+- **Speed.** Models on a CPU are slow. In a large repository, the first run can use its whole time budget and finish the documentation on the following nights, and commenting all the existing code takes many nights, one batch each.
+- **GitHub Actions minutes.** Runs in public repositories are free. Runs in private repositories use your account's included GitHub Actions minutes. To keep that use small, a private repository's runs use at most 2 jobs at once, and each job installs Ollama and loads its models once.
 
 ## Uninstalling
 

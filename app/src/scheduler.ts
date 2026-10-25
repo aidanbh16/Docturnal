@@ -50,10 +50,10 @@ export async function runSchedule(env: ScheduleEnv, now: Date, log: (line: strin
   // read their settings key, for the comment level.
   for await (const { installationId, schedule, repos } of store.schedules()) {
     if (!isDue(schedule.time, schedule.timeZone, now)) continue;
-    const { commentLevel } = (await store.getChoices(installationId)) ?? DEFAULT_SETTINGS;
+    const { commentLevel, existingCode } = (await store.getChoices(installationId)) ?? DEFAULT_SETTINGS;
     due++;
     for (const repo of repos) {
-      messages.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel } });
+      messages.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel, existingCode } });
     }
   }
   for (let i = 0; i < messages.length; i += QUEUE_BATCH_LIMIT) {

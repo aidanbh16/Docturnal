@@ -11,6 +11,7 @@ const fs = require('fs');
 const { findChanges } = require('./changes');
 const { readConfig, ConfigError } = require('./config');
 const { prepareBranch } = require('./git');
+const { docsDone, nothingToCover, openPending } = require('./plan');
 const { readState } = require('./state');
 
 function plural(count, word) {
@@ -20,15 +21,35 @@ function plural(count, word) {
 // Returns { changed, base, reasons }.
 function precheck({ cwd = process.cwd(), env = process.env, log = console.log } = {}) {
   const config = readConfig(env);
+  // The cleanup job of a parallel run only deletes artifacts.
+  if (config.mode === 'cleanup') {
+    log('Docturnal: cleanup job');
+    return { changed: false, base: '', reasons: [] };
+  }
+  // The jobs after a parallel run's plan only run when the plan found work.
+  if (config.mode === 'work' || config.mode === 'finish') {
+    log(`Docturnal: ${config.mode} job`);
+    return { changed: true, base: env.BASE_BRANCH || '', reasons: [] };
+  }
   const branch = prepareBranch(cwd, { base: env.BASE_BRANCH });
   const previous = readState(cwd);
   const changes = findChanges(cwd, config, previous);
 
   const reasons = [];
+  if (nothingToCover(previous, changes.entries)) {
+    log('No source files to document or comment');
+    return { changed: false, base: branch.base, reasons: [] };
+  }
+  const documented = docsDone(previous, changes.entries);
   if (previous.commentLevel === null) reasons.push('first run');
-  else if (changes.levelChanged) reasons.push(`comment level changed to ${config.commentLevel}`);
+  else if (!documented) reasons.push('the documentation is not complete yet');
   const changedFiles = changes.toComment.length + changes.changedDocsOnly.length;
-  if (changedFiles && !changes.levelChanged) reasons.push(`${plural(changedFiles, 'file')} new or changed`);
+  if (changedFiles) reasons.push(`${plural(changedFiles, 'file')} new or changed`);
+  // Existing code waits for a batch while no batch is open in an unmerged pull request.
+  const batchOpen = Boolean(openPending(branch, previous).batch);
+  if (documented && config.existingCode === 'gradual' && changes.backlog.length && !batchOpen) {
+    reasons.push(`${plural(changes.backlog.length, 'file')} of existing code to comment`);
+  }
   if (changes.deleted.length) reasons.push(`${plural(changes.deleted.length, 'file')} deleted`);
   if (changes.docsMissing) reasons.push('a generated doc is missing');
   if (changes.readmeChanged && previous.commentLevel !== null) reasons.push('README.md changed');

@@ -33,6 +33,7 @@ function kindOf(body) {
   if (prompt.includes('Write a block comment for each of these declarations')) return 'blocks';
   if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
+  if (props.summary && props.symbols) return 'summary';
   if (props.layers) return 'layers';
   if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
@@ -132,6 +133,10 @@ function defaultHandler({ oomModels = [] } = {}) {
     if (oomModels.includes(body.model)) throw new MockError(500, JSON.stringify({ error: OOM_MESSAGE }));
     switch (kindOf(body)) {
       case 'comments': return commentsReply(body);
+      case 'summary': {
+        const { summary, symbols } = commentsReply(body);
+        return { summary, symbols };
+      }
       case 'blocks': return blocksReply(body);
       case 'accuracy': return accuracyReply(body);
       case 'load': return '';

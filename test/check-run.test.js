@@ -98,6 +98,11 @@ describe('the accuracy check in a run', () => {
 
   it('loads the docs model before the check, then checks with it', async () => {
     onCheck = () => undefined;
+    // The first run documents the project and comments nothing.
+    const first = await runMain();
+    assert.deepStrictEqual([...new Set(mock.requests.map(kindOf))].filter((k) => k === 'comments' || k === 'accuracy'), []);
+    assert.match(first.log, /^Ollama: summary of src\/payroll\.js with comment-model, \d+\.\d s$/m);
+    // The next run comments the first batch of existing code, and checks it.
     const { log } = await runMain();
     const kinds = mock.requests.map((r) => `${kindOf(r)} ${r.model}`);
     const load = kinds.indexOf('load docs-model');

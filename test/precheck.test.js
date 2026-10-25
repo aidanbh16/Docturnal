@@ -54,7 +54,8 @@ function precheck() {
   fs.writeFileSync(output, '');
   const log = execFileSync(process.execPath, [path.join(ROOT, 'src/precheck.js')], {
     cwd,
-    env: { ...gitEnv, GITHUB_OUTPUT: output, INPUT_COMMENT_LEVEL: 'medium' },
+    // These cases cover new and changed code; the backlog of existing code has its own tests.
+    env: { ...gitEnv, GITHUB_OUTPUT: output, INPUT_COMMENT_LEVEL: 'medium', INPUT_EXISTING_CODE: 'none' },
     encoding: 'utf8',
   });
   const outputs = Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('=')));
@@ -70,6 +71,7 @@ async function runMain(cwd, base) {
       BASE_BRANCH: base,
       OLLAMA_HOST: mock.host,
       INPUT_COMMENT_LEVEL: 'medium',
+      INPUT_EXISTING_CODE: 'none',
       INPUT_SELECTED_COMMENT_MODEL: 'comment-model',
       INPUT_SELECTED_DOCS_MODEL: 'docs-model',
     },

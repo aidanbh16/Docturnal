@@ -87,6 +87,51 @@ inputs:
       runs. Defaults to ~/.docturnal/models.
     required: false
     default: ''
+  existing-code:
+    description: >-
+      Existing code: "gradual" comments it in small batches after the first run documents the
+      project; "none" comments only new and changed code.
+    required: false
+    default: gradual
+  backlog-batch-size:
+    description: The most existing files one batch comments.
+    required: false
+    default: '15'
+  # Parallel runs. The default, "all", does a whole run in this one job.
+  mode:
+    description: >-
+      Which part of a run this job does: all (the default, the whole run), or for a parallel
+      run, plan, work (one shard), finish, or cleanup (deletes the run's artifacts when the run
+      was cancelled and finish did not run).
+    required: false
+    default: all
+  shard:
+    description: For mode work, the shard to process, from the plan's shards output.
+    required: false
+    default: '0'
+  max-jobs:
+    description: >-
+      For mode plan, the most worker jobs. Empty: 8 for a public repository, 2 for a private
+      one, to keep within its Actions minutes.
+    required: false
+    default: ''
+  job-timeout-minutes:
+    description: >-
+      The job's timeout-minutes. Docturnal warns when time-budget-minutes leaves less than 20
+      minutes before it, since a job that times out loses its work.
+    required: false
+    default: ''
+
+outputs:
+  has-work:
+    description: For mode plan, "true" when the plan found work.
+    value: ${{ steps.run.outputs.has-work }}
+  shards:
+    description: For mode plan, the shards for the work jobs' matrix, such as [0,1,2].
+    value: ${{ steps.run.outputs.shards }}
+  max-parallel:
+    description: For mode plan, how many work jobs may run at once.
+    value: ${{ steps.run.outputs.max-parallel }}
 
 runs:
   using: composite
@@ -101,22 +146,43 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
         INPUT_EXTENSIONS: ${{ inputs.extensions }}
+        INPUT_EXISTING_CODE: ${{ inputs.existing-code }}
+        INPUT_MODE: ${{ inputs.mode }}
       run: node "$GITHUB_ACTION_PATH/src/precheck.js"
+
+    # A parallel run passes the plan, and the workers' results, between its jobs as artifacts.
+    - name: Download the plan
+      if: inputs.mode == 'work' || inputs.mode == 'finish'
+      uses: actions/download-artifact@v8
+      with:
+        name: docturnal-plan
+        path: ${{ runner.temp }}/docturnal-plan
+
+    - name: Download the work results
+      if: inputs.mode == 'finish'
+      uses: actions/download-artifact@v8
+      with:
+        pattern: docturnal-shard-*
+        merge-multiple: true
+        path: ${{ runner.temp }}/docturnal-results
 
     - name: Select models
       id: models
-      if: steps.precheck.outputs.changed == 'true'
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan'
       shell: bash
       env:
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_DOCS_MODEL: ${{ inputs.docs-model }}
         INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_SHARD: ${{ inputs.shard }}
+        DOCTURNAL_PLAN: ${{ runner.temp }}/docturnal-plan/plan.json
       run: node "$GITHUB_ACTION_PATH/src/models.js"
 
     # Caches are for GitHub-hosted runners only, so a self-hosted runner never uploads models
     # or Ollama to GitHub's cache. With ollama-url, nothing about Ollama runs on the runner.
     - name: Restore Ollama models cache
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/docturnal-ollama-models
@@ -127,7 +193,7 @@ runs:
     # installer runs and nothing is cached.
     - name: Find the Ollama version
       id: ollama
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted'
       shell: bash
       run: |
         version=$(curl -fsSI --max-time 20 https://github.com/ollama/ollama/releases/latest 2>/dev/null \
@@ -140,14 +206,14 @@ runs:
         fi
 
     - name: Restore Ollama install cache
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == '' && runner.environment == 'github-hosted' && steps.ollama.outputs.version != ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == '' && runner.environment == 'github-hosted' && steps.ollama.outputs.version != ''
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/docturnal-ollama-install
         key: docturnal-ollama-install-${{ runner.os }}-${{ runner.arch }}-${{ steps.ollama.outputs.version }}
 
     - name: Install Ollama
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == ''
       shell: bash
       env:
         OLLAMA_VERSION: ${{ steps.ollama.outputs.version }}
@@ -205,7 +271,7 @@ runs:
     # machine, and a persistent models folder.
     - name: Start Ollama
       id: ollama-server
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == ''
       shell: bash
       env:
         GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
@@ -242,12 +308,13 @@ runs:
         exit 1
 
     - name: Pull models
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url == ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url == ''
       shell: bash
       env:
         OLLAMA_HOST: ${{ steps.ollama-server.outputs.host }}
         COMMENT_MODEL: ${{ steps.models.outputs.comment-model }}
         DOCS_MODEL: ${{ steps.models.outputs.docs-model }}
+        PULL_DOCS_MODEL: ${{ steps.models.outputs.pull-docs-model }}
         GITHUB_HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
         # A self-hosted runner pulls only models that are not in its models folder yet, so it
@@ -261,14 +328,15 @@ runs:
           fi
         }
         pull "$COMMENT_MODEL"
-        if [ "$DOCS_MODEL" != "$COMMENT_MODEL" ]; then
+        # A worker with only summaries to write uses the comment model alone.
+        if [ "$DOCS_MODEL" != "$COMMENT_MODEL" ] && [ "$PULL_DOCS_MODEL" != "false" ]; then
           pull "$DOCS_MODEL"
         fi
 
     # Docturnal for teams: checks the server in ollama-url before any code is sent to it, and
     # has it pull missing models unless pull-models is "false".
     - name: Check the Ollama server
-      if: steps.precheck.outputs.changed == 'true' && inputs.ollama-url != ''
+      if: steps.precheck.outputs.changed == 'true' && inputs.mode != 'plan' && inputs.ollama-url != ''
       shell: bash
       env:
         INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
@@ -285,6 +353,7 @@ runs:
       run: npm install --omit=dev --no-audit --no-fund
 
     - name: Run Docturnal
+      id: run
       if: steps.precheck.outputs.changed == 'true'
       shell: bash
       env:
@@ -305,7 +374,42 @@ runs:
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_OLLAMA_URL: ${{ inputs.ollama-url }}
         INPUT_ALLOW_PUBLIC_OLLAMA: ${{ inputs.allow-public-ollama }}
+        INPUT_EXISTING_CODE: ${{ inputs.existing-code }}
+        INPUT_BACKLOG_BATCH_SIZE: ${{ inputs.backlog-batch-size }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_SHARD: ${{ inputs.shard }}
+        INPUT_MAX_JOBS: ${{ inputs.max-jobs }}
+        INPUT_JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        DOCTURNAL_PLAN: ${{ runner.temp }}/docturnal-plan/plan.json
+        DOCTURNAL_RESULTS: ${{ runner.temp }}/docturnal-results
         OLLAMA_HOST: ${{ inputs.ollama-url || steps.ollama-server.outputs.host }}
         # The pre-check already moved the checkout to docturnal/update, so pass the base branch.
         BASE_BRANCH: ${{ steps.precheck.outputs.base }}
       run: node "$GITHUB_ACTION_PATH/src/main.js"
+
+    # The plan and the results hold content derived from your code, including changed source
+    # files: they are kept for one day at most, and the finish job deletes them when it is done.
+    - name: Upload the plan
+      if: inputs.mode == 'plan' && steps.run.outputs.has-work == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: docturnal-plan
+        path: ${{ runner.temp }}/docturnal-plan
+        retention-days: 1
+        if-no-files-found: error
+
+    - name: Upload the work results
+      if: inputs.mode == 'work'
+      uses: actions/upload-artifact@v7
+      with:
+        name: docturnal-shard-${{ inputs.shard }}
+        path: ${{ runner.temp }}/docturnal-results/shard-${{ inputs.shard }}.json
+        retention-days: 1
+        if-no-files-found: error
+
+    - name: Delete the run's artifacts
+      if: always() && (inputs.mode == 'finish' || inputs.mode == 'cleanup')
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/src/artifacts.js"

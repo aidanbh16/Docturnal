@@ -4,7 +4,7 @@
 // message, so an install with many repositories never depends on one Worker invocation.
 
 import type { Octokit } from '@octokit/core';
-import { type CommentLevel, DEFAULT_SETTINGS, SettingsStore } from './settings';
+import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, SettingsStore } from './settings';
 import { WORKFLOW_FILE, WORKFLOW_PATH, WORKFLOW_VERSION, templateVersion, workflowYaml } from './workflow';
 
 export const UPDATE_BRANCH = 'docturnal/update';
@@ -40,6 +40,7 @@ const ACTIVE_RUN_STATUSES = ['in_progress', 'queued', 'pending'] as const;
 const VERSION_CHANGES: Record<number, string> = {
   2: 'Lets only one Docturnal run happen at a time in this repository. If a run starts while another one is still going, for example a run you started by hand and the nightly run, the second one waits for the first to finish. Two runs then never push their changes at the same time.',
   3: 'Uses version 7 of `actions/checkout`, which runs on Node.js 24. GitHub is retiring Node.js 20 for actions, and the older version adds a deprecation warning to every run.',
+  4: 'Splits each run into a plan, work, and finish job, so a large pass, such as the first one, runs on several runners at once: up to 8 for a public repository and 2 for a private one. The work jobs pass their results to the finish job as artifacts, which are deleted when the run ends, even if a work job fails; that needs the workflow\'s "actions: write" permission. It also passes your "Existing code" setting to each run, so you can choose to have only new and changed code commented.',
 };
 
 // The changes between version `from` and the current one: one paragraph, or a list.
@@ -78,7 +79,7 @@ const FALLBACK_UPDATE_BODY = 'Docturnal added comments to your code and updated 
 
 export type QueueMessage =
   | { kind: 'setup'; installationId: number; repo: string; origin?: string }
-  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel };
+  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel; existingCode?: ExistingCode };
 
 export type Outcome = { retry: false } | { retry: true; delaySeconds: number };
 const DONE: Outcome = { retry: false };
@@ -303,9 +304,11 @@ export async function onSetupMerged(payload: any, deps: Deps): Promise<void> {
 export const DOCTURNAL_BRANCHES: readonly string[] = [UPDATE_BRANCH, SETUP_BRANCH, WORKFLOW_UPDATE_BRANCH];
 
 // Deletes a Docturnal branch once its pull request is closed, merged or not, so repositories
-// do not collect stale branches. docturnal/update is kept while a Docturnal run is queued,
-// pending, or in progress, since that run pushes to it; the next closed pull request deletes
-// it. A branch that is already gone counts as deleted. Failures are logged, never retried.
+// do not collect stale branches. After a merge, docturnal/update is kept while a Docturnal run
+// is queued, pending, or in progress, since that run builds on it; the next closed pull request
+// deletes it. A pull request closed without merging loses its branch at once: a run going then
+// finds the branch gone when it pushes, and leaves its work for the next run, so the declined
+// changes never come back. A branch that is already gone counts as deleted. Failures are logged, never retried.
 export async function onPullRequestClosed(octokit: Octokit, payload: any, deps: Deps): Promise<void> {
   const fullName = payload.repository.full_name;
   const pr = payload.pull_request;
@@ -316,7 +319,7 @@ export async function onPullRequestClosed(octokit: Octokit, payload: any, deps: 
   const repo = payload.repository.name;
   const label = `pull request ${fullName}#${pr.number}`;
   try {
-    if (branch === UPDATE_BRANCH && (await hasActiveRun(octokit, { owner, repo }))) {
+    if (branch === UPDATE_BRANCH && pr.merged && (await hasActiveRun(octokit, { owner, repo }))) {
       deps.log(`${label}: kept ${branch}, a Docturnal run is queued or in progress; the next closed pull request deletes it`);
       return;
     }
@@ -335,7 +338,15 @@ export async function onPullRequestClosed(octokit: Octokit, payload: any, deps: 
   }
 }
 
-// Opens or updates the pull request for docturnal/update, using last-run.md as its body.
+// The pull request's title, last-run.md's first heading when it names Docturnal, and its body,
+// the rest. last-run.md from before titles were set this way starts with "# Docturnal update".
+function splitTitle(text: string): { title: string; body: string } {
+  const match = /^# (Docturnal[^\n]{0,80})\n+/.exec(text);
+  if (!match || match[1].trim() === 'Docturnal update') return { title: UPDATE_PR_TITLE, body: text };
+  return { title: match[1].trim(), body: text.slice(match[0].length) };
+}
+
+// Opens or updates the pull request for docturnal/update, with last-run.md's title and body.
 export async function onUpdatePush(octokit: Octokit, payload: any, deps: Deps): Promise<void> {
   const fullName = payload.repository.full_name;
   if (payload.ref !== `refs/heads/${UPDATE_BRANCH}` || payload.deleted) return;
@@ -347,20 +358,20 @@ export async function onUpdatePush(octokit: Octokit, payload: any, deps: Deps): 
   const repo = payload.repository.name;
   try {
     const report = await readFile(octokit, { owner, repo }, LAST_RUN_PATH, UPDATE_BRANCH, deps);
-    let body = report && report.content.trim() ? report.content : FALLBACK_UPDATE_BODY;
+    let { title, body } = report && report.content.trim() ? splitTitle(report.content) : { title: UPDATE_PR_TITLE, body: FALLBACK_UPDATE_BODY };
     if (body.length > MAX_BODY) body = `${body.slice(0, MAX_BODY)}\n\nThe rest of this description is in \`${LAST_RUN_PATH}\`.`;
     body = withSettingsLink(body, deps.origin, payload.installation.id);
 
     const { data: open } = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'open', head: `${owner}:${UPDATE_BRANCH}` });
     if (open.length) {
-      await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: open[0].number, body });
+      await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: open[0].number, title, body });
       deps.log(`push ${fullName}: updated pull request #${open[0].number}`);
       return;
     }
     const { data: pr } = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
       owner,
       repo,
-      title: UPDATE_PR_TITLE,
+      title,
       head: UPDATE_BRANCH,
       base: payload.repository.default_branch,
       body,
@@ -526,10 +537,11 @@ async function hasActiveRun(octokit: Octokit, { owner, repo }: RepoRef): Promise
 }
 
 // Checks a repository before its nightly run. Proposes a workflow update when the template
-// is older than the current version. Returns why the run is skipped, or null to start it.
-async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, message: DispatchMessage, deps: Deps): Promise<string | null> {
+// is older than the current version. Returns why the run is skipped (null to start it), and
+// the template's version.
+async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, message: DispatchMessage, deps: Deps): Promise<{ skip: string | null; version: number | null }> {
   const workflow = await readFile(octokit, target, WORKFLOW_PATH, ref, deps);
-  if (!workflow) return `${WORKFLOW_PATH} is not on ${ref}`;
+  if (!workflow) return { skip: `${WORKFLOW_PATH} is not on ${ref}`, version: null };
   const version = templateVersion(workflow.content, deps.actionRepository);
   if (version !== null && version < WORKFLOW_VERSION) {
     // A failed proposal is logged and tried again the next night; it never blocks the run.
@@ -542,10 +554,13 @@ async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, 
     }
   }
   // The old template runs on its own schedule until its update pull request is merged.
-  if (version === 0) return 'the workflow still has its own schedule';
-  if (await hasActiveRun(octokit, target)) return 'a run is already in progress';
-  return null;
+  if (version === 0) return { skip: 'the workflow still has its own schedule', version };
+  if (await hasActiveRun(octokit, target)) return { skip: 'a run is already in progress', version };
+  return { skip: null, version };
 }
+
+// The template version that brought the existing-code input. Older templates refuse it.
+const EXISTING_CODE_FROM_VERSION = 4;
 
 // Starts docturnal.yml with the installation's comment level.
 export async function dispatchRun(octokit: Octokit, message: DispatchMessage, attempts: number, deps: Deps): Promise<Outcome> {
@@ -558,21 +573,32 @@ export async function dispatchRun(octokit: Octokit, message: DispatchMessage, at
       const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
       ref = data.default_branch as string;
     }
+    let version: number | null;
     if (message.reason === 'nightly') {
-      const skip = await beforeNightlyRun(octokit, { owner, repo }, ref, message, deps);
-      if (skip) {
-        deps.log(`${label}: skipped, ${skip}`);
+      const before = await beforeNightlyRun(octokit, { owner, repo }, ref, message, deps);
+      if (before.skip) {
+        deps.log(`${label}: skipped, ${before.skip}`);
         return DONE;
       }
+      version = before.version;
+    } else {
+      // The first run follows a fresh install, so the template is current unless it says otherwise.
+      const workflow = await readFile(octokit, { owner, repo }, WORKFLOW_PATH, ref, deps).catch(() => null);
+      version = workflow ? templateVersion(workflow.content, deps.actionRepository) : WORKFLOW_VERSION;
     }
-    const commentLevel = message.commentLevel ?? ((await deps.settings.getChoices(message.installationId)) ?? DEFAULT_SETTINGS).commentLevel;
+    const choices = (await deps.settings.getChoices(message.installationId)) ?? DEFAULT_SETTINGS;
+    const commentLevel = message.commentLevel ?? choices.commentLevel;
+    const existingCode = message.existingCode ?? choices.existingCode;
+    // Only templates that have the existing-code input get it; GitHub refuses an unknown input.
+    const inputs: Record<string, string> = { 'comment-level': commentLevel };
+    if (version !== null && version >= EXISTING_CODE_FROM_VERSION) inputs['existing-code'] = existingCode;
     try {
       await octokit.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
         owner,
         repo,
         workflow_id: WORKFLOW_FILE,
         ref,
-        inputs: { 'comment-level': commentLevel },
+        inputs,
       });
     } catch (err) {
       const status = errorStatus(err);

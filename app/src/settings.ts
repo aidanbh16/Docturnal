@@ -2,23 +2,30 @@
 // writers can never overwrite each other:
 // - install:<id>:repo:<owner>/<name>  one empty key per repository, created and deleted by
 //                                     webhooks.
-// - install:<id>:settings             the run time, time zone, and comment level, written only
-//                                     by the settings page. Without it, the defaults apply.
+// - install:<id>:settings             the run time, time zone, comment level, and what to do
+//                                     with existing code, written only by the settings page.
+//                                     Without it, the defaults apply.
 // Nothing else is stored, and never code.
 
 export const COMMENT_LEVELS = ['low', 'medium', 'heavy', 'off'] as const;
 export type CommentLevel = (typeof COMMENT_LEVELS)[number];
 
+// Existing code: "gradual" comments it in small batches after the first run documents the
+// project; "none" comments only new and changed code.
+export const EXISTING_CODE = ['gradual', 'none'] as const;
+export type ExistingCode = (typeof EXISTING_CODE)[number];
+
 export interface Settings {
   time: number;
   timeZone: string;
   commentLevel: CommentLevel;
+  existingCode: ExistingCode;
   repos: string[];
 }
 
 export type Choices = Omit<Settings, 'repos'>;
 
-export const DEFAULT_SETTINGS: Choices = { time: 0, timeZone: 'America/New_York', commentLevel: 'medium' };
+export const DEFAULT_SETTINGS: Choices = { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', existingCode: 'gradual' };
 
 // The schedule is copied into the settings key's metadata, so the hourly cron can find due
 // installations from the key list without reading every entry.
@@ -48,6 +55,10 @@ export function isCommentLevel(level: unknown): level is CommentLevel {
   return COMMENT_LEVELS.includes(level as CommentLevel);
 }
 
+export function isExistingCode(value: unknown): value is ExistingCode {
+  return EXISTING_CODE.includes(value as ExistingCode);
+}
+
 function parseChoices(raw: unknown): Choices | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Partial<Choices>;
@@ -55,12 +66,13 @@ function parseChoices(raw: unknown): Choices | null {
     time: isValidHour(data.time) ? data.time : DEFAULT_SETTINGS.time,
     timeZone: isValidTimeZone(data.timeZone) ? data.timeZone : DEFAULT_SETTINGS.timeZone,
     commentLevel: isCommentLevel(data.commentLevel) ? data.commentLevel : DEFAULT_SETTINGS.commentLevel,
+    existingCode: isExistingCode(data.existingCode) ? data.existingCode : DEFAULT_SETTINGS.existingCode,
   };
 }
 
 export function isDefault(settings: Choices): boolean {
   return settings.time === DEFAULT_SETTINGS.time && settings.timeZone === DEFAULT_SETTINGS.timeZone &&
-    settings.commentLevel === DEFAULT_SETTINGS.commentLevel;
+    settings.commentLevel === DEFAULT_SETTINGS.commentLevel && settings.existingCode === DEFAULT_SETTINGS.existingCode;
 }
 
 export class SettingsStore {
@@ -114,7 +126,7 @@ export class SettingsStore {
   // Saves the settings page's choices. It never touches the repository keys.
   async putChoices(installationId: number, choices: Choices): Promise<void> {
     const metadata: ScheduleMetadata = { time: choices.time, timeZone: choices.timeZone };
-    const value: Choices = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel };
+    const value: Choices = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode };
     await this.kv.put(this.settingsKey(installationId), JSON.stringify(value), { metadata });
   }
 

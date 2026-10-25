@@ -68,6 +68,7 @@ Without the app, there is no settings page. You change the settings in the workf
 
 - **Run time and time zone:** the `cron` line. Cron always uses UTC, so convert your local time to UTC, and remember that the conversion changes when daylight saving time starts or ends. For example, `0 5 * * *` is midnight in New York in winter and 1 AM in summer.
 - **Comment level:** the `comment-level` input: `low`, `medium`, `heavy`, or `off`. See [Comment levels](../README.md#comment-levels).
+- **Existing code:** the `existing-code` input: `gradual`, the default, comments your existing code in batches of up to `backlog-batch-size` files after the first run documents the project; `none` comments only new and changed code. See [What you get](../README.md#what-you-get).
 
 The app also opens an "Update Docturnal workflow" pull request when its workflow file changes. Without the app, update your workflow file yourself when a new version of Docturnal needs it.
 
@@ -154,6 +155,111 @@ With `ollama-url`, `model` and `docs-model` are normal settings:
 
 Use any model name your Ollama server can pull, such as `qwen2.5-coder:32b`. Left as `auto`, they are `qwen2.5-coder:3b` and `qwen2.5-coder:7b`. If a model is missing, Docturnal asks the server to pull it. To stop that, set `pull-models` to `"false"`: a missing model then fails the run with a message that names it, and you pull it on the server with `ollama pull`.
 
+## Run big passes in parallel (optional)
+
+The workflows above run in one job. That suits most nights, which comment a few changed files and one small batch. A big pass, such as the first run that reads every file, takes much less time when it is split across several jobs that run at once.
+
+For that, use these jobs instead of one: `plan` decides the work and splits it, each `work` job reads or comments its share, and `finish` applies every share, writes the docs, and opens the pull request. With fewer than 40 files to process, the plan uses a single work job. If a work job fails or runs out of time, the others keep going, and `finish` applies what they did; the failed job's files wait for the next run. If you cancel the run, `finish` doesn't run, and a small `cleanup` job deletes the artifacts the work jobs uploaded. To try a failed run again, use **Re-run all jobs**: the artifacts are deleted when a run ends, so re-running only the failed jobs can't find the plan.
+
+The work jobs pass their results to `finish` as artifacts of the run. Those results contain content from your code, such as the commented files. Docturnal keeps them for one day at most, and `finish` deletes them as soon as it is done, which needs `actions: write`. While they exist, they are stored where your GitHub server stores artifacts: on GitHub.com, GitHub's storage. If your policies don't allow code-derived content there, keep the single-job workflow.
+
+`max-jobs` sets the most work jobs that run at once. Without it, Docturnal uses up to 8 for a public repository and 2 for a private one, since every job uses Actions minutes. On self-hosted runners, set it to the number of runners free for Docturnal, and with `ollama-url`, to what your Ollama server can serve at once.
+
+```yaml
+name: Docturnal
+
+on:
+  schedule:
+    # Every day at 05:00 UTC. Cron schedules always use UTC.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Lets the finish and cleanup jobs delete this run's artifacts, which hold content from your code.
+  actions: write
+
+concurrency:
+  group: docturnal
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      has-work: ${{ steps.docturnal.outputs.has-work }}
+      shards: ${{ steps.docturnal.outputs.shards }}
+      max-parallel: ${{ steps.docturnal.outputs.max-parallel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: docturnal
+        uses: aidanbh16/Docturnal@v1
+        with:
+          mode: plan
+          max-jobs: "4"
+          comment-level: medium
+          existing-code: gradual
+
+  work:
+    needs: plan
+    if: needs.plan.outputs.has-work == 'true' && needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      # The other work jobs keep going when one fails, and finish applies what they did.
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max-parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: aidanbh16/Docturnal@v1
+        with:
+          mode: work
+          shard: ${{ matrix.shard }}
+          comment-level: medium
+          existing-code: gradual
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
+
+  finish:
+    needs: [plan, work]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has-work == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: aidanbh16/Docturnal@v1
+        with:
+          mode: finish
+          open-pr: "true"
+          comment-level: medium
+          existing-code: gradual
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
+
+  # When the run is cancelled, finish doesn't run; this deletes the work jobs' artifacts.
+  cleanup:
+    needs: [plan, work, finish]
+    if: always() && needs.plan.outputs.has-work == 'true' && needs.finish.result == 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: aidanbh16/Docturnal@v1
+        with:
+          mode: cleanup
+```
+
+Give the `plan`, `work`, and `finish` jobs the same `comment-level` and `existing-code`. For Level 2, change every `runs-on` to your runners' labels, and add your `ollama-url`, `model`, and `docs-model` to the `work` and `finish` jobs.
+
 ## Inputs for teams
 
 | Input | Default | What it does |
@@ -166,7 +272,13 @@ Use any model name your Ollama server can pull, such as `qwen2.5-coder:32b`. Lef
 | `models-dir` | `~/.docturnal/models` | On a self-hosted runner without `ollama-url`: the folder that keeps the models between runs. |
 | `model`, `docs-model` | `auto` | The models. Set them when you use `ollama-url`. |
 | `comment-level` | `medium` | `low`, `medium`, `heavy`, or `off`. |
-| `time-budget-minutes` | `90` | How long a run may spend on comments and documents. Keep it below the job's `timeout-minutes`. |
+| `existing-code` | `gradual` | `gradual` comments existing code in batches after the first run documents the project; `none` comments only new and changed code. |
+| `backlog-batch-size` | `15` | The most existing files one batch comments. |
+| `time-budget-minutes` | `90` | How long a run may spend on comments and documents. When it is nearly used up, the run stops starting new files and commits what is finished. |
+| `job-timeout-minutes` | Empty | The job's `timeout-minutes`. Docturnal warns in the log when `time-budget-minutes` leaves less than 20 minutes before it, since a job that times out loses its work. |
+| `mode` | `all` | `all` runs the whole run in one job. `plan`, `work`, `finish`, and `cleanup` are the jobs of a parallel run. |
+| `shard` | `0` | For a `work` job: its share of the plan, from the matrix. |
+| `max-jobs` | Empty | For a `plan` job: the most work jobs at once. Empty: 8 for a public repository, 2 for a private one. |
 
 ## What network access each mode needs
 
@@ -197,7 +309,9 @@ The runner contacts nothing about Ollama besides your server: no installer, no r
 
 npm uses the registry configured on the runner. To keep the runner off the internet, point npm at an internal mirror, for example by setting `NPM_CONFIG_REGISTRY` on the runner.
 
-On GitHub Enterprise Server, `actions/checkout` and the Docturnal action are also downloaded from your server, so they must be available there: either through GitHub Connect, or as copies of the two repositories that your workflow file names in its `uses:` lines.
+A parallel run also uploads its plan and its work jobs' results as artifacts to your GitHub server, and downloads them in the next job, as described in [Run big passes in parallel](#run-big-passes-in-parallel-optional).
+
+On GitHub Enterprise Server, `actions/checkout` and the Docturnal action are also downloaded from your server, so they must be available there: either through GitHub Connect, or as copies of the repositories that your workflow file names in its `uses:` lines. A parallel run also uses `actions/upload-artifact` and `actions/download-artifact`.
 
 ## Troubleshooting
 

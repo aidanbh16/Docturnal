@@ -4,7 +4,7 @@
 // settings are still those defaults, the page saves the browser's time zone as soon as it
 // loads, so closing it gives midnight in the user's own time zone.
 
-import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type Settings, SettingsStore, isCommentLevel, isDefault, isValidHour, isValidTimeZone } from './settings';
+import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, type Settings, SettingsStore, isCommentLevel, isDefault, isExistingCode, isValidHour, isValidTimeZone } from './settings';
 import { GITHUB_API_VERSION } from './github';
 import { randomToken, sameToken, signToken, verifyToken } from './session';
 
@@ -38,6 +38,11 @@ interface Session {
   account: string;
   csrf: string;
 }
+
+const EXISTING_CODE_CHOICES: { value: ExistingCode; label: string; description: string }[] = [
+  { value: 'gradual', label: 'Comment gradually', description: 'After the first pull request documents your code, Docturnal comments your existing files in small batches, the most important first. This is the default.' },
+  { value: 'none', label: 'Only new and changed code', description: 'Docturnal comments only the code you add or change.' },
+];
 
 const LEVEL_DESCRIPTIONS: Record<CommentLevel, string> = {
   low: 'A few short comments on the most important code.',
@@ -203,6 +208,7 @@ function formPage(session: Session, settings: Settings): Response {
     `<option value="${hour}"${hour === settings.time ? ' selected' : ''}>${formatHour(hour)}</option>`).join('');
   const zones = timeZones(settings.timeZone).map((zone) =>
     `<option value="${escape(zone)}"${zone === settings.timeZone ? ' selected' : ''}>${escape(zone.replace(/_/g, ' '))}</option>`).join('');
+  const existing = EXISTING_CODE_CHOICES.map((choice) => `<label class="level"><input type="radio" name="existingCode" value="${choice.value}"${choice.value === settings.existingCode ? ' checked' : ''}><div>${escape(choice.label)}<span>${escape(choice.description)}</span></div></label>`).join('\n');
   const levels = COMMENT_LEVELS.map((level) => `<label class="level"><input type="radio" name="commentLevel" value="${level}"${level === settings.commentLevel ? ' checked' : ''}><div>${level.charAt(0).toUpperCase()}${level.slice(1)}<span>${escape(LEVEL_DESCRIPTIONS[level])}</span></div></label>`).join('\n');
   const repos = settings.repos.length
     ? `<p class="muted">These settings apply to every repository in this installation:</p><ul class="muted">${settings.repos.map((r) => `<li>${escape(r)}</li>`).join('')}</ul>`
@@ -246,6 +252,10 @@ function formPage(session: Session, settings: Settings): Response {
 <fieldset>
 <legend>Comment level</legend>
 ${levels}
+</fieldset>
+<fieldset>
+<legend>Existing code</legend>
+${existing}
 </fieldset>
 <button type="submit">Save</button>
 </form>
@@ -415,14 +425,17 @@ async function handlePost(request: Request, env: SetupEnv, options: SetupOptions
   const time = Number(form.get('time'));
   const timeZone = String(form.get('timeZone') ?? '');
   const commentLevel = String(form.get('commentLevel') ?? '');
-  if (!isValidHour(time) || !isValidTimeZone(timeZone) || !isCommentLevel(commentLevel)) {
-    return errorPage(400, 'Choose a time, a time zone, and a comment level.');
+  // A form from before this setting existed keeps the stored choice.
+  const existingRaw = form.get('existingCode');
+  const existingCode = existingRaw === null ? ((await store.getChoices(session.installationId)) ?? DEFAULT_SETTINGS).existingCode : String(existingRaw);
+  if (!isValidHour(time) || !isValidTimeZone(timeZone) || !isCommentLevel(commentLevel) || !isExistingCode(existingCode)) {
+    return errorPage(400, 'Choose a time, a time zone, a comment level, and what to do with existing code.');
   }
 
   // Only the settings key is written; the repository list belongs to the webhooks.
-  const saved: Choices = { time, timeZone, commentLevel };
+  const saved: Choices = { time, timeZone, commentLevel, existingCode };
   await store.putChoices(session.installationId, saved);
-  options.log(`setup ${session.installationId}: saved ${formatHour(time)} ${timeZone}, ${commentLevel} comments`);
+  options.log(`setup ${session.installationId}: saved ${formatHour(time)} ${timeZone}, ${commentLevel} comments, existing code ${existingCode}`);
   return page(200, 'Settings saved', `<h1>Settings saved</h1>
 <p>Docturnal now runs ${escape(describe(saved))}, starting with the next run.</p>
 <a class="button" href="/setup">Change them again</a>`);

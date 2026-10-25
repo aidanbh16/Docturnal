@@ -5,6 +5,8 @@
 const path = require('path');
 
 const COMMENT_LEVELS = ['low', 'medium', 'heavy', 'off'];
+const EXISTING_CODE = ['gradual', 'none'];
+const MODES = ['all', 'plan', 'work', 'finish', 'cleanup'];
 
 class ConfigError extends Error {}
 
@@ -26,6 +28,18 @@ function readPositiveInt(env, name, inputName, fallback) {
   if (!/^\d+$/.test(raw) || Number(raw) <= 0) {
     throw new ConfigError(`Invalid ${inputName} "${raw}". Use a whole number greater than 0.`);
   }
+  return Number(raw);
+}
+
+function readChoice(env, name, inputName, choices, fallback) {
+  const raw = readInput(env, name, fallback).toLowerCase();
+  if (!choices.includes(raw)) throw new ConfigError(`Invalid ${inputName} "${raw}". Use one of: ${choices.join(', ')}.`);
+  return raw;
+}
+
+function readWholeNumber(env, name, inputName, fallback) {
+  const raw = readInput(env, name, String(fallback));
+  if (!/^\d+$/.test(raw)) throw new ConfigError(`Invalid ${inputName} "${raw}". Use a whole number.`);
   return Number(raw);
 }
 
@@ -72,7 +86,18 @@ function readConfig(env = process.env) {
     githubToken: readInput(env, 'GITHUB_TOKEN', ''),
     // Docturnal for teams: an Ollama server of your own instead of one on the runner.
     ollamaUrl: readInput(env, 'OLLAMA_URL', ''),
+    // Existing code: comment it in small batches ("gradual"), or only new and changed code.
+    existingCode: readChoice(env, 'EXISTING_CODE', 'existing-code', EXISTING_CODE, 'gradual'),
+    backlogBatchSize: readPositiveInt(env, 'BACKLOG_BATCH_SIZE', 'backlog-batch-size', 15),
+    // Which part of a run this job does: all of it, or the plan, one shard of work, or the
+    // finish of a parallel run.
+    mode: readChoice(env, 'MODE', 'mode', MODES, 'all'),
+    shard: readWholeNumber(env, 'SHARD', 'shard', 0),
+    // 0: decide from the repository, 8 jobs for a public one and 2 for a private one.
+    maxJobs: readWholeNumber(env, 'MAX_JOBS', 'max-jobs', 0),
+    // The job's timeout-minutes, when the workflow passes it, to check the time budget's margin.
+    jobTimeoutMinutes: readWholeNumber(env, 'JOB_TIMEOUT_MINUTES', 'job-timeout-minutes', 0),
   };
 }
 
-module.exports = { COMMENT_LEVELS, ConfigError, readConfig };
+module.exports = { COMMENT_LEVELS, EXISTING_CODE, MODES, ConfigError, readConfig };

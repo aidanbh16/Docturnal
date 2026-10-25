@@ -58,10 +58,54 @@ function proposalSummary(stats, { reasons = false } = {}) {
 // processed: [{ path, verifier, added, rejections, stats }]
 // docs: { updated: [{ path, fallback }], removed: [path], pending: [{ path, reason }],
 //   readme: { updated, polished, kept, notReadded, fallback } with section headings, or null }
+const DOCS_TITLE = 'Docturnal: documentation';
+const UPDATE_TITLE = 'Docturnal: comments and documentation';
+
+// The pull request's title: documentation only until it holds comments.
+function pullRequestTitle(pending) {
+  return pending.docs && !pending.changed.length && !pending.batch ? DOCS_TITLE : UPDATE_TITLE;
+}
+
+const listOf = (items) => (items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : items[0]);
+
+// The progress section that opens every pull request: how far the documentation and the
+// comments have come, what this pull request holds, and what comes next.
+// p: { docsComplete, summarized, documentable, layers, level, commented, commentable,
+//      existingCode, pending, backlogLeft, nextBatch, batchSize }
+function progressLines(p) {
+  const lines = ['## Progress', ''];
+  lines.push(p.docsComplete
+    ? `- **Documentation:** complete, with ${plural(p.layers, 'layer document')} and the README.`
+    : `- **Documentation:** in progress, ${p.summarized} of ${plural(p.documentable, 'file')} read. The rest follow on the next run.`);
+  lines.push(p.level === 'off'
+    ? '- **Comments:** off. Docturnal only keeps the documentation up to date.'
+    : `- **Comments:** ${p.commented} of ${plural(p.commentable, 'file')} commented at the ${p.level} level.`);
+
+  const holds = [];
+  if (p.pending.docs) holds.push('documentation for the whole project');
+  if (p.pending.changed.length) holds.push(`comments on ${plural(p.pending.changed.length, 'new or changed file')}`);
+  if (p.pending.batch) {
+    const where = p.pending.batch.layers.length ? ` in the ${listOf(p.pending.batch.layers)} ${p.pending.batch.layers.length === 1 ? 'layer' : 'layers'}` : '';
+    holds.push(`batch ${p.pending.batch.number} of existing code, ${plural(p.pending.batch.files.length, 'file')}${where}`);
+  }
+  lines.push(`- **This pull request:** ${holds.length ? listOf(holds) : 'updates to the documentation'}.`);
+
+  let next;
+  if (!p.docsComplete) next = 'the rest of the documentation.';
+  else if (p.level === 'off') next = 'documentation updates when your code changes.';
+  else if (p.existingCode === 'none') next = 'comments on new and changed code only. Existing code is not commented; the "Existing code" setting changes that.';
+  else if (p.backlogLeft === 0) next = 'comments on new and changed code. Every existing file is commented.';
+  else if (p.pending.batch) next = `batch ${p.nextBatch} of existing code, after you merge or close this pull request. ${plural(p.backlogLeft, 'existing file')} ${p.backlogLeft === 1 ? 'is' : 'are'} left.`;
+  else next = `comments on existing code in batches of up to ${p.batchSize} files, starting with batch ${p.nextBatch} and the most important files. ${plural(p.backlogLeft, 'existing file')} ${p.backlogLeft === 1 ? 'is' : 'are'} left.`;
+  lines.push(`- **Next:** ${next}`);
+  return lines;
+}
+
 // leftOver: [{ path, reason }]
 // skipped: [{ path, reason }], files that were not commented, such as ones with syntax errors
 // models: { comment, docs, fallback, fallbackUsed, level }
-function buildReport({ processed = [], docs = { updated: [], removed: [], pending: [] }, leftOver = [], skipped = [], models }) {
+// title: the pull request's title, the report's first line. progress: see progressLines.
+function buildReport({ processed = [], docs = { updated: [], removed: [], pending: [] }, leftOver = [], skipped = [], models, title = UPDATE_TITLE, progress = null, summarized = 0 }) {
   const added = processed.reduce((sum, f) => sum + f.added, 0);
   const commented = processed.filter((f) => f.added > 0).length;
 
@@ -70,8 +114,11 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   if (docs.updated.length) summary.push(`updates ${plural(docs.updated.length, 'doc')}`);
   if (docs.readme && (docs.readme.updated.length || docs.readme.polished.length)) summary.push('updates the README');
   if (docs.removed.length) summary.push(`removes ${plural(docs.removed.length, 'doc')}`);
-  const what = summary.length ? `This pull request ${summary.join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : 'This pull request updates Docturnal\'s records of your code.';
-  const lines = ['# Docturnal update', '', `${what} Review the changes, then merge the pull request to keep them.`];
+  if (summarized && !summary.length) summary.push(`reads ${plural(summarized, 'file')} for the documentation`);
+  const what = summary.length ? `The latest run ${summary.join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : 'The latest run updates Docturnal\'s records of your code.';
+  const lines = [`# ${title}`, ''];
+  if (progress) lines.push(...progressLines(progress), '');
+  lines.push(`${what} Review the changes, then merge the pull request to keep them.`);
 
   if (processed.length) {
     lines.push('', '## Comments added', '', '| File | Comments added | Checked by a parser | Proposed comments |', '| --- | --- | --- | --- |');
@@ -136,4 +183,4 @@ function buildReport({ processed = [], docs = { updated: [], removed: [], pendin
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { buildReport, proposalSummary };
+module.exports = { DOCS_TITLE, UPDATE_TITLE, buildReport, progressLines, proposalSummary, pullRequestTitle };

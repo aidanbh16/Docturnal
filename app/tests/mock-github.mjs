@@ -209,7 +209,7 @@ export function createMockGitHub({
     if (pull && method === 'PATCH') {
       const pr = state.pulls.find((p) => p.repo === fullName && p.number === Number(pull[1]));
       if (!pr) return json(404, { message: 'Not Found' });
-      Object.assign(pr, body.body === undefined ? {} : { body: body.body });
+      Object.assign(pr, body.body === undefined ? {} : { body: body.body }, body.title === undefined ? {} : { title: body.title });
       return json(200, pr);
     }
 

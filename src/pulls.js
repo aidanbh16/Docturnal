@@ -19,17 +19,30 @@ const API_VERSION = '2026-03-10';
 
 class PullRequestError extends Error {}
 
-// The pull request body: last-run.md, with no settings link, since there is no app.
+// Splits last-run.md into the pull request's title, its first heading when that names
+// Docturnal, and its body, the rest. Returns { title, body }.
+function splitTitle(text) {
+  const match = /^# (Docturnal[^\n]{0,80})\n+/.exec(text);
+  return match ? { title: match[1].trim(), body: text.slice(match[0].length) } : { title: UPDATE_PR_TITLE, body: text };
+}
+
+// The pull request body: last-run.md without its title, and with no settings link, since
+// there is no app.
 function pullRequestBody(root) {
-  let body;
+  return pullRequestContent(root).body;
+}
+
+function pullRequestContent(root) {
+  let text;
   try {
-    body = fs.readFileSync(path.join(root, LAST_RUN_PATH), 'utf8');
+    text = fs.readFileSync(path.join(root, LAST_RUN_PATH), 'utf8');
   } catch {
-    body = '';
+    text = '';
   }
-  if (!body.trim()) return FALLBACK_BODY;
+  if (!text.trim()) return { title: UPDATE_PR_TITLE, body: FALLBACK_BODY };
+  let { title, body } = splitTitle(text);
   if (body.length > MAX_BODY) body = `${body.slice(0, MAX_BODY)}\n\nThe rest of this description is in \`${LAST_RUN_PATH}\`.`;
-  return body;
+  return { title, body };
 }
 
 // A one-line explanation of a refused request, naming the setting to change.
@@ -76,14 +89,14 @@ async function openOrUpdatePullRequest({ root, base, token, env = process.env, f
     return data;
   };
 
-  const body = pullRequestBody(root);
+  const { title, body } = pullRequestContent(root);
   const open = await call('GET', `/pulls?state=open&head=${encodeURIComponent(`${owner}:docturnal/update`)}`);
   if (Array.isArray(open) && open.length) {
-    await call('PATCH', `/pulls/${open[0].number}`, { body });
+    await call('PATCH', `/pulls/${open[0].number}`, { title, body });
     return { number: open[0].number, action: 'updated' };
   }
-  const created = await call('POST', '/pulls', { title: UPDATE_PR_TITLE, head: 'docturnal/update', base, body });
+  const created = await call('POST', '/pulls', { title, head: 'docturnal/update', base, body });
   return { number: created.number, action: 'opened' };
 }
 
-module.exports = { PullRequestError, UPDATE_PR_TITLE, openOrUpdatePullRequest, pullRequestBody, refusal };
+module.exports = { PullRequestError, UPDATE_PR_TITLE, openOrUpdatePullRequest, pullRequestBody, pullRequestContent, refusal, splitTitle };
