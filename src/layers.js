@@ -394,14 +394,15 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
     const { group, maxParts } = step.value;
     const supported = (partFiles, name) => supports(groupText({ folders: partFolders(group, partFiles), files: partFiles, partial: true }, fileInfo, folders), name);
     const byModel = await splitWithModel(group, {
-      call, purposeOf, maxParts, minSize: MIN_GROUP_FILES, supported, copies: (d) => copiesPurpose(d, purposes), taken,
+      call, purposeOf, importsOf, maxParts, minSize: MIN_GROUP_FILES, supported, copies: (d) => copiesPurpose(d, purposes), taken,
       contextTokens, promptChars, styleRules, errors,
     });
     const what = `${where(group)} (${group.files.length} files)`;
     let parts = byModel.parts;
     if (parts) {
       parts.forEach((p) => taken.add(p.name.toLowerCase()));
-      splits.push(`${what} was split into ${parts.length} layers by the docs model${byModel.attempts > 1 ? ', on its second answer' : ''}`);
+      const placed = byModel.placed ? `, and ${byModel.placed} ${byModel.placed === 1 ? 'file' : 'files'} it left out ${byModel.placed === 1 ? 'was' : 'were'} placed by imports and purposes` : '';
+      splits.push(`${what} was split into ${parts.length} layers by the docs model${byModel.attempts > 1 ? ', on its second answer' : ''}${placed}`);
     } else {
       parts = clusterParts(group, maxParts, importsOf, purposeOf);
       splits.push(parts.length > 1

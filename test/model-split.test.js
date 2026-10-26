@@ -15,7 +15,7 @@ const docs = require('../src/docs');
 const { importSpecifiers, resolveImport } = require('../src/importance');
 const { clusterFiles } = require('../src/clusters');
 const { planGroundedLayers, purposeSentence } = require('../src/layers');
-const { checkSplit } = require('../src/split');
+const { MAX_MISSING_SHARE, checkSplit, placeMissing } = require('../src/split');
 const { defaultHandler, kindOf, startMockOllama } = require('./mock-ollama');
 const { gitRepo, runAction } = require('./git-repo');
 
@@ -118,14 +118,78 @@ test('the docs model divides the live src/ into the comment engine, the docs and
 });
 
 test('an answer that breaks a rule is asked for again with the problems listed, and the second answer is used', async () => {
-  const first = { parts: goodParts().map((p) => ({ ...p, files: p.files.filter((f) => f !== 'src/main.js') })) };
+  const first = { parts: goodParts().map((p, i) => (i === 1 ? { ...p, name: 'Comment Engine' } : p)) };
   const { src, splits, errors, m } = await plan([first, { parts: goodParts() }]);
   assert.strictEqual(m.splits().length, 2);
-  assert.match(m.splits()[1].prompt, /Your last answer broke these rules\. Fix them:\n- `src\/main\.js` is in no part\n/);
+  assert.match(m.splits()[1].prompt, /Your last answer broke these rules\. Fix them:\n- the name "Comment Engine" is given to two parts\n/);
   assert.doesNotMatch(m.splits()[0].prompt, /Your last answer/);
   assert.deepStrictEqual(splits, [`src/ (${SRC.length} files) was split into 4 layers by the docs model, on its second answer`]);
-  assert.ok(errors.includes('layers: answer 1 for splitting src/ broke 1 rule: `src/main.js` is in no part'), errors.join('\n'));
-  assert.ok(src.some((l) => l.name === 'Run State and Git' && l.files.includes('src/main.js')));
+  assert.ok(errors.includes('layers: answer 1 for splitting src/ broke 1 rule: the name "Comment Engine" is given to two parts'), errors.join('\n'));
+  assert.ok(src.some((l) => l.name === 'Docs and README'));
+});
+
+// --- Files an answer leaves out are placed in code ---
+
+// The fifth real run: both answers were rejected only for missing files, and answer 2 left out
+// just these four.
+const RUN5_GAPS = ['src/importance.js', 'src/main.js', 'src/ollama.js', 'src/restates.js'];
+const without = (gaps) => ({ parts: goodParts().map((p) => ({ ...p, files: p.files.filter((f) => !gaps.includes(f)) })) });
+
+test('answer 2 of the fifth run, which left out 4 files, is kept, and each file goes to the part it shares the most with', async () => {
+  const { src, splits, errors, m } = await plan([without(RUN5_GAPS)]);
+  // No second request, no clustering, and no rule broken.
+  assert.strictEqual(m.splits().length, 1);
+  assert.deepStrictEqual(errors, []);
+  assert.deepStrictEqual(splits, [`src/ (${SRC.length} files) was split into 4 layers by the docs model, and 4 files it left out were placed by imports and purposes`]);
+  const layerOf = (file) => src.find((l) => l.files.includes(file)).name;
+  // main.js imports the run's files; restates.js is about comments; ollama.js is about Ollama,
+  // though the docs and the run import it more than the Ollama files do.
+  assert.strictEqual(layerOf('src/main.js'), 'Run State and Git');
+  assert.strictEqual(layerOf('src/restates.js'), 'Comment Engine');
+  assert.strictEqual(layerOf('src/ollama.js'), 'Ollama Models');
+  // importance.js has no term any part shares; layers.js and structure.js, which import it, put
+  // it with the docs.
+  assert.strictEqual(layerOf('src/importance.js'), 'Docs and README');
+  // Every file is in exactly one layer, and the model's names and descriptions are kept.
+  assert.deepStrictEqual(src.flatMap((l) => l.files).sort(), SRC);
+  assert.deepStrictEqual(src.map((l) => l.name).sort(), goodParts().map((p) => p.name).sort());
+  // What a file imports outweighs who imports it: entry.js imports the store's files, and the
+  // views import it.
+  const graph = { 'lib/entry.js': ['lib/store-a.js', 'lib/store-b.js'], 'lib/view-a.js': ['lib/entry.js'], 'lib/view-b.js': ['lib/entry.js'], 'lib/view-c.js': ['lib/entry.js'] };
+  const toy = [{ name: 'Views', files: ['lib/view-a.js', 'lib/view-b.js', 'lib/view-c.js'] }, { name: 'Store', files: ['lib/store-a.js', 'lib/store-b.js', 'lib/store-c.js'] }];
+  placeMissing(['lib/entry.js'], toy, { importsOf: (f) => graph[f] || [] });
+  assert.ok(toy[1].files.includes('lib/entry.js'));
+  // The order in which the files were left out does not matter.
+  const parts = without(RUN5_GAPS).parts;
+  const again = without(RUN5_GAPS).parts;
+  placeMissing(RUN5_GAPS, parts, { importsOf, purposeOf: (f) => PURPOSE.get(f) });
+  placeMissing([...RUN5_GAPS].reverse(), again, { importsOf, purposeOf: (f) => PURPOSE.get(f) });
+  assert.deepStrictEqual(again, parts);
+});
+
+test('up to a quarter of the files may be left out; more, or another rule broken, is rejected', () => {
+  const group = { folder: 'src', folders: ['src'], files: SRC };
+  const rules = { maxParts: 4, minSize: 3, supported: () => true, copies: () => false, importsOf, purposeOf: (f) => PURPOSE.get(f) };
+  const allowed = Math.floor(MAX_MISSING_SHARE * SRC.length);
+  // Left out from the largest parts, so each keeps at least 3 files.
+  const leftOut = (n) => {
+    const run = filesOf('run').filter((f) => !RUN5_GAPS.includes(f));
+    return run.flatMap((f, i) => [f, filesOf('docs')[i]]).filter(Boolean).slice(0, n);
+  };
+  const most = checkSplit(without(leftOut(allowed)), group, rules);
+  assert.strictEqual(most.placed, allowed);
+  assert.deepStrictEqual(most.parts.flatMap((p) => p.files).sort(), SRC);
+  const tooMany = checkSplit(without(leftOut(allowed + 1)), group, rules);
+  assert.strictEqual(tooMany.parts, null);
+  assert.deepStrictEqual(tooMany.problems.filter((p) => !/in no part$/.test(p)), []);
+  assert.strictEqual(tooMany.problems.length, 1);
+  // With another rule broken, the missing files are not placed and not listed either.
+  const named = without(RUN5_GAPS);
+  named.parts[1].name = 'Comment Engine';
+  assert.deepStrictEqual(checkSplit(named, group, rules).problems, ['the name "Comment Engine" is given to two parts']);
+  // A part too small as the model gave it is still too small, though placing would fill it.
+  const small = without(['src/install-ollama.js', 'src/models.js']);
+  assert.deepStrictEqual(checkSplit(small, group, rules).problems, ['"Ollama Models" has 2 files; each part needs at least 3']);
 });
 
 // Each rule, broken in both answers: the problem is named, and src/ is clustered instead.
@@ -139,7 +203,12 @@ const move = (parts, file, from, to) => {
   parts[to].files.push(file);
 };
 const RULES = [
-  ['a file in no part', broken((p) => { p[3].files = p[3].files.filter((f) => f !== 'src/main.js'); }), '`src/main.js` is in no part'],
+  // More than a quarter of the files left out: 9 of the comment engine's and the docs' files.
+  ['more than a quarter of the files in no part', broken((p) => { p[0].files = p[0].files.slice(0, 3); p[1].files = p[1].files.slice(0, 7); }),
+    (() => {
+      const gone = SRC.filter((f) => [...filesOf('comment').slice(3), ...filesOf('docs').slice(7)].includes(f));
+      return `${gone.slice(0, 6).map((f) => `\`${f}\``).join(', ')}, and ${gone.length - 6} more are in no part`;
+    })()],
   ['a file in two parts', broken((p) => p[0].files.push('src/main.js')), '`src/main.js` is in more than one part'],
   ['a file not in the list', broken((p) => p[3].files.push('src/payments.js')), '`src/payments.js` is not in the list'],
   ['one part', { parts: [{ ...goodParts()[3], files: SRC }] }, 'it has 1 part; give 2 to 4'],
