@@ -74,7 +74,7 @@ The model never edits your files. It only proposes comments, and Docturnal decid
 
 Each layer document starts with a hidden marker. Docturnal rewrites a layer document only when files in that layer change, and never overwrites a file in `docs/` that does not have the marker.
 
-The layers follow your folders, and a large folder is split into a few layers by which of its files import each other. Each layer document describes only what its files' summaries and definitions say: a sentence they don't support is left out, and nothing is said twice. Tables in the documents are computed from your code, such as the table of files in each layer, and the Configuration section lists only the environment variables, inputs, and configuration files the code itself reads.
+The layers follow your folders, and a large folder is split into a few layers by what its files do. The model groups the files by their purposes and names each group, and every group is checked against its files. When the grouping fails the checks twice, the files are grouped by which of them import each other. Each layer document describes only what its files' summaries and definitions say: a sentence they don't support is left out, and nothing is said twice. Tables in the documents are computed from your code, such as the table of files in each layer, and the Configuration section lists only the environment variables, inputs, and configuration files the code itself reads.
 
 ## README rules
 

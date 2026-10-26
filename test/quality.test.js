@@ -115,7 +115,8 @@ test('a layer description that copies one file\'s purpose is replaced by one fro
   // pkcs8.mjs's purpose, as the real run did.
   const call = async (label, request) => {
     const prompt = request.messages[1].content;
-    prompts.push(prompt);
+    // The request to split src/ gets an answer it cannot use, so src/ is clustered.
+    if (label === 'layers') prompts.push(prompt);
     const ids = [...prompt.matchAll(/^- (g\d+): ([^(]+) \(/gm)].map((m) => ({ id: m[1], folders: m[2] }));
     return JSON.stringify({
       layers: ids.map(({ id, folders }) => (/test/.test(folders)

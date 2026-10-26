@@ -50,6 +50,7 @@ function kindOf(body) {
   if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
   if (props.summary && props.files) return 'folder';
+  if (props.parts) return 'split';
   if (props.layers) return 'layers';
   if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
@@ -120,6 +121,18 @@ function layersReply(body) {
   };
 }
 
+// A large folder split in two halves, each named after its first file: "Alpha Files".
+function splitReply(body) {
+  const files = [...promptOf(body).split('\nFiles:\n').pop().matchAll(/^- (\S+?)(?::|$)/gm)].map((m) => m[1]);
+  const half = Math.ceil(files.length / 2);
+  return {
+    parts: [files.slice(0, half), files.slice(half)].map((partFiles) => {
+      const word = partFiles[0].split('/').pop().replace(/\.\w+$/, '');
+      return { name: `${word.charAt(0).toUpperCase()}${word.slice(1)} Files`, description: `Works together on ${word} and the files next to it.`, files: partFiles };
+    }),
+  };
+}
+
 function layerDocReply(body) {
   const name = promptOf(body).match(/for the "([^"]+)" layer/)[1];
   return `# ${name}\n\nThe ${name} layer groups related modules.\n\n## Overview\n\nYou find these modules together.\n\n## How it works\n\nEach module exports its functions.`;
@@ -151,6 +164,7 @@ function defaultHandler({ oomModels = [] } = {}) {
       case 'accuracy': return accuracyReply(body);
       case 'load': return '';
       case 'layers': return layersReply(body);
+      case 'split': return splitReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
       case 'polish': return polishReply(body);

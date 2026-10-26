@@ -12,7 +12,7 @@ const links = require('./links');
 const grounding = require('./grounding');
 const { isPlainPath } = require('./safe-path');
 const { configurationSection, layerConfiguration } = require('./configuration');
-const { copiesPurpose, planGroundedLayers } = require('./layers');
+const { copiesPurpose, planGroundedLayers, purposeSentence } = require('./layers');
 const ollama = require('./ollama');
 const { SKIP_DIRS } = require('./languages');
 
@@ -709,19 +709,16 @@ function sharedFolders(layers) {
 
 // A layer's description when the plan gives none: from the summaries of its folders, largest
 // first, never from one file's purpose. A folder other layers share says more than this layer,
-// so a layer with only part of its folders names its files instead.
-function folderDescription(layer, folders, shared = new Set()) {
+// so a layer with only part of its folders is described by its files' purposes instead (the
+// plan does this with the files most of the project imports first; see layers.js).
+function folderDescription(layer, folders, shared = new Set(), fileInfo = new Map()) {
   const counts = new Map();
   for (const file of layer.files) counts.set(path.posix.dirname(file), (counts.get(path.posix.dirname(file)) || 0) + 1);
   const dirs = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([dir]) => dir);
   const summary = dirs.filter((dir) => !shared.has(dir)).map((dir) => folders.get(dir)).find(Boolean);
   if (summary) return firstSentence(summary);
-  if (dirs.some((dir) => shared.has(dir))) {
-    const names = layer.files.slice(0, 3).map((f) => `\`${path.posix.basename(f)}\``);
-    const more = layer.files.length - names.length;
-    const list = more ? `${names.join(', ')}, and ${more} more ${more === 1 ? 'file' : 'files'}` : names.join(', ');
-    return `Holds ${list} in ${dirs.slice(0, 3).map((d) => `\`${d}/\``).join(', ')}.`;
-  }
+  const fromPurposes = dirs.some((dir) => shared.has(dir)) && purposeSentence(layer.files, (f) => (fileInfo.get(f) || {}).summary);
+  if (fromPurposes) return fromPurposes;
   return `The code in ${dirs.slice(0, 3).map((d) => `\`${d}\``).join(', ')}.`;
 }
 
@@ -745,7 +742,7 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), fold
   const shared = sharedFolders(layers);
   for (const layer of layers) {
     layer.files.sort();
-    if (!layer.description) layer.description = folderDescription(layer, folders, shared);
+    if (!layer.description) layer.description = folderDescription(layer, folders, shared, fileInfo);
   }
   assignSlugs(layers, isTaken);
   return layers.map(({ name, slug, description, files: layerFiles }) => ({ name, slug, description, files: layerFiles }));
@@ -782,8 +779,8 @@ function folderListing(files, folders, budget) {
 
 // Plans the layers from the project's real folders (see layers.js), then validates them.
 // `call` sends one request to the docs model and returns the reply text.
-async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], folders = new Map(), readSource = () => null }) {
-  const raw = await planGroundedLayers({ files, fileInfo, folders, readSource, call, contextTokens, promptChars: DOC_PROMPT_CHARS, styleRules: STYLE_RULES, errors });
+async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], splits = [], folders = new Map(), readSource = () => null }) {
+  const raw = await planGroundedLayers({ files, fileInfo, folders, readSource, call, contextTokens, promptChars: DOC_PROMPT_CHARS, styleRules: STYLE_RULES, errors, splits });
   return normalizeLayers(raw, files, { previous: previousLayers, fileInfo, folders, isTaken });
 }
 
@@ -931,6 +928,22 @@ Files in this layer:
   ];
 }
 
+// Whether a Responsibilities item lists file names instead of saying what the files do, such as
+// "Handles `comments.js`, `owned.js`, and `verify.js`.": it names at least two of the project's
+// files and has no more terms of its own than names, or names four or more. fileNames holds the
+// files' lowercase names, with and without their extensions; a name without one counts only in
+// a code span.
+function listsFiles(item, fileNames) {
+  let names = 0;
+  const rest = String(item).replace(/`([^`\n]+)`|[\w./-]+\.[A-Za-z]{1,5}\b/g, (match, inner) => {
+    const base = path.posix.basename((inner || match).trim()).toLowerCase();
+    if (!fileNames.has(base) || (!inner && !base.includes('.'))) return match;
+    names++;
+    return ' ';
+  });
+  return names >= 2 && (names >= 4 || grounding.terms(rest).length <= names);
+}
+
 // Assembles a layer doc from the model's reply and the generated parts.
 // configuration: the computed Configuration section's Markdown, or '' for none (see
 // configuration.js). A Configuration section in the model's reply is dropped. The model's
@@ -938,7 +951,8 @@ Files in this layer:
 // linkStats.ungrounded counts the ones dropped. A sentence that repeats an earlier one in the doc
 // goes (linkStats.repeated). An Overview with too little left is built from the summaries of the
 // folders the layer holds whole. Responsibilities keeps at most MAX_RESPONSIBILITIES items, none
-// that repeats one file's purpose (linkStats.purposeItems), and is left out when none is left.
+// that lists file names (linkStats.fileListItems) or repeats one file's purpose
+// (linkStats.purposeItems), and is left out when none is left.
 function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docsDir = 'docs', existingPaths = null, knownUrls, linkStats = {}, configuration = '' }) {
   const docPath = `${docsDir}/${layer.slug}.md`;
   const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
@@ -961,9 +975,17 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
     else seen.push(...short);
   }
   const purposes = [...fileInfo.values()].map((info) => info.summary).filter(Boolean);
+  const fileNames = new Set([...fileInfo.keys(), ...layer.files].flatMap((f) => {
+    const base = path.posix.basename(f).toLowerCase();
+    return [base, base.replace(/\.[^.]+$/, '')];
+  }));
   const fresh = grounding.isNew(seen, linkStats);
   let items = 0;
   const responsibilities = grounding.filterSection(ground(bodies.get('responsibilities')), (s) => {
+    if (listsFiles(s, fileNames)) {
+      linkStats.fileListItems = (linkStats.fileListItems || 0) + 1;
+      return false;
+    }
     if (layer.files.length > 1 && copiesPurpose(s, purposes)) {
       linkStats.purposeItems = (linkStats.purposeItems || 0) + 1;
       return false;
@@ -1077,7 +1099,7 @@ async function generateDocs({
   const caller = givenCaller || createCaller({ chat, model, fallbackModel, host });
   const call = caller.call;
   const result = {
-    layers: [], replanned: false, docs: [], pending: [], skipped: [], removed: [], errors: caller.errors, fallbackUsed: false,
+    layers: [], replanned: false, docs: [], pending: [], skipped: [], removed: [], errors: caller.errors, splits: [], fallbackUsed: false,
     facts: null, projectName: '', readmeNeeded: false,
   };
   const stale = new Set(staleSlugs);
@@ -1103,7 +1125,7 @@ async function generateDocs({
   } else {
     result.replanned = true;
     const planStarted = now();
-    layers = await planLayers({ files: sourcePaths, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors, folders, readSource: read });
+    layers = await planLayers({ files: sourcePaths, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors, splits: result.splits, folders, readSource: read });
     for (const layer of layers) layer.description = plain(layer.description);
     timings.layers = now() - planStarted;
   }
@@ -1216,6 +1238,7 @@ module.exports = {
   completeReply,
   cutToComplete,
   layerDocPrompt,
+  listsFiles,
   collectProjectFacts,
   createCaller,
   describeFacts,

@@ -144,6 +144,8 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     });
     readmeMs = now() - readmeStarted;
     docTimings = result.timings || docTimings;
+    for (const split of result.splits || []) log(`Docturnal: ${split}`);
+    if (linkStats.fileListItems) log(`Docturnal: dropped ${linkStats.fileListItems} Responsibilities ${linkStats.fileListItems === 1 ? 'item' : 'items'} that listed file names instead of what the files do`);
     if (linkStats.cutReplies) log(`Docturnal: ${linkStats.cutReplies} ${linkStats.cutReplies === 1 ? 'reply' : 'replies'} for the docs reached the length limit, so each was cut back to its last complete sentence`);
     if (linkStats.repeated) log(`Docturnal: dropped ${linkStats.repeated} ${linkStats.repeated === 1 ? 'sentence' : 'sentences'} that repeated another in the same doc`);
     if (linkStats.purposeItems) log(`Docturnal: dropped ${linkStats.purposeItems} Responsibilities ${linkStats.purposeItems === 1 ? 'item' : 'items'} that only repeated one file's purpose`);

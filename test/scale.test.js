@@ -2,8 +2,11 @@
 
 // First runs at size, with model time simulated at speeds calibrated from a real runner (see
 // speed-model.js): a project like Docturnal's own (72 source files) documents itself in under
-// 20 minutes, and a 1,000-file project's first documentation pull request arrives within the
-// 90-minute budget. Every docs prompt stays under the fixed size limit.
+// 25 minutes, and a 1,000-file project's first documentation pull request arrives within the
+// 90-minute budget. Every docs prompt stays under the fixed size limit. The 72-file project's
+// src/ of 29 files is split by the docs model, which costs one request and a doc for each part;
+// the real fourth run, with src/ in 4 parts and 7 layers, took 11.3 minutes, and the simulation
+// runs about twice as slow as the real runner did.
 
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -95,20 +98,22 @@ function checkPromptSizes(sim) {
   }
 }
 
-test('a 72-file project like Docturnal\'s: the whole first run in under 20 minutes, with every file described', { timeout: 600000 }, async () => {
+test('a 72-file project like Docturnal\'s: the whole first run in under 25 minutes, with every file described', { timeout: 600000 }, async () => {
   const run = await firstRun(projectLike72());
   const minutes = run.sim.minutes();
   console.log(`  ${run.logs.find((l) => l.startsWith('Docturnal: benchmark: '))}`);
-  assert.ok(minutes < 20, `took ${minutes.toFixed(1)} simulated minutes`);
+  assert.ok(minutes < 25, `took ${minutes.toFixed(1)} simulated minutes`);
   assert.deepStrictEqual(run.result.leftOver, []);
   const code = Object.entries(run.state.files).filter(([file]) => file.endsWith('.js'));
   assert.strictEqual(code.length, 72);
   assert.ok(code.every(([, entry]) => typeof entry.summary === 'string' && entry.summary.length > 0));
   assert.strictEqual(run.state.docsComplete, true);
   assert.ok(run.docsWritten);
-  // Layers from the real folders: the test folders are one layer, and app/scripts joins app/src.
+  // Layers from the real folders: the test folders are one layer, app/scripts joins app/src, and
+  // src/, with 29 files, is in two parts.
   assert.deepStrictEqual(run.state.layers.map((l) => [...new Set(l.files.map((f) => path.posix.dirname(f)))].sort().join('+')).sort(),
-    ['app/scripts+app/src', 'app/tests+test', 'scripts', 'src']);
+    ['app/scripts+app/src', 'app/tests+test', 'scripts', 'src', 'src']);
+  assert.ok(run.logs.includes('Docturnal: src/ (29 files) was split into 2 layers by the docs model'), run.logs.filter((l) => /split/.test(l)).join('\n'));
   checkPromptSizes(run.sim);
 });
 

@@ -112,6 +112,7 @@ test('each part of src/ is a layer of its own with its own doc, named from its f
     ],
   };
   const written = [];
+  // The request to split src/ gets this answer too, which has no parts, so src/ is clustered.
   const chat = async (request) => {
     if (request.format) return JSON.stringify(answer);
     written.push(request.label);
@@ -142,10 +143,12 @@ test('each part of src/ is a layer of its own with its own doc, named from its f
   // One doc for each layer, each part included.
   for (const layer of srcLayers) assert.ok(written.includes(`docs/${layer.slug}.md`), layer.slug);
   assert.strictEqual(new Set(srcLayers.map((l) => l.slug)).size, 4);
-  // A part's fallback description never borrows the summary of all of src/.
+  // A part's fallback description never borrows the summary of all of src/, and says what its
+  // files do: it opens with a purpose of one of them.
   for (const layer of srcLayers.filter((l) => l.name.startsWith('Source '))) {
     assert.notStrictEqual(layer.description, docs.normalizeLayers(null, SRC, { folders: FOLDERS })[0].description);
-    assert.match(layer.description, /^Holds `[^`]+`, .+ in `src\/`\.$/);
+    assert.doesNotMatch(layer.description, /Holds|more files/);
+    assert.ok(layer.files.some((f) => layer.description.startsWith(RUN.files[f].summary.replace(/\.$/, ''))), layer.description);
   }
 });
 

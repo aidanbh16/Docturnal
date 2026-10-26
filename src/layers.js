@@ -5,18 +5,20 @@
 // group with several subfolders is split into them while that keeps at most MAX_LAYERS groups,
 // test folders are one group, and a small group joins the group whose folder shares the most of
 // its path (app/scripts joins app/src), never a test group unless it is tests itself. A group
-// of more than SPLIT_ABOVE files, tests aside, is split into parts by its import graph (see
-// clusters.js), so a big flat folder such as src/ gets a layer for each of its parts. The model
-// then only names the groups and may merge ones with one responsibility, though never two parts
-// of one folder. A name it gives must be
+// of more than SPLIT_ABOVE files, tests aside, is split into parts, so a big flat folder such as
+// src/ gets a layer for each of its parts: the docs model divides it and names the parts (see
+// split.js), and when its answers break the rules, the parts come from the import graph (see
+// clusters.js). The model then only names the other groups and may merge ones with one
+// responsibility, though never two parts of one folder. A name it gives must be
 // supported by the group's folders, files, or summaries; a generic name such as "User Interface"
 // needs every one of its words there. Otherwise the group keeps a name from its folder. A
 // description that repeats one file's purpose is dropped, and docs.js builds one from the
-// folder summaries.
+// folder summaries; a part's comes from the purposes of its most imported files.
 
 const path = require('path');
 
 const { clusterFiles } = require('./clusters');
+const { splitWithModel, where } = require('./split');
 
 const MAX_LAYERS = 7;
 // A group with fewer files joins another, so a small project gets a few meaningful layers.
@@ -80,11 +82,11 @@ function partWord(files, importsOf) {
   return words(best).map((w) => FOLDER_WORDS[w] || w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
-// Groups files by folder: [{ id, folder, folders, files, part }], at most MAX_LAYERS of them.
-// importsOf(file) returns the project files a file imports, for merging when there are too many
-// and for splitting a large group; purposeOf(file) returns its purpose, for splitting. part is
-// set on each part of a split group: { of: its folder, word: the name word for its fallback name }.
-function groupFiles(files, importsOf = () => [], purposeOf = () => '') {
+const isTests = (g) => (g.folders || [g.folder]).every((f) => segments(f).some((s) => TEST_FOLDER.test(s)));
+
+// Groups files by folder, at most MAX_LAYERS groups, before any large group is split.
+// importsOf(file) returns the project files a file imports, for merging when there are too many.
+function folderGroups(files, importsOf = () => []) {
   const dirs = files.map((f) => segments(dirOf(f)));
   // The folders every file shares, such as src/ in a project with all its code there.
   let depth = 0;
@@ -125,7 +127,6 @@ function groupFiles(files, importsOf = () => [], purposeOf = () => '') {
     join(tests[0], extra);
     groups = groups.filter((g) => g !== extra);
   }
-  const isTests = (g) => (g.folders || [g.folder]).every((f) => segments(f).some((s) => TEST_FOLDER.test(s)));
   // The group a small one joins: the one whose folder shares the most of its path, then the one
   // it shares the most imports with, then the largest. A test group takes only tests. Null when
   // no group can take it.
@@ -173,23 +174,77 @@ function groupFiles(files, importsOf = () => [], purposeOf = () => '') {
     join(into, small);
     groups = groups.filter((g) => g !== small);
   }
-  // A large group splits into parts by its imports, largest first, while that keeps at most
-  // MAX_LAYERS groups. Tests stay one group.
+  return groups.map((g) => ({ folder: g.folder, folders: g.folders || [g.folder], files: g.files }));
+}
+
+// The folders of a group that hold some of these files.
+function partFolders(group, files) {
+  const holds = (folder, file) => folder === '.' || file.startsWith(`${folder}/`) || dirOf(file) === folder;
+  const found = group.folders.filter((f) => files.some((file) => holds(f, file)));
+  return found.length ? found : [group.folder];
+}
+
+// Splits each large group into parts, largest first, while that keeps at most MAX_LAYERS
+// groups; tests stay one group. It yields { group, maxParts } for each group to split and takes
+// back its parts, [{ files, name, description }] (name and description only when the model
+// gave them), or fewer than two to keep the group whole. It returns the groups. part is set on
+// each part: { of: its folder, word: the name word for its fallback name }.
+function* splitSteps(groups, importsOf) {
+  let current = [...groups];
   for (const group of [...groups].sort((a, b) => b.files.length - a.files.length || a.folder.localeCompare(b.folder))) {
-    const room = MAX_LAYERS - groups.length + 1;
+    const room = MAX_LAYERS - current.length + 1;
     if (group.files.length <= SPLIT_ABOVE || isTests(group) || room < 2) continue;
-    const parts = clusterFiles(group.files, { importsOf, purposeOf, maxClusters: Math.min(MAX_PARTS, room), minSize: MIN_GROUP_FILES });
-    if (parts.length < 2) continue;
-    const holds = (folder, file) => folder === '.' || file.startsWith(`${folder}/`) || dirOf(file) === folder;
-    groups = groups.filter((g) => g !== group);
-    for (const partFiles of parts) {
-      const folders = (group.folders || [group.folder]).filter((f) => partFiles.some((file) => holds(f, file)));
-      groups.push({ folder: folders[0] || group.folder, folders, files: partFiles, part: { of: group.folder, word: partWord(partFiles, importsOf) } });
+    const parts = yield { group, maxParts: Math.min(MAX_PARTS, room) };
+    if (!parts || parts.length < 2) continue;
+    current = current.filter((g) => g !== group);
+    for (const { files, name, description } of parts) {
+      const folders = partFolders(group, files);
+      current.push({
+        folder: folders[0], folders, files, part: { of: group.folder, word: partWord(files, importsOf) },
+        ...(name ? { named: { name, description } } : {}),
+      });
     }
   }
+  return current;
+}
+
+// The groups in a stable order, each with its id.
+function finishGroups(groups) {
   return groups
     .sort((a, b) => a.folder.localeCompare(b.folder) || a.files.slice().sort()[0].localeCompare(b.files.slice().sort()[0]))
-    .map((g, i) => ({ id: `g${i + 1}`, folder: g.folder, folders: g.folders || [g.folder], files: g.files.sort(), ...(g.part ? { part: g.part } : {}) }));
+    .map((g, i) => ({ id: `g${i + 1}`, folder: g.folder, folders: g.folders, files: g.files.sort(), ...(g.part ? { part: g.part } : {}), ...(g.named ? { named: g.named } : {}) }));
+}
+
+// The parts clusterFiles finds for a group: [{ files }].
+function clusterParts(group, maxParts, importsOf, purposeOf) {
+  return clusterFiles(group.files, { importsOf, purposeOf, maxClusters: maxParts, minSize: MIN_GROUP_FILES }).map((files) => ({ files }));
+}
+
+// Groups files by folder: [{ id, folder, folders, files, part }], at most MAX_LAYERS of them,
+// with each large group split by clustering its imports (see planGroundedLayers for the split
+// the docs model makes). purposeOf(file) returns its purpose, for the clustering.
+function groupFiles(files, importsOf = () => [], purposeOf = () => '') {
+  const steps = splitSteps(folderGroups(files, importsOf), importsOf);
+  let step = steps.next();
+  while (!step.done) step = steps.next(clusterParts(step.value.group, step.value.maxParts, importsOf, purposeOf));
+  return finishGroups(step.value);
+}
+
+// A sentence from the purposes of the files most of the project imports, for a part of a folder
+// the plan gives no description: "Calls the local Ollama server, records the run's state, and
+// runs git commands." importers(file) is how many files import it.
+function purposeSentence(files, purposeOf, importers = () => 0) {
+  const purpose = (f) => String(purposeOf(f) || '').replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+  const clauses = [];
+  for (const file of files.filter((f) => purpose(f)).sort((a, b) => importers(b) - importers(a) || a.localeCompare(b))) {
+    // A verb or an article starts a clause in lowercase; a name such as "Ollama" keeps its case.
+    const clause = purpose(file).replace(/^(?:A|An|The|[A-Z][a-z]{2,}s)\b/, (w) => w.toLowerCase());
+    if (!clauses.includes(clause)) clauses.push(clause);
+    if (clauses.length === 3) break;
+  }
+  if (!clauses.length) return '';
+  const body = clauses.length < 3 ? clauses.join(' and ') : `${clauses.slice(0, -1).join(', ')}, and ${clauses[2]}`;
+  return `${body.charAt(0).toUpperCase()}${body.slice(1)}.`;
 }
 
 // The text a group's name may draw on: its folders, file names, and summaries. A part of a
@@ -299,8 +354,10 @@ Groups:
 }
 
 // Plans layers: { layers: [{ name, description, files }] }, for normalizeLayers in docs.js.
-// call(label, request) sends one request to the docs model.
-async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSource = () => null, call, contextTokens, promptChars = 4000, styleRules = '', errors = [] }) {
+// call(label, request) sends one request to the docs model. A large group is split by the docs
+// model (see split.js), or by clustering its imports when the model's answers break the rules;
+// splits gets one line for each, saying which.
+async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSource = () => null, call, contextTokens, promptChars = 4000, styleRules = '', errors = [], splits = [] }) {
   // Loaded here, not at the top: it loads typescript, and the pre-check must run without it.
   const { importSpecifiers, resolveImport } = require('./importance');
   const known = new Set(files);
@@ -318,26 +375,66 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
     }
     return importsCache.get(file);
   };
-  const groups = groupFiles(files, importsOf, (f) => (fileInfo.get(f) || {}).summary || '');
+  const purposeOf = (f) => (fileInfo.get(f) || {}).summary || '';
+  // Every file's purpose in the project: a layer's description may repeat none of them.
+  const purposes = files.map(purposeOf).filter(Boolean);
+  let importers = null;
+  const importedBy = (file) => {
+    if (!importers) {
+      importers = new Map();
+      for (const f of files) for (const target of new Set(importsOf(f))) if (target !== f) importers.set(target, (importers.get(target) || 0) + 1);
+    }
+    return importers.get(file) || 0;
+  };
+
+  const steps = splitSteps(folderGroups(files, importsOf), importsOf);
+  const taken = new Set();
+  let step = steps.next();
+  while (!step.done) {
+    const { group, maxParts } = step.value;
+    const supported = (partFiles, name) => supports(groupText({ folders: partFolders(group, partFiles), files: partFiles, partial: true }, fileInfo, folders), name);
+    const byModel = await splitWithModel(group, {
+      call, purposeOf, maxParts, minSize: MIN_GROUP_FILES, supported, copies: (d) => copiesPurpose(d, purposes), taken,
+      contextTokens, promptChars, styleRules, errors,
+    });
+    const what = `${where(group)} (${group.files.length} files)`;
+    let parts = byModel.parts;
+    if (parts) {
+      parts.forEach((p) => taken.add(p.name.toLowerCase()));
+      splits.push(`${what} was split into ${parts.length} layers by the docs model${byModel.attempts > 1 ? ', on its second answer' : ''}`);
+    } else {
+      parts = clusterParts(group, maxParts, importsOf, purposeOf);
+      splits.push(parts.length > 1
+        ? `${what} was split into ${parts.length} layers by clustering its imports, because ${byModel.reason}`
+        : `${what} stays one layer: ${byModel.reason}, and clustering its imports found no parts`);
+    }
+    step = steps.next(parts);
+  }
+  const groups = finishGroups(step.value);
   // The name a group gets when the model gives it none: its folder's, and for a part of a
   // folder, with its most central file's name, such as "Source Ollama".
   const fallbackName = (group) => (group.part ? `${folderName(group.folder)} ${group.part.word}` : folderName(group.folder));
+  // A part with no description is described by its most imported files' purposes.
+  const describe = (description, partial, layerFiles) => description || (partial ? purposeSentence(layerFiles, purposeOf, importedBy) : '');
+  const order = (ids) => Math.min(...ids.map((id) => Number(id.slice(1))));
+  // Parts the model named when it split them are layers already.
+  const layers = groups.filter((g) => g.named).map((g) => ({ name: g.named.name, description: g.named.description, files: g.files, at: order([g.id]) }));
+  const unnamed = groups.filter((g) => !g.named);
   let answer = null;
-  try {
-    const content = await call('layers', {
-      messages: layersPrompt(groups, fileInfo, folders, promptChars, styleRules),
-      format: LAYERS_SCHEMA,
-      options: { temperature: 0.2, seed: 42, num_ctx: contextTokens, num_predict: 120 + 80 * groups.length },
-    });
-    answer = JSON.parse(content);
-  } catch (err) {
-    errors.push(`layers: ${err.message}`);
+  if (unnamed.length) {
+    try {
+      const content = await call('layers', {
+        messages: layersPrompt(unnamed, fileInfo, folders, promptChars, styleRules),
+        format: LAYERS_SCHEMA,
+        options: { temperature: 0.2, seed: 42, num_ctx: contextTokens, num_predict: 120 + 80 * unnamed.length },
+      });
+      answer = JSON.parse(content);
+    } catch (err) {
+      errors.push(`layers: ${err.message}`);
+    }
   }
-  // Every file's purpose in the project: a layer's description may repeat none of them.
-  const purposes = files.map((f) => (fileInfo.get(f) || {}).summary).filter(Boolean);
-  const byId = new Map(groups.map((g) => [g.id, g]));
+  const byId = new Map(unnamed.map((g) => [g.id, g]));
   const assigned = new Set();
-  const layers = [];
   for (const entry of answer && Array.isArray(answer.layers) ? answer.layers : []) {
     if (!entry || typeof entry !== 'object') continue;
     // Two parts of one folder stay apart: the first keeps the entry, and the others are named
@@ -366,12 +463,12 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
       errors.push(`layers: the description of "${name}" repeats one file's purpose, so it comes from its folders`);
       description = '';
     }
-    layers.push({ name: grounded ? name : fallbackName(byId.get(members[0])), description, files: merged.files });
+    layers.push({ name: grounded ? name : fallbackName(byId.get(members[0])), description: describe(description, merged.partial, merged.files), files: merged.files, at: order(members) });
   }
-  for (const group of groups) {
-    if (!assigned.has(group.id)) layers.push({ name: fallbackName(group), description: '', files: group.files });
+  for (const group of unnamed) {
+    if (!assigned.has(group.id)) layers.push({ name: fallbackName(group), description: describe('', Boolean(group.part), group.files), files: group.files, at: order([group.id]) });
   }
-  return { layers };
+  return { layers: layers.sort((a, b) => a.at - b.at).map(({ name, description, files: layerFiles }) => ({ name, description, files: layerFiles })) };
 }
 
-module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupFiles, layersPrompt, planGroundedLayers, supports };
+module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupFiles, layersPrompt, planGroundedLayers, purposeSentence, supports };
