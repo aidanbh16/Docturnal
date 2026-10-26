@@ -198,6 +198,7 @@ To work on it, you need Node.js 20 or later:
 │   ├── scripts/
 │   ├── src/
 │   └── tests/
+├── docs/
 ├── pins/
 ├── scripts/
 ├── src/

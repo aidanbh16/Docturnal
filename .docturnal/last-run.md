@@ -3,25 +3,39 @@
 ## Progress
 
 - **Documentation:** complete, with 7 layer documents and the README.
-- **Comments:** 0 of 80 files commented at the medium level.
+- **Comments:** 1 of 80 files commented at the medium level.
 - **This pull request:** documentation for the whole project.
-- **Next:** comments on existing code in batches of up to 15 files, starting with batch 1 and the most important files. 80 existing files are left.
+- **Next:** comments on existing code in batches of up to 15 files, starting with batch 1 and the most important files. 79 existing files are left.
 
-The latest run updates 7 docs and updates the README. Review the changes, then merge the pull request to keep them.
+The latest run updates the README. Review the changes, then merge the pull request to keep them.
 
-## Docs
+## Comments added
 
-- Updated `docs/app-registration.md`
-- Updated `docs/release-management.md`
-- Updated `docs/source-ollama.md`
-- Updated `docs/python-analysis.md`
-- Updated `docs/configuration-and-state-management.md`
-- Updated `docs/source-grounding.md`
-- Updated `docs/tests.md`
+| File | Comments added | Checked by a parser | Proposed comments |
+| --- | --- | --- | --- |
+| `app/src/index.ts` | 0 | Yes (TypeScript) | proposed 0, 0 added |
 
 ## README
 
-- Updated: "Architecture", "Install", "Project layout"
+- Updated: "Project layout"
+
+## Left for the next run
+
+- `app/src/setup.ts`: the model did not respond
+- `app/src/settings.ts`: time budget
+- `app/src/workflow.ts`: time budget
+- `app/src/scheduler.ts`: time budget
+- `app/src/session.ts`: time budget
+- `app/src/github.ts`: time budget
+- `app/scripts/pkcs8.mjs`: time budget
+- `app/scripts/register.mjs`: time budget
+- `src/main.js`: time budget
+- `src/report.js`: time budget
+- `src/readme.js`: time budget
+- `src/state.js`: time budget
+- `src/changes.js`: time budget
+- `app/src/handlers.ts`: time budget
+- `docs/app-registration.md`: time budget
 
 ## Models
 

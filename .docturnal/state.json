@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-25T21:06:59.471Z",
+  "updatedAt": "2026-10-26T05:40:07.200Z",
   "commentLevel": "medium",
   "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
   "docsComplete": true,
@@ -12,7 +12,8 @@
   },
   "files": {
     "app/package.json": {
-      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247"
+      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247",
+      "level": null
     },
     "app/scripts/pkcs8.mjs": {
       "hash": "sha256-cf47aa2847e73e847c5d28840f06d4e0b59c2d6874db082bc617e74cc773d8ff",
@@ -63,22 +64,37 @@
     },
     "app/src/index.ts": {
       "hash": "sha256-def0402730a5daee062c4800e4e8e2b1e3178cacf6d7e8116554c3fa56c562db",
-      "summary": "The Docturnal GitHub App backend.",
+      "summary": "The Docturnal GitHub App backend handles webhooks, serves a settings page, manages repository setups on a queue, and starts nightly runs from an hourly cron. It only makes GitHub API calls and never reads code.",
       "symbols": [
-        "Env",
-        "Options",
-        "createHandler",
-        "createQueueHandler",
-        "createScheduledHandler",
-        "default",
+        "App",
+        "Octokit",
+        "Deps",
+        "QueueMessage",
+        "dispatchRun",
+        "failure",
+        "onInstallationDeleted",
+        "onRepositoriesRemoved",
+        "onPullRequestClosed",
+        "onSetupMerged",
+        "onUpdatePush",
+        "queueSetups",
+        "setUpRepository",
         "normalizeEnv",
         "missingConfig",
         "makeDeps",
         "makeApp",
         "containsInfrastructureError",
-        "handleWebhook"
+        "handleWebhook",
+        "createHandler",
+        "withSecurityHeaders",
+        "routeRequest",
+        "createQueueHandler",
+        "createScheduledHandler",
+        "handleFetch",
+        "handleQueue",
+        "handleScheduled"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/scheduler.ts": {
       "hash": "sha256-5390627ab704a42756be0db42f28debfdf18ef229a35a02937dc4855c69f72dd",
@@ -220,10 +236,12 @@
       "level": null
     },
     "app/tsconfig.json": {
-      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2"
+      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2",
+      "level": null
     },
     "package.json": {
-      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f"
+      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f",
+      "level": null
     },
     "scripts/archive-hashes.js": {
       "hash": "sha256-ce9efe842638ac9bbbace3f33ddf3f7b50dc033565f58dd6d61bc500bb27b5da",
@@ -1186,7 +1204,9 @@
     "source-grounding",
     "tests"
   ],
-  "staleDocs": [],
+  "staleDocs": [
+    "app-registration"
+  ],
   "folders": {
     "app/scripts": "This folder contains scripts for handling PKCS#1 to PKCS#8 conversions and serving the app registration page.",
     "app/src": "Manages GitHub API versions, handles installation updates and schedules, manages session tokens, and configures workflows for repositories.",
