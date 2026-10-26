@@ -1,7 +1,7 @@
 # Docturnal adds comments to your code and updates your docs, then opens a pull request
 # for you to review. The Docturnal app starts this workflow every night at the time you
 # choose in Docturnal's settings. The settings link is in each Docturnal pull request.
-# Docturnal workflow version 3.
+# Docturnal workflow version 5.
 name: Docturnal
 
 on:
@@ -12,6 +12,11 @@ on:
         type: choice
         options: ["low", "medium", "heavy", "off"]
         default: "medium"
+      existing-code:
+        description: "Existing code: gradual (comment it in small batches) or none (only new and changed code)."
+        type: choice
+        options: ["gradual", "none"]
+        default: "gradual"
 
 permissions:
   contents: write
@@ -27,9 +32,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to a full commit SHA, so the code that checks out your repository cannot change
+      # without a new version of this workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: aidanbh16/Docturnal@v1
         with:
           comment-level: ${{ inputs['comment-level'] || 'medium' }}
+          existing-code: ${{ inputs['existing-code'] || 'gradual' }}
+          time-budget-minutes: "90"
+          job-timeout-minutes: "120"
