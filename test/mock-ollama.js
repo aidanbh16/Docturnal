@@ -73,6 +73,10 @@ function commentsReply(body) {
     names.push(name);
     comments.push({ line: Number(number), anchor: code.trim(), text: `Keeps the ${name} logic in one place for callers.`, kind: 'line' });
   }
+  // A model that keeps to the number of comments the prompt asks for.
+  const most = prompt.match(/^Propose at most (\d+) comments?\.$/m);
+  if (most) comments.splice(Number(most[1]));
+  if (/so return an empty comments list\.$/m.test(prompt)) comments.splice(0);
   return {
     summary: names.length ? `Defines ${names.join(', ')} for ${file}.` : `Supports ${file}.`,
     symbols: names,

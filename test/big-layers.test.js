@@ -186,7 +186,7 @@ test('the Ollama client reports a reply cut at num_predict, and the log says so'
     const lines = [];
     const chat = ollama.loggedChat(ollama.chat, { log: (line) => lines.push(line) });
     const result = await chat({ host: mock.host, model: 'm', label: 'docs/source.md', messages: [{ role: 'user', content: 'x' }], withReason: true });
-    assert.deepStrictEqual(result, { content: 'Complete. Not compl', doneReason: 'length' });
+    assert.deepStrictEqual(result, { content: 'Complete. Not compl', doneReason: 'length', promptTokens: null, replyTokens: null });
     assert.match(lines[0], /^Ollama: docs\/source\.md with m, [\d.]+ s, stopped at its length limit$/);
     // Without withReason, the text as before.
     assert.strictEqual(await ollama.chat({ host: mock.host, model: 'm', messages: [{ role: 'user', content: 'x' }] }), 'Complete. Not compl');

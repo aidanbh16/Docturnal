@@ -12,11 +12,10 @@ const { createCaller, docName, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, mergedSince } = require('./git');
 const { requirePlainPath } = require('./safe-path');
 const { updateReadme, writeReadme } = require('./readme');
+const { README_RESERVE_MINUTES } = require('./process');
 const { buildReport, pullRequestTitle } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, emptyPending, hashContent, sameState, writeState } = require('./state');
 
-// The time the README keeps for itself at the end of the budget.
-const README_RESERVE_MINUTES = 8;
 
 async function applyRun({ cwd, config, env, previous, changes, plan, results, folders: newFolders = [], summaryStats, calls, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true }) {
   const { current, changedDocsOnly, deleted, docsMissing, readmeChanged, legacyReadme, ignoreHash } = changes;
@@ -84,7 +83,10 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
   const summarized = [...files]
     .filter(([file, entry]) => typeof entry.summary === 'string' && current.get(file).action === 'comment')
     .map(([file, entry]) => ({ path: file, summary: entry.summary, symbols: entry.symbols }));
-  const changedFiles = new Set([...applied.filter((r) => r.outcome !== 'skipped').map((r) => r.path), ...deleted, ...changedDocsOnly.map((e) => e.path)]);
+  // A file in a batch of existing code changed only by its comments, and keeps its summary, so
+  // its layer doc needs no rewrite: the run's time goes to comments.
+  const onlyCommented = (r) => r.reason === 'backlog' && previous.files[r.path] && previous.files[r.path].summary === r.entry.summary;
+  const changedFiles = new Set([...applied.filter((r) => r.outcome !== 'skipped' && !onlyCommented(r)).map((r) => r.path), ...deleted, ...changedDocsOnly.map((e) => e.path)]);
   const docsNeeded = (summarized.length > 0 || previous.layers.length > 0) &&
     (changedFiles.size > 0 || previous.staleDocs.length > 0 || docsMissing || previous.layers.length === 0 || readmeChanged || legacyReadme);
 

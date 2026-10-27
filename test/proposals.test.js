@@ -48,6 +48,7 @@ test('counts proposals, each drop category with its reasons, and added comments'
   assert.strictEqual(result.added, 1);
   assert.deepStrictEqual(result.stats, {
     proposed: 6,
+    anchors: { exact: 6, fixed: {}, missed: {} },
     added: 1,
     dropped: {
       placement: { 'closing bracket': 1 },
@@ -159,7 +160,8 @@ test('drops a comment whose anchor is not near the given line, and counts it', (
   });
   assert.strictEqual(result.added, 0);
   assert.strictEqual(result.text, MATH_JS);
-  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found': 3 });
+  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found, matches no line at all': 1, 'anchor not found, is empty or not text': 2 });
+  assert.deepStrictEqual(result.stats.anchors.missed, { 'matches no line at all': 1, 'is empty or not text': 2 });
   assert.match(proposalSummary(result.stats), /^proposed 3, 3 anchor not found, 0 added$/);
 });
 

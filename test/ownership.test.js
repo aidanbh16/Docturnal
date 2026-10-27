@@ -101,7 +101,7 @@ test('the off-by-one proposal is placed by its anchor, and a missing anchor is d
   assert.doesNotMatch(result.text, /Calculates the withholding taxes/);
   assert.ok(above(result.text, '  // Tax is withheld from gross pay, before other deductions\\.', '  const tax = withholding(gross);'), result.text);
   assert.doesNotMatch(result.text, /Hours up to the threshold/);
-  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found': 1 });
+  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found, matches no line at all': 1 });
 });
 
 test('a "no" verdict from the accuracy check drops the comment', async () => {

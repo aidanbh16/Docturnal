@@ -109,8 +109,10 @@ function request({ method = 'POST', path, payload, host, deadline, onLine }) {
 
 // Sends one /api/chat request and returns the reply's text. With no messages, Ollama only
 // loads the model. keepAlive: how long Ollama keeps the model loaded afterward, such as "30m".
-// withReason: return { content, doneReason } instead, where doneReason is Ollama's done_reason,
-// such as "stop", or "length" when the reply reached num_predict and was cut off.
+// withReason: return { content, doneReason, promptTokens, replyTokens } instead, where
+// doneReason is Ollama's done_reason, such as "stop", or "length" when the reply reached
+// num_predict and was cut off, and the token counts are Ollama's prompt_eval_count and
+// eval_count (null when it sent none).
 async function chat({ model, messages, format, options, host, keepAlive, deadline, withReason = false }) {
   const payload = { model, messages, stream: true };
   if (format !== undefined) payload.format = format;
@@ -119,6 +121,8 @@ async function chat({ model, messages, format, options, host, keepAlive, deadlin
   let content = '';
   let done = false;
   let doneReason = null;
+  let promptTokens = null;
+  let replyTokens = null;
   await request({
     path: '/api/chat',
     payload,
@@ -129,11 +133,13 @@ async function chat({ model, messages, format, options, host, keepAlive, deadlin
       if (chunk.done) {
         done = true;
         if (typeof chunk.done_reason === 'string') doneReason = chunk.done_reason;
+        if (Number.isInteger(chunk.prompt_eval_count)) promptTokens = chunk.prompt_eval_count;
+        if (Number.isInteger(chunk.eval_count)) replyTokens = chunk.eval_count;
       }
     },
   });
   if (!done) throw new Error('Ollama closed the reply before it finished');
-  return withReason ? { content, doneReason } : content;
+  return withReason ? { content, doneReason, promptTokens, replyTokens } : content;
 }
 
 // What went wrong, with the underlying cause when there is one, such as ECONNRESET.
