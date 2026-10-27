@@ -14,10 +14,13 @@
 // needs every one of its words there. Otherwise the group keeps a name from its folder. A
 // description that repeats one file's purpose is dropped, and docs.js builds one from the
 // folder summaries; a part's comes from the purposes of its most imported files.
+// A large project is documented as a hierarchy of parts instead (see parts.js and
+// planPartLayers below).
 
 const path = require('path');
 
 const { clusterFiles } = require('./clusters');
+const { FOLDER_WORDS, SUB_ABOVE, findPackages, folderName, isLargeProject, partDocuments, topParts } = require('./parts');
 const { splitWithModel, where } = require('./split');
 
 const MAX_LAYERS = 7;
@@ -55,18 +58,12 @@ const LAYERS_SCHEMA = {
 // Names that describe architectures in general rather than this code.
 const GENERIC_NAMES = /^(user interface|ui|ui layer|frontend|front end|front-end|presentation( layer)?|views?|api|api layer|api routes|routes|routing|endpoints|backend|back end|back-end|server|data access( layer)?|data layer|database|persistence|storage|repositories|models|business logic|domain( layer)?|services?( layer)?|controllers|infrastructure|core( logic)?|utilities|utils|helpers|common|shared|middleware|application( layer)?)$/i;
 const STOPWORDS = new Set(['and', 'the', 'of', 'for', 'layer', 'code', 'module', 'modules', 'logic', 'files', 'with', 'a', 'an', 'to']);
-// Folder names that read better spelled out.
-const FOLDER_WORDS = { src: 'Source', lib: 'Library', libs: 'Libraries', test: 'Tests', tests: 'Tests', spec: 'Specs', specs: 'Specs', scripts: 'Scripts', bin: 'Commands', cmd: 'Commands', app: 'App', apps: 'Apps', api: 'API', ui: 'UI', db: 'Database', docs: 'Docs', pkg: 'Packages', packages: 'Packages', utils: 'Utilities', util: 'Utilities' };
+// The time a part document is expected to take: the docs model divides a large folder only
+// while the part documents still have this much time each.
+const PART_DOC_MINUTES = 3;
 
 const dirOf = (file) => path.posix.dirname(file);
 const segments = (dir) => (dir === '.' ? [] : dir.split('/'));
-
-// The name a group gets from its folder, such as "App Tests" for app/tests.
-function folderName(folder) {
-  const parts = segments(folder);
-  if (!parts.length) return 'Top Level';
-  return parts.map((p) => FOLDER_WORDS[p.toLowerCase()] || p.replace(/[-_.]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())).join(' ');
-}
 
 // The word a part of a folder is known by when the model gives it no name: its most central
 // file's name, the one most of the part's files import or share a word of their names with.
@@ -353,11 +350,74 @@ Groups:
   ];
 }
 
+// A part's description, from its folder summaries: the first of its shallowest folders that has
+// one, so it is about the whole part, then the folder with the most of its files.
+function partDescription(files, folders) {
+  const counts = new Map();
+  for (const file of files) counts.set(dirOf(file), (counts.get(dirOf(file)) || 0) + 1);
+  const dirs = [...counts].sort((a, b) => segments(a[0]).length - segments(b[0]).length || b[1] - a[1] || a[0].localeCompare(b[0]));
+  return dirs.map(([dir]) => folders.get(dir)).find(Boolean) || '';
+}
+
+// Plans a large project's documents (see parts.js): a document for each top-level part, named
+// after its package or folder, and its sub-documents, named after their subfolders. The model
+// names no part: it only divides a sub-document still too big for one, within its own folder,
+// while the part documents keep PART_DOC_MINUTES each before the deadline, and by clustering
+// after that. Returns { layers }, each part before its sub-documents, which have part set to
+// its name.
+async function planPartLayers({ files, packages, fileInfo, folders, purposeOf, importsOf, importedBy, divide, taken, splits, deadline, now }) {
+  const parts = topParts(files, packages);
+  for (const part of parts) taken.add(part.name.toLowerCase());
+  const modelUntil = deadline - parts.length * PART_DOC_MINUTES * 60000;
+  const layers = [];
+  let subCount = 0;
+  for (const part of parts) {
+    const { own, subs } = partDocuments(part);
+    const entries = [];
+    for (const sub of subs) {
+      if (!sub.divide) {
+        entries.push({ name: sub.name, description: '', files: sub.files });
+        continue;
+      }
+      const group = { folder: sub.folder, folders: [sub.folder], files: sub.files };
+      const maxParts = Math.min(MAX_PARTS, Math.max(2, Math.ceil(sub.files.length / SUB_ABOVE)));
+      const useModel = now() < modelUntil;
+      const pieces = await divide(group, maxParts, { useModel, reason: 'the time left went to the part documents', noun: 'documents' });
+      if (pieces.length < 2) {
+        entries.push({ name: sub.name, description: '', files: sub.files });
+        continue;
+      }
+      for (const piece of pieces) {
+        // A piece the model did not name is named after its folder and its most central file,
+        // and a piece of the part's own files after the part.
+        const name = piece.name || `${sub.rest ? part.name : sub.name} ${partWord(piece.files, importsOf)}`;
+        entries.push({ name, description: piece.description || purposeSentence(piece.files, purposeOf, importedBy), files: piece.files });
+      }
+    }
+    // Names are unique within a part.
+    const used = new Set();
+    for (const entry of entries) {
+      const base = entry.name;
+      for (let n = 2; used.has(entry.name.toLowerCase()) || entry.name.toLowerCase() === part.name.toLowerCase(); n++) entry.name = `${base} ${n}`;
+      used.add(entry.name.toLowerCase());
+    }
+    layers.push({ name: part.name, description: partDescription(part.files, folders), files: own });
+    layers.push(...entries.map((entry) => ({ ...entry, part: part.name })));
+    subCount += entries.length;
+  }
+  const packageParts = parts.filter((p) => p.package).length;
+  splits.unshift(`the project is documented as ${parts.length} parts (${packageParts} ${packageParts === 1 ? 'package' : 'packages'}) with ${subCount} ${subCount === 1 ? 'sub-document' : 'sub-documents'}`);
+  return { layers };
+}
+
 // Plans layers: { layers: [{ name, description, files }] }, for normalizeLayers in docs.js.
 // call(label, request) sends one request to the docs model. A large group is split by the docs
 // model (see split.js), or by clustering its imports when the model's answers break the rules;
 // splits gets one line for each, saying which.
-async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSource = () => null, call, contextTokens, promptChars = 4000, styleRules = '', errors = [], splits = [] }) {
+// A large project (see parts.js) is planned by planPartLayers, and each layer then has part, the
+// name of its part, when it is a sub-document. allFiles: every tracked path, for finding the
+// packages. deadline: the time the layer docs stop starting.
+async function planGroundedLayers({ files, allFiles = files, fileInfo, folders = new Map(), readSource = () => null, call, contextTokens, promptChars = 4000, styleRules = '', errors = [], splits = [], deadline = Infinity, now = Date.now }) {
   // Loaded here, not at the top: it loads typescript, and the pre-check must run without it.
   const { importSpecifiers, resolveImport } = require('./importance');
   const known = new Set(files);
@@ -387,30 +447,41 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
     return importers.get(file) || 0;
   };
 
-  const steps = splitSteps(folderGroups(files, importsOf), importsOf);
   const taken = new Set();
-  let step = steps.next();
-  while (!step.done) {
-    const { group, maxParts } = step.value;
+  // The parts of a large group: by the docs model, or by clustering its imports when its answers
+  // break the rules, or when useModel is false, with the reason why. splits gets a line saying
+  // which.
+  const divide = async (group, maxParts, { useModel = true, reason = '', noun = 'layers' } = {}) => {
     const supported = (partFiles, name) => supports(groupText({ folders: partFolders(group, partFiles), files: partFiles, partial: true }, fileInfo, folders), name);
-    const byModel = await splitWithModel(group, {
-      call, purposeOf, importsOf, maxParts, minSize: MIN_GROUP_FILES, supported, copies: (d) => copiesPurpose(d, purposes), taken,
-      contextTokens, promptChars, styleRules, errors,
-    });
+    const byModel = useModel
+      ? await splitWithModel(group, {
+        call, purposeOf, importsOf, maxParts, minSize: MIN_GROUP_FILES, supported, copies: (d) => copiesPurpose(d, purposes), taken,
+        contextTokens, promptChars, styleRules, errors,
+      })
+      : { parts: null, reason };
     const what = `${where(group)} (${group.files.length} files)`;
     let parts = byModel.parts;
     if (parts) {
       parts.forEach((p) => taken.add(p.name.toLowerCase()));
       const placed = byModel.placed ? `, and ${byModel.placed} ${byModel.placed === 1 ? 'file' : 'files'} it left out ${byModel.placed === 1 ? 'was' : 'were'} placed by imports and purposes` : '';
-      splits.push(`${what} was split into ${parts.length} layers by the docs model${byModel.attempts > 1 ? ', on its second answer' : ''}${placed}`);
+      splits.push(`${what} was split into ${parts.length} ${noun} by the docs model${byModel.attempts > 1 ? ', on its second answer' : ''}${placed}`);
     } else {
       parts = clusterParts(group, maxParts, importsOf, purposeOf);
       splits.push(parts.length > 1
-        ? `${what} was split into ${parts.length} layers by clustering its imports, because ${byModel.reason}`
-        : `${what} stays one layer: ${byModel.reason}, and clustering its imports found no parts`);
+        ? `${what} was split into ${parts.length} ${noun} by clustering its imports, because ${byModel.reason}`
+        : `${what} stays one ${noun.replace(/s$/, '')}: ${byModel.reason}, and clustering its imports found no parts`);
     }
-    step = steps.next(parts);
+    return parts;
+  };
+
+  const packages = findPackages(allFiles, readSource);
+  if (isLargeProject(files, packages)) {
+    return planPartLayers({ files, packages, fileInfo, folders, purposeOf, importsOf, importedBy, divide, taken, splits, deadline, now });
   }
+
+  const steps = splitSteps(folderGroups(files, importsOf), importsOf);
+  let step = steps.next();
+  while (!step.done) step = steps.next(await divide(step.value.group, step.value.maxParts));
   const groups = finishGroups(step.value);
   // The name a group gets when the model gives it none: its folder's, and for a part of a
   // folder, with its most central file's name, such as "Source Ollama".
@@ -472,4 +543,4 @@ async function planGroundedLayers({ files, fileInfo, folders = new Map(), readSo
   return { layers: layers.sort((a, b) => a.at - b.at).map(({ name, description, files: layerFiles }) => ({ name, description, files: layerFiles })) };
 }
 
-module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupFiles, layersPrompt, planGroundedLayers, purposeSentence, supports };
+module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupFiles, layersPrompt, partDescription, planGroundedLayers, purposeSentence, supports };

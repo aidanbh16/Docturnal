@@ -116,10 +116,16 @@ function rankFiles({ files, allFiles, readText, packageJson, activity = new Map(
 
 // One batch from the ranked backlog: the layer of the most important file first, then the
 // next layers in order of their most important file, until the batch is full.
-// layers: [{ name, files }]. Returns { files, layers: [names] }.
+// layers: [{ name, files, slug, part }]. Returns { files, layers: [names] }. A sub-document whose
+// name another layer has too, such as "Tests" in two parts, is named with its part's name.
 function selectBatch(ranked, layers, size) {
+  const count = (name) => layers.filter((l) => l.name === name).length;
+  const title = (layer) => {
+    const part = layer.part && layers.find((l) => !l.part && l.slug === layer.part);
+    return part && count(layer.name) > 1 ? `${part.name} ${layer.name}` : layer.name;
+  };
   const layerOf = new Map();
-  for (const layer of layers) for (const file of layer.files) layerOf.set(file, layer.name);
+  for (const layer of layers) for (const file of layer.files) layerOf.set(file, title(layer));
   const order = [];
   for (const item of ranked) {
     const name = layerOf.get(item.path) || null;

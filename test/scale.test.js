@@ -3,7 +3,8 @@
 // First runs at size, with model time simulated at speeds calibrated from a real runner (see
 // speed-model.js): a project like Docturnal's own (72 source files) documents itself in under
 // 25 minutes, and a 1,000-file project's first documentation pull request arrives within the
-// 90-minute budget. Every docs prompt stays under the fixed size limit. The 72-file project's
+// 90-minute budget, documented as parts (see parts.js), with every part's doc written and the
+// sub-documents left over named for the next run. Every docs prompt stays under the fixed size limit. The 72-file project's
 // src/ of 29 files is split by the docs model, which costs one request and a doc for each part;
 // the real fourth run, with src/ in 4 parts and 7 layers, took 11.3 minutes, and the simulation
 // runs about twice as slow as the real runner did.
@@ -84,8 +85,12 @@ async function firstRun(files) {
     });
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.docturnal/state.json'), 'utf8'));
     const readme = fs.readFileSync(path.join(cwd, 'README.md'), 'utf8');
-    const docsWritten = state.layers.every((layer) => fs.existsSync(path.join(cwd, 'docs', `${layer.slug}.md`)));
-    return { result, state, readme, docsWritten, sim, logs };
+    // Every part's doc is written; a large project's sub-documents may wait for the next run.
+    const docPath = (layer) => path.join(cwd, 'docs', `${layer.part ? `${layer.part}/` : ''}${layer.slug}.md`);
+    const docsWritten = state.layers.filter((layer) => !layer.part).every((layer) => fs.existsSync(docPath(layer)));
+    const subsLeft = state.layers.filter((layer) => layer.part && !fs.existsSync(docPath(layer))).map((layer) => `${layer.part}/${layer.slug}`);
+    const lastRun = fs.readFileSync(path.join(cwd, '.docturnal/last-run.md'), 'utf8');
+    return { result, state, readme, docsWritten, subsLeft, lastRun, sim, logs };
   } finally {
     await mock.close();
     repo.cleanup();
@@ -127,6 +132,13 @@ test('a 1,000-file project: the first documentation pull request within the 90-m
   assert.ok(folderCalls.length >= 50 && folderCalls.length <= 100, `${folderCalls.length} folder calls`);
   assert.ok(run.docsWritten);
   assert.match(run.readme, /## Architecture/);
-  assert.ok(run.state.layers.length >= 2 && run.state.layers.length <= 7);
+  // A project this large is documented as parts: here src/ alone, with a sub-document for each
+  // part of each of its folders; the ones that do not fit wait for the next run, which the
+  // state and the pull request say.
+  const parts = run.state.layers.filter((l) => !l.part);
+  assert.deepStrictEqual(parts.map((l) => l.name), ['Source']);
+  assert.ok(run.state.layers.filter((l) => l.part).length >= 5);
+  assert.deepStrictEqual(run.subsLeft.sort(), run.state.staleDocs.filter((s) => s !== 'README').sort());
+  if (run.subsLeft.length) assert.match(run.lastRun, new RegExp(`${run.subsLeft.length} more documents? follows? on the next run`));
   checkPromptSizes(run.sim);
 });

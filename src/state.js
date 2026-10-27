@@ -26,6 +26,8 @@ function emptyPending() {
 
 // The slugs Docturnal gives layers (see slugify in docs.js).
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// A doc's name: a slug, or a part's slug and a sub-document's, such as "excalidraw/components".
+const DOC_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
 
 function emptyState() {
   return {
@@ -83,8 +85,10 @@ function readState(root) {
   // A hash of .docturnalignore, or null when there was none, so a change to it is a change.
   state.ignoreHash = typeof data.ignoreHash === 'string' ? data.ignoreHash : null;
   if (Array.isArray(data.layers)) {
-    // A slug names a file in docs/, so it must be a plain slug: never a path.
-    state.layers = data.layers.filter((l) => l && typeof l.slug === 'string' && SLUG.test(l.slug) && typeof l.name === 'string' && Array.isArray(l.files));
+    // A slug names a file in docs/, so it must be a plain slug: never a path. So must a
+    // sub-document's part, the folder its doc is in.
+    state.layers = data.layers.filter((l) => l && typeof l.slug === 'string' && SLUG.test(l.slug) && typeof l.name === 'string' && Array.isArray(l.files) &&
+      (l.part === undefined || (typeof l.part === 'string' && SLUG.test(l.part))));
   }
   state.docsComplete = typeof data.docsComplete === 'boolean' ? data.docsComplete : state.layers.length > 0 ? null : false;
   state.batchesDone = Number.isInteger(data.batchesDone) && data.batchesDone >= 0 ? data.batchesDone : 0;
@@ -110,8 +114,8 @@ function readState(root) {
       state.files[file] = clean;
     }
   }
-  if (Array.isArray(data.docs)) state.docs = data.docs.filter((s) => typeof s === 'string' && SLUG.test(s));
-  if (Array.isArray(data.staleDocs)) state.staleDocs = data.staleDocs.filter((s) => typeof s === 'string' && (s === 'README' || SLUG.test(s)));
+  if (Array.isArray(data.docs)) state.docs = data.docs.filter((s) => typeof s === 'string' && DOC_NAME.test(s));
+  if (Array.isArray(data.staleDocs)) state.staleDocs = data.staleDocs.filter((s) => typeof s === 'string' && (s === 'README' || DOC_NAME.test(s)));
   if (data.folders && typeof data.folders === 'object' && !Array.isArray(data.folders)) {
     for (const [dir, summary] of Object.entries(data.folders)) if (typeof summary === 'string') state.folders[dir] = summary;
   }
