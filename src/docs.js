@@ -3,7 +3,9 @@
 // The docs generator for the layer docs in docs/. The docs model groups files into layers
 // and writes the prose. Everything that can be computed (tables, links, the directory tree)
 // is built here, and everything the model writes is cleaned before it is saved. The main
-// document is the repository's README.md; see readme.js.
+// document is the repository's README.md; see readme.js. A large project's layers are parts,
+// each with a doc at docs/<part>.md, and their sub-documents, at docs/<part>/<sub>.md (see
+// parts.js).
 
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +15,7 @@ const grounding = require('./grounding');
 const { isPlainPath } = require('./safe-path');
 const { configurationSection, layerConfiguration } = require('./configuration');
 const { copiesPurpose, planGroundedLayers, purposeSentence } = require('./layers');
+const { MAX_TOP_PARTS, isTestFile } = require('./parts');
 const ollama = require('./ollama');
 const { SKIP_DIRS } = require('./languages');
 
@@ -429,7 +432,7 @@ const LAYER_SECTIONS = [
   { key: 'how', title: 'How it works', aliases: ['how it works', 'design', 'implementation', 'flow', 'data flow', 'internals', 'details', 'architecture'] },
   { key: 'configuration', title: 'Configuration', aliases: ['configuration', 'config', 'settings', 'options', 'environment', 'environment variables'] },
 ];
-const LAYER_GENERATED = ['key components', 'components', 'files', 'related layers', 'related', 'see also'];
+const LAYER_GENERATED = ['key components', 'components', 'files', 'related layers', 'related', 'see also', 'documents in this part', 'documents'];
 
 const README_SECTIONS = [
   { key: 'overview', title: 'Overview', aliases: ['overview', 'introduction', 'about', 'what it does', 'features'] },
@@ -449,17 +452,60 @@ function componentsTable(layer, fileInfo, docsDir) {
   return ['| File | Purpose | Main definitions |', '| --- | --- | --- |', ...rows].join('\n');
 }
 
-function relatedLayers(layer, layers) {
-  return layers
-    .filter((other) => other.slug !== layer.slug)
-    .map((other) => `- [${other.name}](${other.slug}.md): ${other.description}`)
-    .join('\n');
+// The sub-documents of a part, in a list of normalized layers, and the part of a sub-document.
+const subsOf = (layer, layers) => (layer.part ? [] : layers.filter((l) => l.part === layer.slug));
+const partOf = (layer, layers) => (layer.part ? layers.find((l) => !l.part && l.slug === layer.part) || null : null);
+// The layers a doc lists as related: a part's other parts, or a sub-document's part and the
+// other sub-documents of its part.
+const siblings = (layer, layers) => layers.filter((other) => docName(other) !== docName(layer) && (other.part || '') === (layer.part || ''));
+
+// Links from the doc of `layer`, in docDir, to its part and its siblings.
+function relatedLayers(layer, layers, docsDir = 'docs') {
+  const docDir = path.posix.dirname(`${docsDir}/${docName(layer)}.md`);
+  const link = (other) => `- [${other.name}](${linkPath(docDir, `${docsDir}/${docName(other)}.md`)}): ${other.description}`;
+  const part = partOf(layer, layers);
+  return [...(part ? [link(part)] : []), ...siblings(layer, layers).map(link)].join('\n');
 }
 
-// `base` is the path from the linking document to the docs folder, such as "docs/".
-function layersTable(layers, base = '') {
-  const rows = layers.map((layer) => `| [${tableCell(layer.name)}](${base}${layer.slug}.md) | ${tableCell(layer.description)} |`);
-  return ['| Layer | Description |', '| --- | --- |', ...rows].join('\n');
+// The sub-documents a part's doc lists, between markers so a later run can refresh the list
+// without the model: a link for each doc that exists (available(docPath)), and the name alone
+// for one not written yet.
+const SUBS_START = '<!-- docturnal:subdocs -->';
+const SUBS_END = '<!-- /docturnal:subdocs -->';
+function subdocList(layer, layers, docsDir, available = () => true) {
+  const docDir = path.posix.dirname(`${docsDir}/${docName(layer)}.md`);
+  const items = subsOf(layer, layers).map((sub) => {
+    const docPath = `${docsDir}/${docName(sub)}.md`;
+    return available(docPath)
+      ? `- [${sub.name}](${linkPath(docDir, docPath)}): ${sub.description}`
+      : `- ${sub.name}: ${sub.description} Its page is not written yet.`;
+  });
+  return items.length ? `${SUBS_START}\n${items.join('\n')}\n${SUBS_END}` : '';
+}
+
+// A doc with its list of sub-documents replaced, or null when it has no list.
+function refreshSubdocs(content, list) {
+  const start = content.indexOf(SUBS_START);
+  const end = content.indexOf(SUBS_END, start);
+  if (start === -1 || end === -1 || !list) return null;
+  return `${content.slice(0, start)}${list}${content.slice(end + SUBS_END.length)}`;
+}
+
+// `base` is the path from the linking document to the docs folder, such as "docs/". In a
+// project of parts, the table lists the parts, each with links to its sub-documents that exist
+// (available(docPath)).
+function layersTable(layers, base = '', available = () => true) {
+  const top = layers.filter((l) => !l.part);
+  if (top.length === layers.length) {
+    const rows = layers.map((layer) => `| [${tableCell(layer.name)}](${base}${layer.slug}.md) | ${tableCell(layer.description)} |`);
+    return ['| Layer | Description |', '| --- | --- |', ...rows].join('\n');
+  }
+  const rows = top.map((part) => {
+    const subs = subsOf(part, layers).filter((sub) => available(`${base}${docName(sub)}.md`))
+      .map((sub) => `[${tableCell(sub.name)}](${base}${docName(sub)}.md)`);
+    return `| [${tableCell(part.name)}](${base}${part.slug}.md) | ${tableCell(part.description)} | ${subs.join(', ')} |`;
+  });
+  return ['| Part | Description | Details |', '| --- | --- | --- |', ...rows].join('\n');
 }
 
 function scriptsTable(facts) {
@@ -630,27 +676,54 @@ function closestLayer(file, layers) {
   return best;
 }
 
+// A layer's document name, its path in docs/ without ".md": its slug, or, for a sub-document of a
+// part, the part's slug and its own, such as "excalidraw/components".
+const docName = (layer) => (layer.part ? `${layer.part}/${layer.slug}` : layer.slug);
+
 // Builds layers from model or previous entries, keeping only known files, each in one layer.
+// An entry with part is a sub-document of the entry with that name or slug, which comes right
+// before its sub-documents; it is set as parent. A part may have no files of its own when its
+// sub-documents have some.
 function layersFromEntries(entries, known) {
-  const layers = [];
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && typeof e === 'object');
   const assigned = new Set();
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    if (!entry || typeof entry !== 'object') continue;
-    const name = titleCase(entry.name);
-    if (!name) continue;
-    let layer = layers.find((l) => slugify(l.name) === slugify(name));
-    if (!layer) {
-      layer = { name, description: typeof entry.description === 'string' ? firstSentence(entry.description) : '', files: [] };
-      layers.push(layer);
-    }
+  const take = (layer, entry) => {
     for (const file of Array.isArray(entry.files) ? entry.files.map(normalizeFilePath) : []) {
       if (known.has(file) && !assigned.has(file)) {
         assigned.add(file);
         layer.files.push(file);
       }
     }
+  };
+  const into = (pool, entry) => {
+    const name = titleCase(entry.name);
+    if (!name) return null;
+    let layer = pool.find((l) => slugify(l.name) === slugify(name));
+    if (!layer) {
+      layer = { name, description: typeof entry.description === 'string' ? firstSentence(entry.description) : '', files: [], subs: [], was: typeof entry.slug === 'string' ? entry.slug : '' };
+      pool.push(layer);
+    }
+    take(layer, entry);
+    return layer;
+  };
+  const top = [];
+  for (const entry of list.filter((e) => typeof e.part !== 'string')) into(top, entry);
+  for (const entry of list.filter((e) => typeof e.part === 'string')) {
+    const parent = top.find((l) => l.was === entry.part || slugify(l.name) === slugify(entry.part));
+    if (parent) into(parent.subs, entry);
   }
-  return layers.filter((l) => l.files.length);
+  const layers = [];
+  for (const layer of top) {
+    const subs = layer.subs.filter((s) => s.files.length);
+    if (!layer.files.length && !subs.length) continue;
+    layers.push(layer, ...subs.map((s) => Object.assign(s, { parent: layer })));
+  }
+  return layers;
+}
+
+// A layer's files and its sub-documents' files.
+function allFilesOf(layer, layers) {
+  return [...layer.files, ...layers.filter((l) => l.parent === layer).flatMap((l) => l.files)];
 }
 
 // Used when neither the model nor the previous run gives usable layers.
@@ -682,15 +755,19 @@ function layersByDirectory(files) {
   return layers;
 }
 
+// Slugs, unique within docs/ and within each part's folder. isTaken(name) says whether a person's
+// doc has that document name.
 function assignSlugs(layers, isTaken = () => false) {
   const used = new Set();
-  for (const layer of layers) {
+  for (const layer of [...layers.filter((l) => !l.parent), ...layers.filter((l) => l.parent)]) {
     let base = slugify(layer.name);
     if (RESERVED_SLUGS.has(base)) base = `${base}-layer`;
+    const within = layer.parent ? `${layer.parent.slug}/` : '';
     let slug = base;
-    for (let n = 2; used.has(slug) || isTaken(slug); n++) slug = `${base}-${n}`;
-    used.add(slug);
+    for (let n = 2; used.has(within + slug) || isTaken(within + slug); n++) slug = `${base}-${n}`;
+    used.add(within + slug);
     layer.slug = slug;
+    if (layer.parent) layer.part = layer.parent.slug;
   }
 }
 
@@ -723,16 +800,20 @@ function folderDescription(layer, folders, shared = new Set(), fileInfo = new Ma
 }
 
 // Validates the model's layers: known files only, each file in exactly one layer, at most
-// seven layers, unique slugs, and missed files placed by the closest shared directory.
+// seven layers (or MAX_TOP_PARTS parts, each with its sub-documents), unique slugs within each
+// folder of docs/, and missed files placed by the closest shared directory.
 function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), folders = new Map(), isTaken } = {}) {
   const known = new Set(files.map(normalizeFilePath).filter(Boolean));
   if (!known.size) return [];
   let layers = layersFromEntries(raw && raw.layers, known);
   if (!layers.length) layers = layersFromEntries(previous, known);
   if (!layers.length) layers = layersByDirectory([...known].sort());
-  if (layers.length > MAX_LAYERS) {
-    const keep = new Set([...layers].sort((a, b) => b.files.length - a.files.length).slice(0, MAX_LAYERS));
-    layers = layers.filter((l) => keep.has(l));
+  // At most MAX_LAYERS flat layers, or MAX_TOP_PARTS parts, each with its sub-documents.
+  const top = layers.filter((l) => !l.parent);
+  const cap = layers.some((l) => l.parent) ? MAX_TOP_PARTS : MAX_LAYERS;
+  if (top.length > cap) {
+    const keep = new Set([...top].sort((a, b) => allFilesOf(b, layers).length - allFilesOf(a, layers).length).slice(0, cap));
+    layers = layers.filter((l) => keep.has(l.parent || l));
   }
 
   const assigned = new Set(layers.flatMap((l) => l.files));
@@ -742,10 +823,10 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), fold
   const shared = sharedFolders(layers);
   for (const layer of layers) {
     layer.files.sort();
-    if (!layer.description) layer.description = folderDescription(layer, folders, shared, fileInfo);
+    if (!layer.description) layer.description = folderDescription({ files: allFilesOf(layer, layers) }, folders, shared, fileInfo);
   }
   assignSlugs(layers, isTaken);
-  return layers.map(({ name, slug, description, files: layerFiles }) => ({ name, slug, description, files: layerFiles }));
+  return layers.map(({ name, slug, part, description, files: layerFiles }) => ({ name, slug, ...(part ? { part } : {}), description, files: layerFiles }));
 }
 
 function charBudget(contextTokens) {
@@ -779,8 +860,8 @@ function folderListing(files, folders, budget) {
 
 // Plans the layers from the project's real folders (see layers.js), then validates them.
 // `call` sends one request to the docs model and returns the reply text.
-async function planLayers({ files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], splits = [], folders = new Map(), readSource = () => null }) {
-  const raw = await planGroundedLayers({ files, fileInfo, folders, readSource, call, contextTokens, promptChars: DOC_PROMPT_CHARS, styleRules: STYLE_RULES, errors, splits });
+async function planLayers({ files, allFiles = files, fileInfo, previousLayers = [], call, contextTokens, isTaken, errors = [], splits = [], folders = new Map(), readSource = () => null, deadline = Infinity, now = Date.now }) {
+  const raw = await planGroundedLayers({ files, allFiles, fileInfo, folders, readSource, call, contextTokens, promptChars: DOC_PROMPT_CHARS, styleRules: STYLE_RULES, errors, splits, deadline, now });
   return normalizeLayers(raw, files, { previous: previousLayers, fileInfo, folders, isTaken });
 }
 
@@ -882,9 +963,19 @@ function folderSummaries(layer, folders) {
 }
 
 function layerDocPrompt({ layer, layers, fileInfo, facts, readSource, projectName, folders = new Map() }) {
-  const others = within(layers.filter((l) => l.slug !== layer.slug).map((l) => `- ${l.name}: ${l.description}`).join('\n') || 'None.', 500);
+  const part = partOf(layer, layers);
+  const subs = subsOf(layer, layers);
+  const others = within([
+    ...(part ? [`- ${part.name} (the part this layer belongs to): ${part.description}`] : []),
+    ...siblings(layer, layers).map((l) => `- ${l.name}: ${l.description}`),
+  ].join('\n') || 'None.', 500);
+  // A part with sub-documents is described from all its folders and its documents.
+  const whole = subs.length ? { ...layer, files: [...layer.files, ...subs.flatMap((s) => s.files)] } : layer;
+  const documents = subs.length
+    ? `\nDocuments in this part, each with its own page:\n${within(subs.map((s) => `- ${s.name}: ${s.description}`).join('\n'), 800)}\n`
+    : '';
   const system = `You write developer documentation.\n\n${STYLE_RULES}`;
-  const head = `Write the documentation page for the "${layer.name}" layer of ${projectName}.
+  const head = `Write the documentation page for the "${layer.name}" layer of ${projectName}${part ? `, part of ${part.name}` : ''}.
 
 Use exactly this structure:
 
@@ -907,8 +998,8 @@ Describe only what the folder summaries, file purposes, and definitions below st
 Layer description: ${layer.description}
 
 Folder summaries:
-${within(folderSummaries(layer, folders), 600)}
-
+${within(folderSummaries(whole, folders), subs.length ? 900 : 600)}
+${documents}
 Other layers:
 ${others}
 
@@ -920,7 +1011,7 @@ Files in this layer:
   // The file listing takes what is left of the prompt's size; a short excerpt of source only
   // when no file has a description.
   const room = DOC_PROMPT_CHARS - system.length - head.length;
-  const listing = layerFileListing(layer, fileInfo, folders, room);
+  const listing = layer.files.length ? layerFileListing(layer, fileInfo, folders, room) : 'None of its own: its files are in the documents above.';
   const source = excerpt(layer, fileInfo, readSource, room - listing.length - 20);
   return [
     { role: 'system', content: system },
@@ -953,12 +1044,18 @@ function listsFiles(item, fileNames) {
 // folders the layer holds whole. Responsibilities keeps at most MAX_RESPONSIBILITIES items, none
 // that lists file names (linkStats.fileListItems) or repeats one file's purpose
 // (linkStats.purposeItems), and is left out when none is left.
-function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docsDir = 'docs', existingPaths = null, knownUrls, linkStats = {}, configuration = '' }) {
-  const docPath = `${docsDir}/${layer.slug}.md`;
+// A part with sub-documents lists them under "Documents in this part" (see subdocList), and is
+// grounded in all their files; its Key components table has only its own files, and is left out
+// when it has none. available(docPath) says which sub-documents exist.
+function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docsDir = 'docs', existingPaths = null, knownUrls, linkStats = {}, configuration = '', available = () => true }) {
+  const docPath = `${docsDir}/${docName(layer)}.md`;
+  const docDir = path.posix.dirname(docPath);
+  const subs = subsOf(layer, layers);
+  const whole = subs.length ? { ...layer, files: [...layer.files, ...subs.flatMap((s) => s.files)] } : layer;
   const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
   const { intro, sections } = splitSections(cleaned);
   const bodies = arrangeSections(sections, LAYER_SECTIONS, { extrasInto: 'how', generated: LAYER_GENERATED });
-  const material = grounding.layerMaterial(layer, fileInfo, folders);
+  const material = grounding.layerMaterial(whole, fileInfo, folders);
   const ground = (text) => grounding.groundSection(text, material, linkStats);
   const split = splitIntro(intro);
   // Each thing is said once: a sentence that repeats an earlier one goes.
@@ -970,7 +1067,9 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
   let overview = once([ground(split.rest), ground(bodies.get('overview'))].filter(Boolean).join('\n\n'));
   if (grounding.wordCount(overview) < grounding.MIN_OVERVIEW_WORDS) {
     const short = seen.splice(mark);
-    const fromFolders = once(grounding.folderOverview(layer, folders, sharedFolders(layers)));
+    // A part is summed up by its code folders, not its tests.
+    const code = subs.length ? { files: whole.files.filter((f) => !isTestFile(f)) } : layer;
+    const fromFolders = once(grounding.folderOverview(code.files.length ? code : whole, folders, sharedFolders(layers)));
     if (fromFolders) overview = fromFolders;
     else seen.push(...short);
   }
@@ -986,7 +1085,7 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
       linkStats.fileListItems = (linkStats.fileListItems || 0) + 1;
       return false;
     }
-    if (layer.files.length > 1 && copiesPurpose(s, purposes)) {
+    if (whole.files.length > 1 && copiesPurpose(s, purposes)) {
       linkStats.purposeItems = (linkStats.purposeItems || 0) + 1;
       return false;
     }
@@ -995,13 +1094,14 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
     return true;
   });
   const how = once(ground(bodies.get('how')));
-  const backLink = `- [Project README](${linkPath(docsDir, 'README.md')}): the overview of the whole project and every layer.`;
-  const related = [backLink, relatedLayers(layer, layers)].filter(Boolean).join('\n');
+  const backLink = `- [Project README](${linkPath(docDir, 'README.md')}): the overview of the whole project and every layer.`;
+  const related = [backLink, relatedLayers(layer, layers, docsDir)].filter(Boolean).join('\n');
 
   const parts = [`# ${layer.name}`, first || layer.description];
   if (overview) parts.push('## Overview', overview);
   if (responsibilities) parts.push('## Responsibilities', responsibilities);
-  parts.push('## Key components', componentsTable(layer, fileInfo, docsDir));
+  if (subs.length) parts.push('## Documents in this part', subdocList(layer, layers, docsDir, available));
+  if (layer.files.length) parts.push('## Key components', componentsTable(layer, fileInfo, docDir));
   if (how) parts.push('## How it works', how);
   if (configuration) parts.push('## Configuration', configuration);
   parts.push('## Related layers', related);
@@ -1090,7 +1190,7 @@ async function generateDocs({
   folders = new Map([...folders].map(([dir, summary]) => [dir, plain(summary)]));
   const timings = { layers: 0, docs: 0 };
   const sourcePaths = [...fileInfo.keys()];
-  const docPathFor = (slug) => `${docsDir}/${slug}.md`;
+  const docPathFor = (layer) => `${docsDir}/${docName(layer)}.md`;
   const humanWritten = (docPath) => {
     const existing = read(docPath);
     return existing !== null && !hasMarker(existing);
@@ -1112,20 +1212,20 @@ async function generateDocs({
 
   if (!sourcePaths.length) {
     for (const old of previousLayers) {
-      if (hasMarker(read(docPathFor(old.slug)))) result.removed.push(docPathFor(old.slug));
+      if (hasMarker(read(docPathFor(old)))) result.removed.push(docPathFor(old));
     }
     result.readmeNeeded = previousLayers.length > 0;
     return result;
   }
 
-  const isTaken = (slug) => humanWritten(docPathFor(slug));
+  const isTaken = (name) => humanWritten(`${docsDir}/${name}.md`);
   let layers;
   if (previousLayers.length && sameFileSet(previousLayers, sourcePaths)) {
     layers = normalizeLayers({ layers: previousLayers }, sourcePaths, { previous: previousLayers, fileInfo, folders, isTaken });
   } else {
     result.replanned = true;
     const planStarted = now();
-    layers = await planLayers({ files: sourcePaths, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors, splits: result.splits, folders, readSource: read });
+    layers = await planLayers({ files: sourcePaths, allFiles: repoFiles, fileInfo, previousLayers, call, contextTokens, isTaken, errors: result.errors, splits: result.splits, folders, readSource: read, deadline, now });
     for (const layer of layers) layer.description = plain(layer.description);
     timings.layers = now() - planStarted;
   }
@@ -1134,24 +1234,36 @@ async function generateDocs({
   const docsStarted = now();
 
   const name = result.projectName;
-  const existingPaths = pathsWithDirs([...repoFiles, 'README.md', ...layers.map((l) => docPathFor(l.slug))]);
+  const existingPaths = pathsWithDirs([...repoFiles, 'README.md', ...layers.map(docPathFor)]);
   const readSource = (file) => {
     const info = fileInfo.get(file);
     return info && typeof info.text === 'string' ? info.text : read(file);
   };
-  const previousBySlug = new Map(previousLayers.map((l) => [l.slug, l]));
+  const previousByName = new Map(previousLayers.map((l) => [docName(l), l]));
   const changed = (file) => changedFiles === null || changedFiles.has(file);
   const docOptions = { temperature: 0.3, seed: 42, num_ctx: contextTokens, num_predict: LAYER_DOC_TOKENS };
+  // Whether a doc exists after this run: written now, or Docturnal's on disk and not left for later.
+  const notWritten = new Set();
+  const available = (docPath) => !notWritten.has(docPath) && (result.docs.some((d) => d.path === docPath) || hasMarker(read(docPath)));
+  // A part's doc lists its sub-documents, so it is written again when they change.
+  const subsChanged = (layer) => {
+    const before = previousByName.get(docName(layer));
+    const list = (all, part) => all.filter((l) => l.part === part).map((l) => `${l.slug} ${l.name} ${l.description}`).join('\n');
+    return !layer.part && Boolean(before) && list(layers, layer.slug) !== list(previousLayers, before.slug);
+  };
 
   let anyLayerWritten = false;
-  for (const layer of layers) {
-    const docPath = docPathFor(layer.slug);
-    const previous = previousBySlug.get(layer.slug);
-    const needed = changedFiles === null || stale.has(layer.slug) || !sameLayer(layer, previous) ||
-      layer.files.some(changed) || read(docPath) === null;
+  // Parts first, so their docs are written before any sub-document's, and tests last.
+  const testsOnly = (layer) => layer.files.length > 0 && layer.files.every(isTestFile);
+  for (const layer of [...layers.filter((l) => !l.part), ...layers.filter((l) => l.part && !testsOnly(l)), ...layers.filter((l) => l.part && testsOnly(l))]) {
+    const docPath = docPathFor(layer);
+    const previous = previousByName.get(docName(layer));
+    const needed = changedFiles === null || stale.has(docName(layer)) || !sameLayer(layer, previous) ||
+      layer.files.some(changed) || subsChanged(layer) || read(docPath) === null;
     if (!needed) continue;
     if (now() > deadline) {
-      result.pending.push({ path: docPath, slug: layer.slug, reason: 'time budget' });
+      result.pending.push({ path: docPath, slug: docName(layer), reason: layer.part ? 'time budget, after the part documents' : 'time budget' });
+      if (!hasMarker(read(docPath))) notWritten.add(docPath);
       continue;
     }
     try {
@@ -1160,23 +1272,37 @@ async function generateDocs({
         options: docOptions,
         withReason: true,
       }), linkStats);
-      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, folders, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats, configuration: configurationSection(layerConfiguration(layer.files, read, repoFiles)) }), fallback: caller.lastUsedFallback });
+      result.docs.push({ path: docPath, content: buildLayerDoc(content, { layer, layers, fileInfo, folders, docsDir, existingPaths, knownUrls: links.knownUrls(root), linkStats, configuration: configurationSection(layerConfiguration(layer.files, read, repoFiles)), available }), fallback: caller.lastUsedFallback });
       anyLayerWritten = true;
     } catch (err) {
       result.errors.push(`${docPath}: ${err.message}`);
-      result.pending.push({ path: docPath, slug: layer.slug, reason: 'the model did not respond' });
+      result.pending.push({ path: docPath, slug: docName(layer), reason: 'the model did not respond' });
+      if (!hasMarker(read(docPath))) notWritten.add(docPath);
     }
   }
+  // Each part's list of sub-documents links the ones that exist now, with no model call.
+  for (const part of layers.filter((l) => subsOf(l, layers).length)) {
+    const docPath = docPathFor(part);
+    const list = subdocList(part, layers, docsDir, available);
+    const planned = result.docs.find((d) => d.path === docPath);
+    const current = planned ? planned.content : read(docPath);
+    if (!hasMarker(current)) continue;
+    const refreshed = refreshSubdocs(current, list);
+    if (refreshed === null || refreshed === current) continue;
+    if (planned) planned.content = refreshed;
+    else result.docs.push({ path: docPath, content: refreshed, fallback: false });
+  }
+  result.available = available;
 
   const factFiles = ['package.json', 'requirements.txt', 'pyproject.toml', '.env.example'];
-  const layerSetChanged = layers.length !== previousLayers.length || layers.some((l) => !sameLayer(l, previousBySlug.get(l.slug)));
+  const layerSetChanged = layers.length !== previousLayers.length || layers.some((l) => !sameLayer(l, previousByName.get(docName(l))));
   result.readmeNeeded = changedFiles === null || stale.has('README') || anyLayerWritten || layerSetChanged ||
     factFiles.some((f) => changedFiles.has(f));
 
-  const currentSlugs = new Set(layers.map((l) => l.slug));
+  const currentNames = new Set(layers.map(docName));
   for (const old of previousLayers) {
-    const docPath = docPathFor(old.slug);
-    if (!currentSlugs.has(old.slug) && hasMarker(read(docPath))) result.removed.push(docPath);
+    const docPath = docPathFor(old);
+    if (!currentNames.has(docName(old)) && hasMarker(read(docPath))) result.removed.push(docPath);
   }
   result.fallbackUsed = caller.fallbackUsed;
   timings.docs = now() - docsStarted;
@@ -1237,6 +1363,7 @@ module.exports = {
   cleanMarkdown,
   completeReply,
   cutToComplete,
+  docName,
   layerDocPrompt,
   listsFiles,
   collectProjectFacts,
@@ -1250,8 +1377,10 @@ module.exports = {
   normalizeLayers,
   pathsWithDirs,
   planLayers,
+  refreshSubdocs,
   removeSubsections,
   scriptsTable,
+  subdocList,
   sentenceCase,
   splitIntro,
   splitSections,

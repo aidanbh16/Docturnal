@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { docExists, needsComments } = require('./changes');
-const { createCaller, generateDocs, writeDocs } = require('./docs');
+const { createCaller, docName, generateDocs, writeDocs } = require('./docs');
 const { commitAndPush, listFiles, mergedSince } = require('./git');
 const { requirePlainPath } = require('./safe-path');
 const { updateReadme, writeReadme } = require('./readme');
@@ -141,6 +141,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
       now,
       linkStats,
       waiting,
+      available: result.available,
     });
     readmeMs = now() - readmeStarted;
     docTimings = result.timings || docTimings;
@@ -163,7 +164,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     for (const s of [...result.skipped, ...write.skipped]) log(`${s.path}: not written, ${s.reason}`);
 
     layers = result.layers;
-    docSlugs = layers.map((l) => l.slug).filter((slug) => docExists(cwd, `${docsDir}/${slug}.md`));
+    docSlugs = layers.map(docName).filter((name) => docExists(cwd, `${docsDir}/${name}.md`));
     staleDocs = result.pending.map((p) => p.slug);
     fallbackUsed = caller.fallbackUsed;
     docsReport.updated = result.docs.filter((d) => write.written.includes(d.path)).map((d) => ({ path: d.path, fallback: d.fallback }));
@@ -215,6 +216,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     summarized: usable.filter((file) => entryOf(file) && typeof entryOf(file).summary === 'string').length,
     documentable: usable.length,
     layers: docSlugs.length,
+    docsWaiting: staleDocs.filter((name) => name !== 'README').length,
     level: config.commentLevel,
     commented: usable.filter((file) => entryOf(file) && entryOf(file).level === config.commentLevel).length,
     commentable: usable.length,

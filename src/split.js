@@ -2,17 +2,22 @@
 
 // Divides a large group of files, such as a big flat src/, into 2 to 4 parts with the docs
 // model. The model gets every file's path and purpose and answers with each part's name,
-// description, and files. The answer is checked in code: every file in exactly one part, 2 to
-// the most parts, at least the minimum files in each, unique names, each name supported by its
-// own files, and a description that is not one file's purpose. An answer that breaks a rule is
-// asked for once more, with the problems listed; layers.js clusters the group by its imports
-// when that one breaks a rule too.
+// description, and files. The answer is checked in code: no file in two parts, 2 to the most
+// parts, at least the minimum files in each, unique names, each name supported by its own
+// files, and a description that is not one file's purpose. Files it leaves out, up to a
+// quarter of them, are placed in code by their imports and purposes. An answer that breaks a
+// rule is asked for once more, with the problems listed; layers.js clusters the group by its
+// imports when that one breaks a rule too.
+
+const { terms } = require('./grounding');
 
 // In the prompt, a purpose is never cut shorter than this.
 const MIN_PURPOSE_CHARS = 20;
 // At most this many problems are listed in the second request, and files in one problem.
 const MAX_PROBLEMS = 8;
 const MAX_NAMED = 6;
+// An answer may leave out at most this share of the files; code places them.
+const MAX_MISSING_SHARE = 0.25;
 
 const SPLIT_SCHEMA = {
   type: 'object',
@@ -83,13 +88,16 @@ const quoted = (files) => {
   return files.length > MAX_NAMED ? `${shown}, and ${files.length - MAX_NAMED} more` : shown;
 };
 
-// Checks the model's answer: { parts: [{ name, description, files }], problems: [] }. parts is
-// null when there are problems. rules: maxParts and minSize; supported(files, name), whether
-// the name is supported by those files; copies(description), whether it repeats one file's
-// purpose; taken, the lowercase names other layers already have.
-function checkSplit(answer, group, { maxParts, minSize, supported, copies, taken = new Set() }) {
+// Checks the model's answer: { parts: [{ name, description, files }], problems: [], placed }.
+// parts is null when there are problems. rules: maxParts and minSize; supported(files, name),
+// whether the name is supported by those files; copies(description), whether it repeats one
+// file's purpose; taken, the lowercase names other layers already have. An answer that breaks
+// no other rule and leaves out at most MAX_MISSING_SHARE of the files is kept, with each file
+// it left out placed by importsOf(file) and purposeOf(file) (see placeMissing); placed counts
+// them. The other rules are checked on the parts as the model gave them.
+function checkSplit(answer, group, { maxParts, minSize, supported, copies, taken = new Set(), importsOf, purposeOf }) {
   const raw = answer && typeof answer === 'object' && Array.isArray(answer.parts) ? answer.parts : null;
-  if (!raw) return { parts: null, problems: ['the answer is not JSON with a list of parts'] };
+  if (!raw) return { parts: null, problems: ['the answer is not JSON with a list of parts'], placed: 0 };
   const problems = [];
   if (raw.length < 2 || raw.length > maxParts) problems.push(`it has ${raw.length} ${raw.length === 1 ? 'part' : 'parts'}; give 2 to ${maxParts}`);
   // A path as listed, or one only one listed file ends with, such as comments.js for
@@ -132,15 +140,48 @@ function checkSplit(answer, group, { maxParts, minSize, supported, copies, taken
   });
   if (unknown.length) problems.push(`${quoted(unknown)} ${unknown.length === 1 ? 'is' : 'are'} not in the list`);
   if (twice.size) problems.push(`${quoted([...twice].sort())} ${twice.size === 1 ? 'is' : 'are'} in more than one part`);
+  // A few files left out are placed in code; more than MAX_MISSING_SHARE of them is a problem.
   const missing = group.files.filter((f) => !owner.has(f));
-  if (missing.length) problems.push(`${quoted(missing)} ${missing.length === 1 ? 'is' : 'are'} in no part`);
-  return problems.length ? { parts: null, problems } : { parts, problems };
+  if (missing.length > MAX_MISSING_SHARE * group.files.length) problems.push(`${quoted(missing)} ${missing.length === 1 ? 'is' : 'are'} in no part`);
+  if (problems.length) return { parts: null, problems, placed: 0 };
+  placeMissing(missing, parts, { importsOf, purposeOf });
+  return { parts, problems, placed: missing.length };
+}
+
+// Puts each file an answer left out in the part it shares the most with: the share of the
+// files it imports that are in the part, plus, for the terms of its purpose and file name, how
+// much of the part is about them (for each term, the share of the part's files whose purpose or
+// name has it, averaged over its terms). Files that import it only break a tie: a client many
+// files import, such as ollama.js, says where it is used, not what it is about. A tie after
+// that goes to the earlier part. Each file is placed by the parts as the model gave them, so
+// the order of the missing files does not matter.
+function placeMissing(missing, parts, { importsOf = () => [], purposeOf = () => '' } = {}) {
+  const termsOf = (f) => new Set(terms(`${purposeOf(f)} ${f.split('/').pop().replace(/\.\w+$/, '').replace(/[-_.]/g, ' ')}`));
+  const given = parts.map((part) => ({ files: [...part.files], terms: part.files.map(termsOf) }));
+  for (const file of missing) {
+    const imports = new Set(importsOf(file).filter((f) => f !== file));
+    const own = termsOf(file);
+    let best = 0;
+    let bestScore = [-1, -1];
+    given.forEach((part, i) => {
+      const outgoing = imports.size ? part.files.filter((f) => imports.has(f)).length / imports.size : 0;
+      let about = 0;
+      for (const term of own) about += part.terms.filter((set) => set.has(term)).length / Math.max(1, part.files.length);
+      const score = [outgoing + (own.size ? about / own.size : 0), part.files.filter((f) => importsOf(f).includes(file)).length];
+      if (score[0] > bestScore[0] || (score[0] === bestScore[0] && score[1] > bestScore[1])) {
+        best = i;
+        bestScore = score;
+      }
+    });
+    parts[best].files.push(file);
+  }
+  for (const part of parts) part.files.sort();
 }
 
 // Asks the model to split the group, and once more with the problems when its answer breaks a
 // rule: { parts, attempts, reason }. parts is null when neither answer can be used, and reason
 // says why. call(label, request) sends one request to the docs model.
-async function splitWithModel(group, { call, purposeOf, maxParts, minSize, supported, copies, taken, contextTokens, promptChars, styleRules, errors = [] }) {
+async function splitWithModel(group, { call, purposeOf, importsOf, maxParts, minSize, supported, copies, taken, contextTokens, promptChars, styleRules, errors = [] }) {
   let problems = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
     const messages = splitPrompt(group, purposeOf, { maxParts, minSize, totalChars: promptChars, styleRules, problems });
@@ -162,12 +203,12 @@ async function splitWithModel(group, { call, purposeOf, maxParts, minSize, suppo
     } catch {
       // Checked below as an answer with no parts.
     }
-    const checked = checkSplit(answer, group, { maxParts, minSize, supported, copies, taken });
-    if (checked.parts) return { parts: checked.parts, attempts: attempt, reason: '' };
+    const checked = checkSplit(answer, group, { maxParts, minSize, supported, copies, taken, importsOf, purposeOf });
+    if (checked.parts) return { parts: checked.parts, attempts: attempt, placed: checked.placed, reason: '' };
     problems = checked.problems;
     errors.push(`layers: answer ${attempt} for splitting ${where(group)} broke ${problems.length} ${problems.length === 1 ? 'rule' : 'rules'}: ${problems.slice(0, MAX_PROBLEMS).join('; ')}`);
   }
   return { parts: null, attempts: 2, reason: 'both answers broke the rules' };
 }
 
-module.exports = { SPLIT_SCHEMA, checkSplit, splitPrompt, splitWithModel, where };
+module.exports = { MAX_MISSING_SHARE, SPLIT_SCHEMA, checkSplit, placeMissing, splitPrompt, splitWithModel, where };

@@ -136,9 +136,16 @@ const README_TOKENS = 450;
 const PERSON_TEXT_CHARS = 800;
 
 function readmePrompt({ projectName, layers, facts, personText }) {
-  // Each layer with its files, or, when that is too long for the prompt, its folders.
-  let layerList = layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n') || 'None.';
-  if (layerList.length > 1200) {
+  // Each layer with its files, or, when that is too long for the prompt, its folders. In a
+  // project of parts, each part with the names of its documents.
+  const parts = layers.some((l) => l.part);
+  let layerList = parts
+    ? layers.filter((l) => !l.part).map((p) => {
+      const subs = layers.filter((l) => l.part === p.slug).map((l) => l.name);
+      return `- ${p.name}: ${p.description}${subs.length ? ` Documents: ${subs.join(', ')}.` : ''}`;
+    }).join('\n')
+    : layers.map((l) => `- ${l.name}: ${l.description} Files: ${l.files.join(', ')}`).join('\n') || 'None.';
+  if (!parts && layerList.length > 1200) {
     layerList = layers.map((l) => {
       const dirs = [...new Set(l.files.map((f) => path.posix.dirname(f)))];
       return `- ${l.name}: ${l.description} ${l.files.length} files, in ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? `, and ${dirs.length - 8} more folders` : ''}.`;
@@ -471,18 +478,20 @@ function writeReadme(root, { content, state }) {
 // Computes the blocks, calls the model through `caller`, and plans the README.
 // waiting: folders the documentation pass has not described yet. The layers table says so,
 // and the note goes once they are described.
-async function updateReadme({ root, caller, layers, facts, projectName, docsDir = 'docs', allFiles, regenerate, contextTokens = 8192, deadline, now, linkStats = {}, waiting = [] }) {
+// available(docPath): whether a layer doc exists, so the layers table links only the
+// sub-documents that do.
+async function updateReadme({ root, caller, layers, facts, projectName, docsDir = 'docs', allFiles, regenerate, contextTokens = 8192, deadline, now, linkStats = {}, waiting = [], available = () => true }) {
   // A README that is a symbolic link is left alone, with no model call.
   if (!readmeIsPlain(root)) return { content: null, state: null, report: null, pending: null, errors: [], linked: true };
   const current = readCurrentReadme(root);
   const saved = readReadmeState(root);
   const docsBase = `${docsDir.replace(/\/$/, '')}/`;
   const blocks = {
-    layers: [layers.length ? docs.layersTable(layers, docsBase) : '', waitingNote(waiting)].filter(Boolean).join('\n\n'),
+    layers: [layers.length ? docs.layersTable(layers, docsBase, available) : '', waitingNote(waiting)].filter(Boolean).join('\n\n'),
     scripts: docs.scriptsTable(facts),
     tree: `\`\`\`text\n${docs.directoryTree([...new Set([...allFiles, README_PATH])])}\n\`\`\``,
   };
-  const existingPaths = docs.pathsWithDirs([...allFiles, README_PATH, ...layers.map((l) => `${docsBase}${l.slug}.md`)]);
+  const existingPaths = docs.pathsWithDirs([...allFiles, README_PATH, ...layers.map((l) => `${docsBase}${docs.docName(l)}.md`)]);
   const docOptions = { temperature: 0.3, seed: 42, num_ctx: contextTokens, num_predict: README_TOKENS };
   return planReadme({
     current,

@@ -97,9 +97,13 @@ const listOf = (items) => (items.length > 1 ? `${items.slice(0, -1).join(', ')} 
 //      existingCode, pending, backlogLeft, nextBatch, batchSize }
 function progressLines(p) {
   const lines = ['## Progress', ''];
-  lines.push(p.docsComplete
-    ? `- **Documentation:** complete, with ${plural(p.layers, 'layer document')} and the README.`
-    : `- **Documentation:** in progress, ${p.summarized} of ${plural(p.documentable, 'file')} read. The rest follow on the next run.`);
+  // Docs left by the time budget, such as a large project's sub-documents after its part
+  // documents, are written on the next run.
+  lines.push(!p.docsComplete
+    ? `- **Documentation:** in progress, ${p.summarized} of ${plural(p.documentable, 'file')} read. The rest follow on the next run.`
+    : p.docsWaiting
+      ? `- **Documentation:** every file is read, and ${plural(p.layers, 'layer document')} and the README are written. ${plural(p.docsWaiting, 'more document')} ${p.docsWaiting === 1 ? 'follows' : 'follow'} on the next run.`
+      : `- **Documentation:** complete, with ${plural(p.layers, 'layer document')} and the README.`);
   lines.push(p.level === 'off'
     ? '- **Comments:** off. Docturnal only keeps the documentation up to date.'
     : `- **Comments:** ${p.commented} of ${plural(p.commentable, 'file')} commented at the ${p.level} level.`);

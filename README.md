@@ -93,6 +93,7 @@ The model never edits your files. It only proposes comments, and Docturnal decid
 | --- | --- |
 | `README.md` | The main document: an overview of your code, with links to every layer document. See [README rules](#readme-rules). |
 | `docs/<layer>.md` | One document for each part of your code, such as the API or the database layer. Docturnal decides the layers and keeps them stable between runs. |
+| `docs/<part>/<sub>.md` | In a large project, the documents of one part, such as one package's components or its tests. See [Large projects](#large-projects). |
 | `.docturnal/state.json` | What the last run saw: file hashes, summaries, the layers, and the comments Docturnal inserted. |
 | `.docturnal/readme.json` | The README as Docturnal last wrote it, with who owns each section. |
 | `.docturnal/last-run.md` | The pull request description. |
@@ -101,6 +102,12 @@ The model never edits your files. It only proposes comments, and Docturnal decid
 Each layer document starts with a hidden marker. Docturnal rewrites a layer document only when files in that layer change, and never overwrites a file in `docs/` that does not have the marker.
 
 The layers follow your folders, and a large folder is split into a few layers by what its files do. The model groups the files by their purposes and names each group, and every group is checked against its files. When the grouping fails the checks twice, the files are grouped by which of them import each other. Each layer document describes only what its files' summaries and definitions say: a sentence they don't support is left out, and nothing is said twice. Tables in the documents are computed from your code, such as the table of files in each layer, and the Configuration section lists only the environment variables, inputs, and configuration files the code itself reads.
+
+### Large projects
+
+A project with two or more workspace packages, or 100 source files or more, is documented in parts. Each package (a folder with its own `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, or similar, or one your workspace settings name) is a part, and so is each other top-level folder, such as an app, examples, a docs site, or scripts. A document never holds files from two parts, and a part's tests have a document of their own.
+
+Each part has a document at `docs/<part>.md`, named after its package or folder. A part with more than about 40 source files also has a document for each of its subfolders, at `docs/<part>/<sub>.md`, and a subfolder that is still too big is divided within itself. The README's Architecture section lists the parts, at most 12, with links to their documents, and each part's document lists its own. The first run writes every part's document first; documents that don't fit in the time are written on the next run, and the pull request says how many.
 
 ## README rules
 
