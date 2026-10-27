@@ -1,18 +1,22 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-26T21:06:18.975Z",
+  "updatedAt": "2026-10-27T05:39:48.706Z",
   "commentLevel": "medium",
   "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
   "docsComplete": true,
   "batchesDone": 0,
   "pending": {
     "docs": true,
-    "changed": [],
+    "changed": [
+      "src/layers.js",
+      "src/readme.js"
+    ],
     "batch": null
   },
   "files": {
     "app/package.json": {
-      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247"
+      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247",
+      "level": null
     },
     "app/scripts/pkcs8.mjs": {
       "hash": "sha256-cf47aa2847e73e847c5d28840f06d4e0b59c2d6874db082bc617e74cc773d8ff",
@@ -220,10 +224,12 @@
       "level": null
     },
     "app/tsconfig.json": {
-      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2"
+      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2",
+      "level": null
     },
     "package.json": {
-      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f"
+      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f",
+      "level": null
     },
     "scripts/archive-hashes.js": {
       "hash": "sha256-ce9efe842638ac9bbbace3f33ddf3f7b50dc033565f58dd6d61bc500bb27b5da",
@@ -493,23 +499,52 @@
       "level": null
     },
     "src/layers.js": {
-      "hash": "sha256-d2b23eb865cd5c171b64e74e5bdee51371475835dc4daf89e17896310124348b",
-      "summary": "Architecture layers grounded in the project's real folders.",
+      "hash": "sha256-b167f45d9407573b290e21f5e96e6b4ee0705c13a93c805ca29759cdcf01a135",
+      "summary": "This code defines functions to organize and document the architecture of a software project based on its folder structure. It groups files into layers, splits large groups into parts, and generates a prompt for documentation. This file defines functions for organizing and planning layers in a project, including naming, descriptions, and splitting of groups into layers.",
       "symbols": [
-        "GENERIC_NAMES",
-        "LAYERS_SCHEMA",
-        "MAX_LAYERS",
-        "SPLIT_ABOVE",
-        "copiesPurpose",
+        "path",
+        "clusterFiles",
+        "FOLDER_WORDS",
+        "SUB_ABOVE",
+        "findPackages",
         "folderName",
+        "isLargeProject",
+        "partDocuments",
+        "topParts",
+        "LAYERS_SCHEMA",
+        "GENERIC_NAMES",
+        "STOPWORDS",
+        "PART_DOC_MINUTES",
+        "dirOf",
+        "segments",
+        "partWord",
+        "isTests",
+        "folderGroups",
+        "importsOf",
+        "splitWithModel",
+        "where",
+        "MAX_LAYERS",
+        "MIN_GROUP_FILES",
+        "MERGE_ABOVE",
+        "TEST_FOLDER",
+        "SPLIT_ABOVE",
+        "MAX_PARTS",
+        "MIN_PURPOSE_CHARS",
+        "splitSteps",
+        "finishGroups",
+        "clusterParts",
         "groupFiles",
-        "layersPrompt",
-        "planGroundedLayers",
         "purposeSentence",
+        "groupText",
+        "contentWords",
+        "copiesPurpose",
+        "significantWords",
         "supports",
-        "dirOf"
+        "layersPrompt",
+        "partDescription",
+        "planGroundedLayers"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/links.js": {
       "hash": "sha256-542b756aa5616c410f948fd3464b3c0621021906b824fee27bdf2b88b7e4ef3a",
@@ -630,23 +665,26 @@
       "level": null
     },
     "src/readme.js": {
-      "hash": "sha256-6884564b4bc96ee9813dab3d3fcffdd359a1561b8fc1493bfc41c7daaa8ccc08",
-      "summary": "The repository's README.md, the main document.",
+      "hash": "sha256-68152795d689f3c72593aec280594823fe1b22a9ee1844813edc4be62e6fe0c4",
+      "summary": "This file contains the main logic for managing the README.md file, including parsing, processing, and generating the content based on the project's data and user input.",
       "symbols": [
-        "readmeIsPlain",
-        "proseParagraphs",
-        "readmePrompt",
-        "MAINTAINED",
-        "README_PATH",
-        "README_STATE_PATH",
+        "normalizeHeading",
         "parseReadme",
-        "planReadme",
-        "readCurrentReadme",
-        "readReadmeState",
+        "sectionHash",
+        "standardOf",
+        "standardIndex",
         "renderBlock",
-        "sectionHash"
+        "blocksIn",
+        "refreshBlocks",
+        "readmePrompt",
+        "readmeBodies",
+        "waitingNote",
+        "sectionText",
+        "standardText",
+        "displayHeading",
+        "planReadme"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/report.js": {
       "hash": "sha256-a99906bcb3fb44839c7bc1783face4fa110a4ad144d648c4c60a3cf55c0c103a",
@@ -1219,7 +1257,10 @@
     "model-verification",
     "testing"
   ],
-  "staleDocs": [],
+  "staleDocs": [
+    "git-and-file-operations",
+    "configuration-and-grounding"
+  ],
   "folders": {
     "app/scripts": "This folder contains scripts for handling PKCS#1 to PKCS#8 conversions and serving the app registration page.",
     "app/src": "Manages GitHub API version, handles requests, schedules tasks, manages session tokens, and configures workflows for GitHub installations.",

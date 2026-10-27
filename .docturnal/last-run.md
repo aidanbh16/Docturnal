@@ -1,27 +1,55 @@
-# Docturnal: documentation
+# Docturnal: comments and documentation
 
 ## Progress
 
-- **Documentation:** complete, with 7 layer documents and the README.
-- **Comments:** 0 of 82 files commented at the medium level.
-- **This pull request:** documentation for the whole project.
-- **Next:** comments on existing code in batches of up to 15 files, starting with batch 1 and the most important files. 82 existing files are left.
+- **Documentation:** every file is read, and 7 layer documents and the README are written. 2 more documents follow on the next run.
+- **Comments:** 2 of 85 files commented at the medium level.
+- **This pull request:** documentation for the whole project and comments on 2 new or changed files.
+- **Next:** comments on existing code in batches of up to 15 files, starting with batch 1 and the most important files. 83 existing files are left.
 
-The latest run updates 7 docs and updates the README. Review the changes, then merge the pull request to keep them.
+The latest run updates the README. Review the changes, then merge the pull request to keep them.
 
-## Docs
+## Comments added
 
-- Updated `docs/app-registration.md`
-- Updated `docs/ollama-management.md`
-- Updated `docs/comment-analysis.md`
-- Updated `docs/git-and-file-operations.md`
-- Updated `docs/configuration-and-grounding.md`
-- Updated `docs/model-verification.md`
-- Updated `docs/testing.md`
+| File | Comments added | Checked by a parser | Proposed comments |
+| --- | --- | --- | --- |
+| `src/layers.js` | 0 | Yes (TypeScript) | proposed 64, 4 dropped by placement rules, 60 anchor not found, 0 added |
+| `src/readme.js` | 0 | Yes (TypeScript) | proposed 0, 0 added |
 
 ## README
 
-- Updated: "Architecture", "Install", "Project layout"
+- Updated: "Project layout"
+
+## Left for the next run
+
+- `src/report.js`: time budget
+- `src/split.js`: time budget
+- `src/state.js`: time budget
+- `test/excalidraw-like.js`: time budget
+- `test/model-split.test.js`: time budget
+- `test/parts.test.js`: time budget
+- `test/scale.test.js`: time budget
+- `app/src/handlers.ts`: time budget
+- `app/src/index.ts`: time budget
+- `app/src/setup.ts`: time budget
+- `app/src/settings.ts`: time budget
+- `app/src/workflow.ts`: time budget
+- `app/src/scheduler.ts`: time budget
+- `app/src/session.ts`: time budget
+- `app/src/github.ts`: time budget
+- `app/scripts/pkcs8.mjs`: time budget
+- `app/scripts/register.mjs`: time budget
+- `src/main.js`: time budget
+- `src/languages.js`: time budget
+- `src/changes.js`: time budget
+- `src/git.js`: time budget
+- `src/links.js`: time budget
+- `src/apply.js`: time budget
+- `src/docs.js`: time budget
+- `src/importance.js`: time budget
+- `src/parts.js`: time budget
+- `docs/git-and-file-operations.md`: time budget
+- `docs/configuration-and-grounding.md`: time budget
 
 ## Models
 
