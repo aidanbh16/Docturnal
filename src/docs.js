@@ -15,7 +15,7 @@ const grounding = require('./grounding');
 const { isPlainPath } = require('./safe-path');
 const { configurationSection, layerConfiguration } = require('./configuration');
 const { copiesPurpose, planGroundedLayers, purposeSentence } = require('./layers');
-const { MAX_TOP_PARTS, isTestFile } = require('./parts');
+const { MAX_DEPTH, MAX_TOP_PARTS, isTestFile } = require('./parts');
 const ollama = require('./ollama');
 const { SKIP_DIRS } = require('./languages');
 
@@ -93,6 +93,15 @@ function firstSentence(text) {
   const match = clean.match(/^.*?[.!?](?=\s|$)/);
   const sentence = (match ? match[0] : clean).trim();
   return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+}
+
+// A layer's description: one sentence, or, for a part that groups several, the sentence that
+// lists them and the one after it (see groupDescription in layers.js).
+function layerDescription(text) {
+  const first = firstSentence(text);
+  if (!/^Holds the project's \d+ (packages|parts): /.test(first)) return first;
+  const rest = firstSentence(String(text).replace(/\s+/g, ' ').trim().slice(first.length));
+  return rest && rest !== '.' ? `${first} ${rest}` : first;
 }
 
 function keepsCase(word) {
@@ -452,9 +461,11 @@ function componentsTable(layer, fileInfo, docsDir) {
   return ['| File | Purpose | Main definitions |', '| --- | --- | --- |', ...rows].join('\n');
 }
 
-// The sub-documents of a part, in a list of normalized layers, and the part of a sub-document.
-const subsOf = (layer, layers) => (layer.part ? [] : layers.filter((l) => l.part === layer.slug));
-const partOf = (layer, layers) => (layer.part ? layers.find((l) => !l.part && l.slug === layer.part) || null : null);
+// The sub-documents of a document, in a list of normalized layers, all the documents below it,
+// and the document a sub-document is in.
+const subsOf = (layer, layers) => layers.filter((l) => l.part && l.part === docName(layer));
+const belowOf = (layer, layers) => subsOf(layer, layers).flatMap((sub) => [sub, ...belowOf(sub, layers)]);
+const partOf = (layer, layers) => (layer.part ? layers.find((l) => docName(l) === layer.part) || null : null);
 // The layers a doc lists as related: a part's other parts, or a sub-document's part and the
 // other sub-documents of its part.
 const siblings = (layer, layers) => layers.filter((other) => docName(other) !== docName(layer) && (other.part || '') === (layer.part || ''));
@@ -676,14 +687,16 @@ function closestLayer(file, layers) {
   return best;
 }
 
-// A layer's document name, its path in docs/ without ".md": its slug, or, for a sub-document of a
-// part, the part's slug and its own, such as "excalidraw/components".
+// A layer's document name, its path in docs/ without ".md": its slug, or, for a sub-document,
+// the doc name of the document it is in (part) and its own slug, such as
+// "excalidraw/components" or "packages/excalidraw/components".
 const docName = (layer) => (layer.part ? `${layer.part}/${layer.slug}` : layer.slug);
 
 // Builds layers from model or previous entries, keeping only known files, each in one layer.
-// An entry with part is a sub-document of the entry with that name or slug, which comes right
-// before its sub-documents; it is set as parent. A part may have no files of its own when its
-// sub-documents have some.
+// An entry with part is a sub-document of the entry that part names: by the doc names of the
+// previous run, or by the names down from its part, joined by "/" (see planPartLayers in
+// layers.js); it is set as parent. No document is deeper than MAX_DEPTH. Each document comes
+// right before its sub-documents, and may have no files of its own when they have some.
 function layersFromEntries(entries, known) {
   const list = (Array.isArray(entries) ? entries : []).filter((e) => e && typeof e === 'object');
   const assigned = new Set();
@@ -695,36 +708,53 @@ function layersFromEntries(entries, known) {
       }
     }
   };
-  const into = (pool, entry) => {
+  const all = [];
+  const into = (pool, entry, parent) => {
     const name = titleCase(entry.name);
     if (!name) return null;
     let layer = pool.find((l) => slugify(l.name) === slugify(name));
     if (!layer) {
-      layer = { name, description: typeof entry.description === 'string' ? firstSentence(entry.description) : '', files: [], subs: [], was: typeof entry.slug === 'string' ? entry.slug : '' };
+      const was = typeof entry.slug === 'string' ? entry.slug : '';
+      layer = { name, description: typeof entry.description === 'string' ? layerDescription(entry.description) : '', files: [], subs: [], ...(parent ? { parent } : {}) };
+      // The paths an entry below may name this one by: its doc name in the previous run, and its
+      // names down from its part.
+      layer.wasPath = parent ? `${parent.wasPath}/${was || slugify(name)}` : (was || slugify(name));
+      layer.namePath = parent ? `${parent.namePath}/${slugify(name)}` : slugify(name);
+      layer.depth = parent ? parent.depth + 1 : 1;
       pool.push(layer);
+      all.push(layer);
     }
     take(layer, entry);
     return layer;
   };
   const top = [];
   for (const entry of list.filter((e) => typeof e.part !== 'string')) into(top, entry);
-  for (const entry of list.filter((e) => typeof e.part === 'string')) {
-    const parent = top.find((l) => l.was === entry.part || slugify(l.name) === slugify(entry.part));
-    if (parent) into(parent.subs, entry);
+  // Each pass places the entries one level further down.
+  let waiting = list.filter((e) => typeof e.part === 'string');
+  for (let depth = 2; depth <= MAX_DEPTH && waiting.length; depth++) {
+    const later = [];
+    for (const entry of waiting) {
+      const named = entry.part.split('/').map(slugify).join('/');
+      const parent = all.find((l) => l.depth === depth - 1 && (l.wasPath === entry.part || l.namePath === named));
+      if (parent) into(parent.subs, entry, parent);
+      else later.push(entry);
+    }
+    waiting = later;
   }
-  const layers = [];
-  for (const layer of top) {
-    const subs = layer.subs.filter((s) => s.files.length);
-    if (!layer.files.length && !subs.length) continue;
-    layers.push(layer, ...subs.map((s) => Object.assign(s, { parent: layer })));
-  }
-  return layers;
+  const flatten = (layer) => {
+    const below = layer.subs.flatMap(flatten);
+    return layer.files.length || below.length ? [layer, ...below] : [];
+  };
+  return top.flatMap(flatten);
 }
 
-// A layer's files and its sub-documents' files.
+// A layer's files and those of every document below it.
 function allFilesOf(layer, layers) {
-  return [...layer.files, ...layers.filter((l) => l.parent === layer).flatMap((l) => l.files)];
+  return [...layer.files, ...layers.filter((l) => l.parent === layer).flatMap((l) => allFilesOf(l, layers))];
 }
+
+// The top-level document a layer is in, or the layer itself.
+const rootOf = (layer) => (layer.parent ? rootOf(layer.parent) : layer);
 
 // Used when neither the model nor the previous run gives usable layers.
 function layersByDirectory(files) {
@@ -755,19 +785,20 @@ function layersByDirectory(files) {
   return layers;
 }
 
-// Slugs, unique within docs/ and within each part's folder. isTaken(name) says whether a person's
-// doc has that document name.
+// Slugs, unique within docs/ and within each document's folder. isTaken(name) says whether a
+// person's doc has that document name.
 function assignSlugs(layers, isTaken = () => false) {
   const used = new Set();
-  for (const layer of [...layers.filter((l) => !l.parent), ...layers.filter((l) => l.parent)]) {
+  const depth = (layer) => (layer.parent ? depth(layer.parent) + 1 : 1);
+  for (const layer of [...layers].sort((a, b) => depth(a) - depth(b))) {
     let base = slugify(layer.name);
     if (RESERVED_SLUGS.has(base)) base = `${base}-layer`;
-    const within = layer.parent ? `${layer.parent.slug}/` : '';
+    const within = layer.parent ? `${docName(layer.parent)}/` : '';
     let slug = base;
     for (let n = 2; used.has(within + slug) || isTaken(within + slug); n++) slug = `${base}-${n}`;
     used.add(within + slug);
     layer.slug = slug;
-    if (layer.parent) layer.part = layer.parent.slug;
+    if (layer.parent) layer.part = docName(layer.parent);
   }
 }
 
@@ -813,7 +844,7 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), fold
   const cap = layers.some((l) => l.parent) ? MAX_TOP_PARTS : MAX_LAYERS;
   if (top.length > cap) {
     const keep = new Set([...top].sort((a, b) => allFilesOf(b, layers).length - allFilesOf(a, layers).length).slice(0, cap));
-    layers = layers.filter((l) => keep.has(l.parent || l));
+    layers = layers.filter((l) => keep.has(rootOf(l)));
   }
 
   const assigned = new Set(layers.flatMap((l) => l.files));
@@ -970,9 +1001,9 @@ function layerDocPrompt({ layer, layers, fileInfo, facts, readSource, projectNam
     ...siblings(layer, layers).map((l) => `- ${l.name}: ${l.description}`),
   ].join('\n') || 'None.', 500);
   // A part with sub-documents is described from all its folders and its documents.
-  const whole = subs.length ? { ...layer, files: [...layer.files, ...subs.flatMap((s) => s.files)] } : layer;
+  const whole = subs.length ? { ...layer, files: [...layer.files, ...belowOf(layer, layers).flatMap((s) => s.files)] } : layer;
   const documents = subs.length
-    ? `\nDocuments in this part, each with its own page:\n${within(subs.map((s) => `- ${s.name}: ${s.description}`).join('\n'), 800)}\n`
+    ? `\nDocuments in this part, each with its own page:\n${within(subs.map((s) => `- ${s.name}: ${s.description}`).join('\n'), 600)}\n`
     : '';
   const system = `You write developer documentation.\n\n${STYLE_RULES}`;
   const head = `Write the documentation page for the "${layer.name}" layer of ${projectName}${part ? `, part of ${part.name}` : ''}.
@@ -998,7 +1029,7 @@ Describe only what the folder summaries, file purposes, and definitions below st
 Layer description: ${layer.description}
 
 Folder summaries:
-${within(folderSummaries(whole, folders), subs.length ? 900 : 600)}
+${within(folderSummaries(whole, folders), subs.length ? 700 : 600)}
 ${documents}
 Other layers:
 ${others}
@@ -1010,12 +1041,13 @@ Files in this layer:
 `;
   // The file listing takes what is left of the prompt's size; a short excerpt of source only
   // when no file has a description.
-  const room = DOC_PROMPT_CHARS - system.length - head.length;
+  // The system and user messages count with the line between them.
+  const room = DOC_PROMPT_CHARS - system.length - 1 - head.length;
   const listing = layer.files.length ? layerFileListing(layer, fileInfo, folders, room) : 'None of its own: its files are in the documents above.';
   const source = excerpt(layer, fileInfo, readSource, room - listing.length - 20);
   return [
     { role: 'system', content: system },
-    { role: 'user', content: `${head}${listing}${source ? `\n\nSource excerpt:\n${source}` : ''}`.slice(0, Math.max(0, DOC_PROMPT_CHARS - system.length)) },
+    { role: 'user', content: `${head}${listing}${source ? `\n\nSource excerpt:\n${source}` : ''}`.slice(0, Math.max(0, DOC_PROMPT_CHARS - system.length - 1)) },
   ];
 }
 
@@ -1051,7 +1083,7 @@ function buildLayerDoc(raw, { layer, layers, fileInfo, folders = new Map(), docs
   const docPath = `${docsDir}/${docName(layer)}.md`;
   const docDir = path.posix.dirname(docPath);
   const subs = subsOf(layer, layers);
-  const whole = subs.length ? { ...layer, files: [...layer.files, ...subs.flatMap((s) => s.files)] } : layer;
+  const whole = subs.length ? { ...layer, files: [...layer.files, ...belowOf(layer, layers).flatMap((s) => s.files)] } : layer;
   const cleaned = cleanMarkdown(raw, { title: layer.name, docPath, existingPaths, knownUrls, linkStats });
   const { intro, sections } = splitSections(cleaned);
   const bodies = arrangeSections(sections, LAYER_SECTIONS, { extrasInto: 'how', generated: LAYER_GENERATED });
@@ -1245,17 +1277,22 @@ async function generateDocs({
   // Whether a doc exists after this run: written now, or Docturnal's on disk and not left for later.
   const notWritten = new Set();
   const available = (docPath) => !notWritten.has(docPath) && (result.docs.some((d) => d.path === docPath) || hasMarker(read(docPath)));
-  // A part's doc lists its sub-documents, so it is written again when they change.
+  // A document's doc lists its sub-documents, so it is written again when they change.
   const subsChanged = (layer) => {
     const before = previousByName.get(docName(layer));
     const list = (all, part) => all.filter((l) => l.part === part).map((l) => `${l.slug} ${l.name} ${l.description}`).join('\n');
-    return !layer.part && Boolean(before) && list(layers, layer.slug) !== list(previousLayers, before.slug);
+    return Boolean(before) && list(layers, docName(layer)) !== list(previousLayers, docName(before));
   };
 
   let anyLayerWritten = false;
-  // Parts first, so their docs are written before any sub-document's, and tests last.
+  // Parts first, so their docs are written before any sub-document's, then the sub-documents
+  // with the most files below them first (so a document comes before the ones it lists), and
+  // tests last.
   const testsOnly = (layer) => layer.files.length > 0 && layer.files.every(isTestFile);
-  for (const layer of [...layers.filter((l) => !l.part), ...layers.filter((l) => l.part && !testsOnly(l)), ...layers.filter((l) => l.part && testsOnly(l))]) {
+  const size = new Map(layers.map((l) => [l, l.files.length + belowOf(l, layers).reduce((n, s) => n + s.files.length, 0)]));
+  const levels = (l) => docName(l).split('/').length;
+  const bySize = (list) => list.map((l, i) => [l, i]).sort(([a, i], [b, j]) => size.get(b) - size.get(a) || levels(a) - levels(b) || i - j).map(([l]) => l);
+  for (const layer of [...layers.filter((l) => !l.part), ...bySize(layers.filter((l) => l.part && !testsOnly(l))), ...layers.filter((l) => l.part && testsOnly(l))]) {
     const docPath = docPathFor(layer);
     const previous = previousByName.get(docName(layer));
     const needed = changedFiles === null || stale.has(docName(layer)) || !sameLayer(layer, previous) ||

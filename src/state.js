@@ -26,8 +26,11 @@ function emptyPending() {
 
 // The slugs Docturnal gives layers (see slugify in docs.js).
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-// A doc's name: a slug, or a part's slug and a sub-document's, such as "excalidraw/components".
-const DOC_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
+// A doc's name: a slug, or, for a sub-document, the slugs of the documents above it and its own,
+// at most three, such as "packages/excalidraw/components".
+const DOC_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){0,2}$/;
+// The doc name of the document a sub-document is in: at most two slugs.
+const PART_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
 
 function emptyState() {
   return {
@@ -86,9 +89,9 @@ function readState(root) {
   state.ignoreHash = typeof data.ignoreHash === 'string' ? data.ignoreHash : null;
   if (Array.isArray(data.layers)) {
     // A slug names a file in docs/, so it must be a plain slug: never a path. So must a
-    // sub-document's part, the folder its doc is in.
+    // sub-document's part, the doc name of the document it is in, which names its folder.
     state.layers = data.layers.filter((l) => l && typeof l.slug === 'string' && SLUG.test(l.slug) && typeof l.name === 'string' && Array.isArray(l.files) &&
-      (l.part === undefined || (typeof l.part === 'string' && SLUG.test(l.part))));
+      (l.part === undefined || (typeof l.part === 'string' && PART_NAME.test(l.part))));
   }
   state.docsComplete = typeof data.docsComplete === 'boolean' ? data.docsComplete : state.layers.length > 0 ? null : false;
   state.batchesDone = Number.isInteger(data.batchesDone) && data.batchesDone >= 0 ? data.batchesDone : 0;

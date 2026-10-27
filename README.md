@@ -67,7 +67,7 @@ The model never edits your files. It only proposes comments, and Docturnal decid
 | --- | --- |
 | `README.md` | The main document: an overview of your code, with links to every layer document. See [README rules](#readme-rules). |
 | `docs/<layer>.md` | One document for each part of your code, such as the API or the database layer. Docturnal decides the layers and keeps them stable between runs. |
-| `docs/<part>/<sub>.md` | In a large project, the documents of one part, such as one package's components or its tests. See [Large projects](#large-projects). |
+| `docs/<part>/<sub>.md` | In a large project, the documents of one part, such as one package's components or its tests, and below them `docs/<part>/<sub>/<sub>.md`. See [Large projects](#large-projects). |
 | `.docturnal/state.json` | What the last run saw: file hashes, summaries, the layers, and the comments Docturnal inserted. |
 | `.docturnal/readme.json` | The README as Docturnal last wrote it, with who owns each section. |
 | `.docturnal/last-run.md` | The pull request description. |
@@ -81,7 +81,7 @@ The layers follow your folders, and a large folder is split into a few layers by
 
 A project with two or more workspace packages, or 100 source files or more, is documented in parts. Each package (a folder with its own `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, or similar, or one your workspace settings name) is a part, and so is each other top-level folder, such as an app, examples, a docs site, or scripts. A document never holds files from two parts, and a part's tests have a document of their own.
 
-Each part has a document at `docs/<part>.md`, named after its package or folder. A part with more than about 40 source files also has a document for each of its subfolders, at `docs/<part>/<sub>.md`, and a subfolder that is still too big is divided within itself. The README's Architecture section lists the parts, at most 12, with links to their documents, and each part's document lists its own. The first run writes every part's document first; documents that don't fit in the time are written on the next run, and the pull request says how many.
+Each part has a document at `docs/<part>.md`, named after its package or folder. Any document with more than about 40 source files also has a document for each of its subfolders, such as `docs/<part>/<sub>.md`, down to three levels, and one that is still too big is divided within its own folder. The README's Architecture section lists at most 12 parts, with links to their documents, and each document lists its own. With more than 12, the folder that holds the most parts, such as `packages/`, becomes one part: its description lists the packages it holds, and each package gets its own documents below it, such as `docs/packages/excalidraw.md` and `docs/packages/excalidraw/components.md`. The first run writes every part's document first, then the larger documents, then the tests; documents that don't fit in the time are written on the next run, and the pull request says how many.
 
 ## README rules
 

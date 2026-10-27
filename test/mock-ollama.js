@@ -51,6 +51,7 @@ function kindOf(body) {
   if (props.comments) return 'comments';
   if (props.summary && props.files) return 'folder';
   if (props.parts) return 'split';
+  if (props.sentence) return 'group';
   if (props.layers) return 'layers';
   if (prompt.includes('Rewrite this README section')) return 'polish';
   if (prompt.includes('main documentation page')) return 'readme';
@@ -121,6 +122,13 @@ function layersReply(body) {
   };
 }
 
+// One sentence about a group of packages, from the folders their descriptions name.
+function groupReply(body) {
+  const folders = [...promptOf(body).matchAll(/^- [^:\n]+: .*? in (\S+?)\.$/gm)].map((m) => m[1]).slice(0, 3);
+  const list = folders.length > 1 ? `${folders.slice(0, -1).join(', ')}, and ${folders[folders.length - 1]}` : folders[0] || 'the project';
+  return JSON.stringify({ sentence: `Together they hold the code in ${list}.` });
+}
+
 // A large folder split in two halves, each named after its first file: "Alpha Files".
 function splitReply(body) {
   const files = [...promptOf(body).split('\nFiles:\n').pop().matchAll(/^- (\S+?)(?::|$)/gm)].map((m) => m[1]);
@@ -165,6 +173,7 @@ function defaultHandler({ oomModels = [] } = {}) {
       case 'load': return '';
       case 'layers': return layersReply(body);
       case 'split': return splitReply(body);
+      case 'group': return groupReply(body);
       case 'layer-doc': return layerDocReply(body);
       case 'readme': return readmeReply(body);
       case 'polish': return polishReply(body);

@@ -1,8 +1,10 @@
 'use strict';
 
 // A project shaped like excalidraw/excalidraw, by paths only: 788 source files in workspace
-// packages (packages/common, element, excalidraw, math, and utils, excalidraw-app, and two
-// examples), each with a simple package.json, plus dev-docs/ and scripts/. packages/excalidraw
+// packages (packages/common, element, excalidraw, math, utils, eslint-config, and
+// prettier-config, excalidraw-app, and two examples), each with a simple package.json, plus
+// dev-docs/, scripts/, firebase-project/, and public/: 15 parts, more than the README lists, so
+// packages/ becomes one part. packages/excalidraw
 // has components, actions, renderer, data, fonts, scene, hooks, and tests folders. Every file
 // has a one-sentence leading comment and imports the next file in its folder.
 
@@ -40,7 +42,11 @@ const FOLDERS = [
   ['examples/with-script-in-browser', 8, 'tsx'],
   ['dev-docs/src/components', 6, 'tsx'],
   ['dev-docs/src/theme', 8, 'tsx'],
-  ['scripts', 22, 'js'],
+  ['scripts', 14, 'js'],
+  ['packages/eslint-config', 2, 'js'],
+  ['packages/prettier-config', 2, 'js'],
+  ['firebase-project', 2, 'js'],
+  ['public', 2, 'js'],
 ];
 
 const PACKAGES = {
@@ -49,6 +55,8 @@ const PACKAGES = {
   'packages/excalidraw': '@excalidraw/excalidraw',
   'packages/math': '@excalidraw/math',
   'packages/utils': '@excalidraw/utils',
+  'packages/eslint-config': '@excalidraw/eslint-config',
+  'packages/prettier-config': '@excalidraw/prettier-config',
   'excalidraw-app': 'excalidraw-app',
   'examples/with-nextjs': 'with-nextjs',
   'examples/with-script-in-browser': 'with-script-in-browser',

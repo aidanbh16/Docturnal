@@ -5,10 +5,11 @@
 // hierarchy: each workspace package (a folder with its own package.json, pyproject.toml, go.mod,
 // Cargo.toml, or similar, or one the root package.json's workspaces or pnpm-workspace.yaml
 // names) is a part, and so is each other top-level folder. Files of two parts never share a
-// document. A part's tests are a document of their own. A part with more than SUB_ABOVE code
-// files gets sub-documents, one for each of its real subfolders, with tiny subfolders kept in
-// the part's own document; layers.js divides a subfolder that is still too big, within that
-// subfolder only. A smaller project keeps the flat layers of layers.js.
+// document. A part's tests are a document of their own. A document with more than SUB_ABOVE
+// code files, at any level, gets sub-documents, one for each of its real subfolders, with tiny
+// subfolders kept in its own document, down to MAX_DEPTH levels; layers.js divides a document
+// that is still too big, within its folder only. A part that groups several (see foldParts) has
+// each of them as a sub-document. A smaller project keeps the flat layers of layers.js.
 // Node built-ins only: the pre-check loads this through docs.js.
 
 const path = require('path');
@@ -24,6 +25,8 @@ const MIN_SUB_FILES = 5;
 const MAX_SUBS = 10;
 // The README lists at most this many parts.
 const MAX_TOP_PARTS = 12;
+// A document is at most this deep: a part, a package or subfolder in it, and a subfolder in that.
+const MAX_DEPTH = 3;
 
 const MANIFESTS = new Set([
   'package.json', 'pyproject.toml', 'setup.py', 'go.mod', 'Cargo.toml', 'composer.json', 'pom.xml',
@@ -216,28 +219,34 @@ function commonFolder(files, floor) {
   return dirs.length ? dirs[0].slice(0, depth).join('/') || '.' : floor;
 }
 
-// The documents of one part: { own: files in the part's own document, subs: [{ name, folder,
-// files, tests, divide }] }. divide marks a sub-document too big for one, for layers.js to divide
-// within its folder.
-function partDocuments(part) {
-  const tests = part.files.filter(isTestFile);
-  const code = part.files.filter((f) => !isTestFile(f));
-  const testsDoc = (name, files) => ({ name, folder: commonFolder(files, '.'), files, tests: true, divide: false });
-  if (part.folded) {
-    const subs = [];
-    for (const member of part.folded) {
-      const memberTests = member.files.filter(isTestFile);
-      const memberCode = member.files.filter((f) => !isTestFile(f));
-      if (memberCode.length) subs.push({ name: member.name, folder: member.folder, files: memberCode, tests: false, divide: false });
-      if (memberTests.length) subs.push(testsDoc(memberCode.length ? `${member.name} Tests` : member.name, memberTests));
-    }
-    return { own: [], subs };
-  }
+// The documents under one document: { own: the files in that document, subs: [sub] }, where a
+// sub is { name, folder, files, tests, divide, rest, subs }, its own files and its own
+// sub-documents. depth is the level of the document (a part is 1), and no document is deeper
+// than MAX_DEPTH. A document with more than SUB_ABOVE code files gets a sub-document for each
+// subfolder of the folder its code shares, named after it; a subfolder of fewer than
+// MIN_SUB_FILES files, and any beyond the MAX_SUBS largest, stays in the document's own files.
+// divide marks a sub-document still too big for one, for layers.js to divide within its folder:
+// one at MAX_DEPTH, one whose files have no subfolders to split by, or the own files of a
+// document left with too many (rest). named says the document is a part or a package, which
+// keeps its own document even when all its files are in one folder.
+function documentsOf(name, folder, files, depth, named) {
+  const tests = files.filter(isTestFile);
+  const code = files.filter((f) => !isTestFile(f));
   if (!code.length) return { own: tests, subs: [] };
-  const testSubs = tests.length ? [testsDoc('Tests', tests)] : [];
-  if (code.length <= SUB_ABOVE) return { own: code, subs: testSubs };
-  // One document for each subfolder of the folder all the code is in.
-  const base = commonFolder(code, part.folder);
+  const testSubs = tests.length ? [leaf('Tests', commonFolder(tests, '.'), tests, { tests: true })] : [];
+  const split = code.length > SUB_ABOVE ? folderSubs(name, folder, code, depth, named) : null;
+  if (!split) return { own: code, subs: testSubs };
+  return { own: split.own, subs: [...split.subs, ...testSubs] };
+}
+
+function leaf(name, folder, files, { tests = false, divide = false, rest = false } = {}) {
+  return { name, folder, files: [...files].sort(), tests, divide, ...(rest ? { rest } : {}), subs: [] };
+}
+
+// The sub-documents of a document with too many code files, one for each subfolder: { own,
+// subs }, or null when a document that is not named has no subfolders to split by.
+function folderSubs(name, folder, code, depth, named) {
+  const base = commonFolder(code, folder);
   const groups = new Map([[base, []]]);
   for (const file of code) {
     const rel = segments(dirOf(file)).slice(segments(base).length);
@@ -245,7 +254,7 @@ function partDocuments(part) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(file);
   }
-  // Tiny subfolders stay with the part, and so do the smallest while there are too many.
+  // Tiny subfolders stay with the document, and so do the smallest while there are too many.
   const subfolders = [...groups.keys()].filter((k) => k !== base)
     .sort((a, b) => groups.get(b).length - groups.get(a).length || a.localeCompare(b));
   subfolders.forEach((key, i) => {
@@ -254,20 +263,38 @@ function partDocuments(part) {
       groups.delete(key);
     }
   });
-  const relName = (folder) => folderName(segments(folder).slice(segments(part.folder).length).join('/') || '.');
+  if (groups.size === 1 && !named) return null;
+  const relName = (dir) => folderName(segments(dir).slice(segments(folder).length).join('/') || '.');
   const subs = [...groups].filter(([key]) => key !== base).sort(([a], [b]) => a.localeCompare(b))
-    .map(([folder, files]) => ({ name: relName(folder), folder, files: files.sort(), tests: false, divide: files.length > SUB_ABOVE }));
+    .map(([dir, files]) => subfolderDoc(relName(dir), dir, files, depth + 1));
   const rest = groups.get(base).sort();
-  let own = rest;
-  if (rest.length > SUB_ABOVE) {
-    // The part's own files are too many for its document: they are divided into documents too.
-    subs.unshift({ name: base === part.folder ? part.name : relName(base), folder: base, files: rest, tests: false, divide: true, rest: true });
-    own = [];
-  }
-  return { own, subs: [...subs, ...testSubs] };
+  if (rest.length <= SUB_ABOVE) return { own: rest, subs };
+  // The document's own files are too many for it: they are divided into documents too.
+  subs.unshift(leaf(base === folder ? name : relName(base), base, rest, { divide: true, rest: true }));
+  return { own: [], subs };
+}
+
+// A subfolder's document at depth, with sub-documents of its own when it is too big for one
+// and not yet at MAX_DEPTH.
+function subfolderDoc(name, folder, files, depth) {
+  const split = files.length > SUB_ABOVE && depth < MAX_DEPTH ? folderSubs(name, folder, files, depth, false) : null;
+  if (!split) return leaf(name, folder, files, { divide: files.length > SUB_ABOVE });
+  return { name, folder, files: split.own, tests: false, divide: false, subs: split.subs };
+}
+
+// The documents of one part: { own: files in the part's own document, subs: [sub] } (see
+// documentsOf). A part that groups several (see foldParts) has a document for each of them,
+// with its own sub-documents.
+function partDocuments(part) {
+  if (!part.folded) return documentsOf(part.name, part.folder, part.files, 1, true);
+  const subs = part.folded.map((member) => {
+    const docs = documentsOf(member.name, member.folder, member.files, 2, true);
+    return { name: member.name, folder: member.folder, files: docs.own, tests: docs.own.length > 0 && docs.own.every(isTestFile), divide: false, package: member.package, subs: docs.subs };
+  });
+  return { own: [], subs };
 }
 
 module.exports = {
-  FOLDER_WORDS, LARGE_PROJECT_FILES, MAX_SUBS, MAX_TOP_PARTS, MIN_SUB_FILES, SUB_ABOVE,
+  FOLDER_WORDS, LARGE_PROJECT_FILES, MAX_DEPTH, MAX_SUBS, MAX_TOP_PARTS, MIN_SUB_FILES, SUB_ABOVE,
   findPackages, folderName, isLargeProject, isTestFile, packageTitle, partDocuments, topParts, workspacePatterns,
 };

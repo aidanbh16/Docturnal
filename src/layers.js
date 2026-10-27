@@ -20,6 +20,7 @@
 const path = require('path');
 
 const { clusterFiles } = require('./clusters');
+const { grounded, terms } = require('./grounding');
 const { FOLDER_WORDS, SUB_ABOVE, findPackages, folderName, isLargeProject, partDocuments, topParts } = require('./parts');
 const { splitWithModel, where } = require('./split');
 
@@ -359,54 +360,129 @@ function partDescription(files, folders) {
   return dirs.map(([dir]) => folders.get(dir)).find(Boolean) || '';
 }
 
+const GROUP_SCHEMA = { type: 'object', properties: { sentence: { type: 'string' } }, required: ['sentence'] };
+const GROUP_SENTENCE_WORDS = 30;
+
+// The description of a part that groups several (see foldParts in parts.js): what it holds, by
+// their names, such as "Holds the project's 3 packages: Common, Element, and Math.", and at
+// most one sentence from the docs model that sums up their descriptions (see
+// groupSentenceProblem). members: [{ name, description, package }].
+async function groupDescription(part, members, { call, folders = new Map(), contextTokens, promptChars = 4000, styleRules = '', errors = [], useModel = true }) {
+  const kind = members.every((m) => m.package) ? 'packages' : 'parts';
+  const names = members.map((m) => m.name);
+  const listed = names.length > 1 ? `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} and ${names[names.length - 1]}` : names[0];
+  const holds = `Holds the project's ${members.length} ${kind}: ${listed}.`;
+  const described = members.filter((m) => m.description);
+  if (!useModel || !call || !described.length) return holds;
+  const system = `You write one sentence that sums up what a group of ${kind} does together, from their descriptions only. Use no Markdown and no links. ${styleRules}`.trim();
+  const user = `Write one sentence of at most ${GROUP_SENTENCE_WORDS} words that sums up what these ${kind} do together. Do not repeat one description; say what they share.\n\n${described.map((m) => `- ${m.name}: ${m.description}`).join('\n')}`.slice(0, Math.max(0, promptChars - system.length - 1));
+  let sentence = '';
+  try {
+    const content = await call(`describe ${part.folder}`, {
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      format: GROUP_SCHEMA,
+      options: { temperature: 0.2, seed: 42, num_ctx: contextTokens, num_predict: 80 },
+    });
+    const answer = JSON.parse(content);
+    sentence = answer && typeof answer.sentence === 'string' ? answer.sentence.trim().replace(/\s+/g, ' ') : '';
+  } catch (err) {
+    errors.push(`layers: the request to describe ${part.folder}/ failed (${String(err.message).slice(0, 200)})`);
+    return holds;
+  }
+  const problem = groupSentenceProblem(sentence, described, folders);
+  if (problem) {
+    errors.push(`layers: the sentence describing ${part.folder}/ was dropped: ${problem}`);
+    return holds;
+  }
+  return `${holds} ${sentence}`;
+}
+
+// Why a sentence does not sum up the members' descriptions, or '': it must be one plain
+// sentence, say nothing their names and descriptions do not, be about two or more of them (or
+// the one), and repeat no single description or folder summary.
+function groupSentenceProblem(sentence, members, folders = new Map()) {
+  if (!sentence) return 'it is empty';
+  if (!/^[A-Z][^.!?]*\.$/.test(sentence) || /[`*#|<>[\]_]|https?:/.test(sentence)) return 'it is not one plain sentence';
+  if (sentence.split(/\s+/).length > GROUP_SENTENCE_WORDS) return 'it is too long';
+  const material = new Set(terms(members.map((m) => `${m.name} ${m.description}`).join('\n')));
+  if (!grounded(sentence, material)) return 'it says what the descriptions do not';
+  const own = new Set(terms(sentence));
+  const about = members.filter((m) => terms(m.description).some((t) => own.has(t))).length;
+  if (about < Math.min(2, members.length)) return 'it is about only one of them';
+  if (copiesPurpose(sentence, [...members.map((m) => m.description), ...folders.values()])) return 'it repeats one description';
+  return '';
+}
+
+// A document's files and its sub-documents' files (see partDocuments in parts.js).
+const docFiles = (doc) => [...doc.files, ...doc.subs.flatMap(docFiles)];
+
 // Plans a large project's documents (see parts.js): a document for each top-level part, named
-// after its package or folder, and its sub-documents, named after their subfolders. The model
-// names no part: it only divides a sub-document still too big for one, within its own folder,
-// while the part documents keep PART_DOC_MINUTES each before the deadline, and by clustering
-// after that. Returns { layers }, each part before its sub-documents, which have part set to
-// its name.
-async function planPartLayers({ files, packages, fileInfo, folders, purposeOf, importsOf, importedBy, divide, taken, splits, deadline, now }) {
+// after its package or folder, and its sub-documents, named after their packages and
+// subfolders, at most MAX_DEPTH deep. The model names no document: it only divides one still
+// too big, within its own folder, and sums up a part that groups several, while the part
+// documents keep PART_DOC_MINUTES each before the deadline; after that, a document is divided
+// by clustering. Returns { layers }, each document before its sub-documents, which have part
+// set to the names of the documents above them, joined by "/".
+async function planPartLayers({ files, packages, folders, purposeOf, importsOf, importedBy, divide, describeGroup, taken, splits, deadline, now }) {
   const parts = topParts(files, packages);
   for (const part of parts) taken.add(part.name.toLowerCase());
   const modelUntil = deadline - parts.length * PART_DOC_MINUTES * 60000;
   const layers = [];
   let subCount = 0;
-  for (const part of parts) {
-    const { own, subs } = partDocuments(part);
+  // Adds the layers of docs, the sub-documents of the document whose names, down from its part,
+  // are `above`.
+  const addDocs = async (docs, above, aboveName) => {
     const entries = [];
-    for (const sub of subs) {
-      if (!sub.divide) {
-        entries.push({ name: sub.name, description: '', files: sub.files });
+    for (const doc of docs) {
+      const description = doc.package ? partDescription(docFiles(doc), folders) : '';
+      if (!doc.divide) {
+        entries.push({ name: doc.name, description, files: doc.files, doc });
         continue;
       }
-      const group = { folder: sub.folder, folders: [sub.folder], files: sub.files };
-      const maxParts = Math.min(MAX_PARTS, Math.max(2, Math.ceil(sub.files.length / SUB_ABOVE)));
-      const useModel = now() < modelUntil;
-      const pieces = await divide(group, maxParts, { useModel, reason: 'the time left went to the part documents', noun: 'documents' });
+      const group = { folder: doc.folder, folders: [doc.folder], files: doc.files };
+      const maxParts = Math.min(MAX_PARTS, Math.max(2, Math.ceil(doc.files.length / SUB_ABOVE)));
+      const pieces = await divide(group, maxParts, { useModel: now() < modelUntil, reason: 'the time left went to the part documents', noun: 'documents' });
       if (pieces.length < 2) {
-        entries.push({ name: sub.name, description: '', files: sub.files });
+        entries.push({ name: doc.name, description, files: doc.files });
         continue;
       }
       for (const piece of pieces) {
         // A piece the model did not name is named after its folder and its most central file,
-        // and a piece of the part's own files after the part.
-        const name = piece.name || `${sub.rest ? part.name : sub.name} ${partWord(piece.files, importsOf)}`;
+        // and a piece of a document's own files after that document.
+        const name = piece.name || `${doc.rest ? aboveName : doc.name} ${partWord(piece.files, importsOf)}`;
         entries.push({ name, description: piece.description || purposeSentence(piece.files, purposeOf, importedBy), files: piece.files });
       }
     }
-    // Names are unique within a part.
+    // Names are unique within a document, never its own, and never hold "/".
     const used = new Set();
     for (const entry of entries) {
+      entry.name = entry.name.replace(/\//g, ' ').trim();
       const base = entry.name;
-      for (let n = 2; used.has(entry.name.toLowerCase()) || entry.name.toLowerCase() === part.name.toLowerCase(); n++) entry.name = `${base} ${n}`;
+      for (let n = 2; used.has(entry.name.toLowerCase()) || entry.name.toLowerCase() === aboveName.toLowerCase(); n++) entry.name = `${base} ${n}`;
       used.add(entry.name.toLowerCase());
     }
-    layers.push({ name: part.name, description: partDescription(part.files, folders), files: own });
-    layers.push(...entries.map((entry) => ({ ...entry, part: part.name })));
-    subCount += entries.length;
+    for (const { doc, ...entry } of entries) {
+      layers.push({ ...entry, part: above });
+      subCount++;
+      if (doc && doc.subs.length) await addDocs(doc.subs, `${above}/${entry.name}`, entry.name);
+    }
+  };
+  let packageCount = 0;
+  for (const part of parts) {
+    const { own, subs } = partDocuments(part);
+    const at = layers.length;
+    await addDocs(subs, part.name, part.name);
+    let description = partDescription(part.files, folders);
+    if (part.folded) {
+      // A part of several is described by them, never by one of its folders' summaries.
+      const members = layers.slice(at).filter((l) => l.part === part.name);
+      const isPackage = new Map(part.folded.map((m) => [m.name.toLowerCase(), m.package]));
+      description = await describeGroup(part, members.map((m) => ({ name: m.name, description: m.description, package: Boolean(isPackage.get(m.name.toLowerCase())) })), { useModel: now() < modelUntil });
+    }
+    layers.splice(at, 0, { name: part.name, description, files: own });
+    packageCount += part.folded ? part.folded.filter((m) => m.package).length : Number(part.package);
   }
-  const packageParts = parts.filter((p) => p.package).length;
-  splits.unshift(`the project is documented as ${parts.length} parts (${packageParts} ${packageParts === 1 ? 'package' : 'packages'}) with ${subCount} ${subCount === 1 ? 'sub-document' : 'sub-documents'}`);
+  splits.unshift(`the project is documented as ${parts.length} parts (${packageCount} ${packageCount === 1 ? 'package' : 'packages'}) with ${subCount} ${subCount === 1 ? 'sub-document' : 'sub-documents'}`);
   return { layers };
 }
 
@@ -415,7 +491,7 @@ async function planPartLayers({ files, packages, fileInfo, folders, purposeOf, i
 // model (see split.js), or by clustering its imports when the model's answers break the rules;
 // splits gets one line for each, saying which.
 // A large project (see parts.js) is planned by planPartLayers, and each layer then has part, the
-// name of its part, when it is a sub-document. allFiles: every tracked path, for finding the
+// names of the documents above it, when it is a sub-document. allFiles: every tracked path, for finding the
 // packages. deadline: the time the layer docs stop starting.
 async function planGroundedLayers({ files, allFiles = files, fileInfo, folders = new Map(), readSource = () => null, call, contextTokens, promptChars = 4000, styleRules = '', errors = [], splits = [], deadline = Infinity, now = Date.now }) {
   // Loaded here, not at the top: it loads typescript, and the pre-check must run without it.
@@ -476,7 +552,8 @@ async function planGroundedLayers({ files, allFiles = files, fileInfo, folders =
 
   const packages = findPackages(allFiles, readSource);
   if (isLargeProject(files, packages)) {
-    return planPartLayers({ files, packages, fileInfo, folders, purposeOf, importsOf, importedBy, divide, taken, splits, deadline, now });
+    const describeGroup = (part, members, { useModel }) => groupDescription(part, members, { call, folders, contextTokens, promptChars, styleRules, errors, useModel });
+    return planPartLayers({ files, packages, folders, purposeOf, importsOf, importedBy, divide, describeGroup, taken, splits, deadline, now });
   }
 
   const steps = splitSteps(folderGroups(files, importsOf), importsOf);
@@ -543,4 +620,4 @@ async function planGroundedLayers({ files, allFiles = files, fileInfo, folders =
   return { layers: layers.sort((a, b) => a.at - b.at).map(({ name, description, files: layerFiles }) => ({ name, description, files: layerFiles })) };
 }
 
-module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupFiles, layersPrompt, partDescription, planGroundedLayers, purposeSentence, supports };
+module.exports = { GENERIC_NAMES, LAYERS_SCHEMA, MAX_LAYERS, SPLIT_ABOVE, copiesPurpose, folderName, groupDescription, groupFiles, groupSentenceProblem, layersPrompt, partDescription, planGroundedLayers, purposeSentence, supports };

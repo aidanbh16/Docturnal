@@ -121,7 +121,7 @@ function rankFiles({ files, allFiles, readText, packageJson, activity = new Map(
 function selectBatch(ranked, layers, size) {
   const count = (name) => layers.filter((l) => l.name === name).length;
   const title = (layer) => {
-    const part = layer.part && layers.find((l) => !l.part && l.slug === layer.part);
+    const part = layer.part && layers.find((l) => (l.part ? `${l.part}/${l.slug}` : l.slug) === layer.part);
     return part && count(layer.name) > 1 ? `${part.name} ${layer.name}` : layer.name;
   };
   const layerOf = new Map();

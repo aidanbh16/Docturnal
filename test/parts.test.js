@@ -1,8 +1,9 @@
 'use strict';
 
 // A large project is documented as a hierarchy: a part for each workspace package and each
-// other top-level folder, with sub-documents for a big part's subfolders and its tests. The
-// layout is checked on a project shaped like excalidraw/excalidraw (788 files), with model time
+// other top-level folder, with sub-documents for a big document's subfolders and its tests, at
+// most three levels deep. The layout is checked on a project shaped like excalidraw/excalidraw
+// (788 files in 15 parts, so packages/ is grouped as one), with model time
 // simulated at the calibrated speeds (see speed-model.js): every part's doc is written in the
 // first run, within the 90-minute budget, and the sub-documents that do not fit follow on the
 // next run. A small project, such as Docturnal's own, keeps its flat layers.
@@ -37,14 +38,17 @@ test('the state keeps a sub-document\'s doc name and part, and drops anything th
     const layer = (slug, part) => ({ name: slug, slug, ...(part === undefined ? {} : { part }), description: '', files: [] });
     fs.writeFileSync(path.join(dir, '.docturnal/state.json'), JSON.stringify({
       version: 1,
-      layers: [layer('excalidraw'), layer('components', 'excalidraw'), layer('evil', '../x'), layer('worse', 'a/b')],
-      docs: ['excalidraw', 'excalidraw/components', '../escape', 'a/b/c', 'a//b'],
-      staleDocs: ['README', 'excalidraw/tests', '/abs'],
+      layers: [
+        layer('packages'), layer('excalidraw', 'packages'), layer('components', 'packages/excalidraw'),
+        layer('evil', '../x'), layer('worse', 'a/b/c'), layer('odd', 'a//b'), layer('up', 'a/..'),
+      ],
+      docs: ['packages', 'packages/excalidraw', 'packages/excalidraw/components', '../escape', 'a/b/c/d', 'a//b', 'a/../b'],
+      staleDocs: ['README', 'packages/excalidraw/tests', '/abs'],
     }));
     const state = readState(dir);
-    assert.deepStrictEqual(state.layers.map((l) => [l.slug, l.part]), [['excalidraw', undefined], ['components', 'excalidraw']]);
-    assert.deepStrictEqual(state.docs, ['excalidraw', 'excalidraw/components']);
-    assert.deepStrictEqual(state.staleDocs, ['README', 'excalidraw/tests']);
+    assert.deepStrictEqual(state.layers.map((l) => [l.slug, l.part]), [['packages', undefined], ['excalidraw', 'packages'], ['components', 'packages/excalidraw']]);
+    assert.deepStrictEqual(state.docs, ['packages', 'packages/excalidraw', 'packages/excalidraw/components']);
+    assert.deepStrictEqual(state.staleDocs, ['README', 'packages/excalidraw/tests']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -82,6 +86,12 @@ test('a batch names a sub-document with its part when another layer has its name
   ];
   const ranked = ['m.test.ts', 'e.test.ts', 'm.ts'].map((p) => ({ path: p }));
   assert.deepStrictEqual(selectBatch(ranked, layers, 2), { files: ['m.test.ts', 'e.test.ts'], layers: ['Math Tests', 'Element Tests'] });
+  // A third-level document is named with the document it is in.
+  const nested = [
+    { name: 'Packages', slug: 'packages', files: [] }, { name: 'Math', slug: 'math', part: 'packages', files: [] },
+    { name: 'Tests', slug: 'tests', part: 'packages/math', files: ['m.test.ts'] }, { name: 'Tests', slug: 'tests', part: 'scripts', files: ['s.test.ts'] },
+  ];
+  assert.deepStrictEqual(selectBatch([{ path: 'm.test.ts' }], nested, 1).layers, ['Math Tests']);
 });
 
 test('packages come from manifests and workspace settings, never the root, test fixtures, or node_modules', () => {
@@ -146,8 +156,126 @@ test('a part\'s documents: tests apart, subfolders split off, tiny ones kept wit
   assert.strictEqual(partDocuments(parts[0]).subs.length, 14);
 });
 
-// The part a file belongs to: the package that holds it, else its top-level folder.
-const partOfFile = (file) => Object.keys(PACKAGES).find((d) => file.startsWith(`${d}/`)) || (file.includes('/') ? file.split('/')[0] : '.');
+test('a document of more than 40 code files gets sub-documents by its subfolders at any level, never deeper than 3', () => {
+  const many = (dir, n, ext = 'ts') => Array.from({ length: n }, (_, i) => `${dir}/f${String(i).padStart(2, '0')}.${ext}`);
+  // packages/ has more parts than the README lists, so it is one part with each package below it.
+  const files = [
+    ...Array.from({ length: 13 }, (_, i) => `packages/p${i}/index.ts`),
+    ...many('packages/big', 10), ...many('packages/big/ui', 30), ...many('packages/big/ui/menus', 20), ...many('packages/big/ui/icons', 20),
+    ...many('packages/big/flat', 45), ...many('packages/big/tiny', 3), ...many('packages/big/tests', 6, 'test.ts'),
+  ];
+  const packages = [...Array.from({ length: 13 }, (_, i) => ({ folder: `packages/p${i}`, name: '' })), { folder: 'packages/big', name: '@acme/big' }];
+  const [part] = topParts(files, packages);
+  assert.strictEqual(part.name, 'Packages');
+  const docs = partDocuments(part);
+  const big = docs.subs.find((s) => s.folder === 'packages/big');
+  const show = (doc) => [doc.name, doc.files.length, doc.divide, doc.subs.map(show)];
+  // Level 2 is the package, level 3 its subfolders. ui/ is too big for one document, but at the
+  // third level it is divided within itself rather than split by its own subfolders; so is flat/,
+  // which has none. tiny/ stays with the package's own files.
+  assert.deepStrictEqual(show(big), ['Acme Big', 13, false, [['Flat', 45, true, []], ['UI', 70, true, []], ['Tests', 6, false, []]]]);
+  // A top-level part has room for one more level: its big subfolder gets its subfolders.
+  const alone = partDocuments({ folder: 'packages/big', name: 'Big', files: files.filter((f) => f.startsWith('packages/big/')) });
+  assert.deepStrictEqual(alone.subs.map(show), [
+    ['Flat', 45, true, []],
+    ['UI', 30, false, [['Icons', 20, false, []], ['Menus', 20, false, []]]],
+    ['Tests', 6, false, []],
+  ]);
+});
+
+test('a part that groups packages is described by them: their names, and one checked sentence about them all', async () => {
+  const { groupDescription, groupSentenceProblem } = require('../src/layers');
+  const members = [
+    { name: 'Common', description: 'Holds shared constants and color helpers.', package: true },
+    { name: 'Element', description: 'Creates, measures, and binds drawing elements.', package: true },
+    { name: 'Math', description: 'Computes points, vectors, and curve geometry.', package: true },
+  ];
+  const folders = new Map([['packages/utils', 'Provides utility and helper functions for exporting and analytics tracking.']]);
+  const answer = (sentence) => async () => JSON.stringify({ sentence });
+  const part = { folder: 'packages' };
+  const holds = "Holds the project's 3 packages: Common, Element, and Math.";
+  const good = 'Together they hold the shared helpers, drawing elements, and geometry the editor uses.';
+  assert.strictEqual(await groupDescription(part, members, { call: answer(good), folders }), `${holds} ${good}`);
+  // A sentence that only repeats one folder's summary, is about one package, or says what the
+  // descriptions do not, is dropped, and so is one when the request fails or time is short.
+  const errors = [];
+  assert.strictEqual(await groupDescription(part, members, { call: answer('Provides utility and helper functions for exporting and analytics tracking.'), folders, errors }), holds);
+  assert.match(errors[0], /^layers: the sentence describing packages\/ was dropped: /);
+  assert.strictEqual(groupSentenceProblem('Creates, measures, and binds drawing elements for the canvas.', members, folders), 'it is about only one of them');
+  assert.strictEqual(groupSentenceProblem('Together they sync files to cloud storage and track payments.', members, folders), 'it says what the descriptions do not');
+  assert.strictEqual(groupSentenceProblem('Together they hold `helpers` and elements.', members, folders), 'it is not one plain sentence');
+  assert.strictEqual(groupSentenceProblem('Creates, measures, and binds drawing elements and points.', members, folders), 'it repeats one description');
+  assert.strictEqual(await groupDescription(part, members, { call: async () => { throw new Error('down'); }, folders }), holds);
+  assert.strictEqual(await groupDescription(part, members, { call: answer(good), folders, useModel: false }), holds);
+  // Parts that are not all packages are counted as parts.
+  assert.match(await groupDescription(part, [{ ...members[0], package: false }, members[1]], {}), /^Holds the project's 2 parts: Common and Element\.$/);
+});
+
+test('three-level documents keep their doc names, from the plan and from the previous run', () => {
+  const { docName, normalizeLayers } = require('../src/docs');
+  const files = ['packages/x/a.ts', 'packages/x/ui/b.ts', 'packages/x/ui/c.ts', 'packages/x/ui/deep/f.ts', 'packages/y/d.ts', 'scripts/e.js'];
+  const planned = normalizeLayers({
+    layers: [
+      { name: 'Packages', description: "Holds the project's 2 packages: X and Y. Together they draw and store shapes.", files: [] },
+      { name: 'X', part: 'Packages', files: ['packages/x/a.ts'] },
+      { name: 'UI', part: 'Packages/X', files: ['packages/x/ui/b.ts', 'packages/x/ui/c.ts'] },
+      { name: 'Deep', part: 'Packages/X/UI', files: ['packages/x/ui/deep/f.ts'] },
+      { name: 'Y', part: 'Packages', files: ['packages/y/d.ts'] },
+      { name: 'Scripts', files: ['scripts/e.js'] },
+    ],
+  }, files);
+  const names = planned.map(docName);
+  // A fourth level is not kept: its file goes to the closest document.
+  assert.deepStrictEqual(names, ['packages', 'packages/x', 'packages/x/ui', 'packages/y', 'scripts']);
+  assert.ok(planned.find((l) => l.slug === 'ui').files.includes('packages/x/ui/deep/f.ts'));
+  // The grouped part keeps the sentence after its list.
+  assert.strictEqual(planned[0].description, "Holds the project's 2 packages: X and Y. Together they draw and store shapes.");
+  // The next run reads them back by doc name.
+  const again = normalizeLayers({ layers: [] }, files, { previous: planned });
+  assert.deepStrictEqual(again.map(docName), names);
+  assert.deepStrictEqual(again.find((l) => l.slug === 'ui').files, ['packages/x/ui/b.ts', 'packages/x/ui/c.ts', 'packages/x/ui/deep/f.ts']);
+
+  // Slugs are unique within each document's folder, so "tests" can be in docs/x/ and in
+  // docs/packages/x/.
+  const twice = normalizeLayers({
+    layers: [
+      { name: 'X', files: ['x/a.ts'] }, { name: 'Tests', part: 'X', files: ['x/a.test.ts'] },
+      { name: 'Packages', files: [] }, { name: 'X', part: 'Packages', files: ['packages/x/a.ts'] }, { name: 'Tests', part: 'Packages/X', files: ['packages/x/a.test.ts'] },
+    ],
+  }, ['x/a.ts', 'x/a.test.ts', 'packages/x/a.ts', 'packages/x/a.test.ts']);
+  assert.deepStrictEqual(twice.map(docName), ['x', 'x/tests', 'packages', 'packages/x', 'packages/x/tests']);
+});
+
+test('a document\'s prompt has the folders of every document below it, and stays within the size limit', () => {
+  const { DOC_PROMPT_CHARS, collectProjectFacts, layerDocPrompt } = require('../src/docs');
+  const facts = collectProjectFacts(() => null, []);
+  const layers = [
+    { name: 'Packages', slug: 'packages', description: 'Holds packages.', files: [] },
+    { name: 'X', slug: 'x', part: 'packages', description: 'Draws shapes.', files: ['packages/x/a.ts'] },
+    { name: 'UI', slug: 'ui', part: 'packages/x', description: 'Shows menus.', files: ['packages/x/ui/b.ts'] },
+  ];
+  const folders = new Map([['packages/x', 'Draws shapes on the canvas.'], ['packages/x/ui', 'Shows the menus and dialogs.']]);
+  const [system, user] = layerDocPrompt({ layer: layers[0], layers, fileInfo: new Map(), facts, readSource: () => null, projectName: 'p', folders });
+  assert.ok(user.content.includes('- packages/x/ui: Shows the menus and dialogs.'), user.content);
+  assert.ok(system.content.length > 0);
+  // Its doc keeps a sentence that only a folder two levels below supports.
+  const { buildLayerDoc } = require('../src/docs');
+  const doc = buildLayerDoc('# Packages\n\nHolds packages.\n\n## Overview\n\nIt shows the menus and the dialogs, and it draws the shapes on the canvas.\n', { layer: layers[0], layers, fileInfo: new Map(), folders });
+  assert.ok(doc.includes('It shows the menus and the dialogs, and it draws the shapes on the canvas.'), doc);
+  // A layer whose material is far larger than the limit: the system and user messages, and the
+  // line between them, stay within it.
+  const files = Array.from({ length: 300 }, (_, i) => `src/m${i}.ts`);
+  const big = { name: 'Big', slug: 'big', description: 'Holds a lot.', files };
+  const fileInfo = new Map(files.map((f) => [f, { summary: `Handles the long and detailed step number ${f} of the nightly run for every project.`, symbols: ['alpha', 'beta', 'gamma'] }]));
+  const messages = layerDocPrompt({ layer: big, layers: [big], fileInfo, facts, readSource: () => null, projectName: 'p', folders: new Map() });
+  assert.ok(messages.map((m) => m.content).join('\n').length <= DOC_PROMPT_CHARS);
+  const long = { ...big, description: 'Holds a lot. '.repeat(400) };
+  const cut = layerDocPrompt({ layer: long, layers: [long], fileInfo, facts, readSource: () => null, projectName: 'p', folders: new Map() });
+  assert.ok(cut.map((m) => m.content).join('\n').length <= DOC_PROMPT_CHARS);
+});
+
+// The package or top-level folder a file belongs to.
+const ownerOf = (file) => Object.keys(PACKAGES).find((d) => file.startsWith(`${d}/`)) || (file.includes('/') ? file.split('/')[0] : '.');
 
 const RUN_ENV = { BASE_BRANCH: 'main', INPUT_COMMENT_LEVEL: 'medium', INPUT_TIME_BUDGET_MINUTES: '90', INPUT_CONTEXT_TOKENS: '8192', INPUT_SELECTED_COMMENT_MODEL: 'comment-model', INPUT_SELECTED_DOCS_MODEL: 'docs-model' };
 
@@ -161,7 +289,7 @@ async function runOnce(repo, mock) {
   return { cwd, result, sim, logs, read, state: JSON.parse(read('.docturnal/state.json')), exists: (file) => fs.existsSync(path.join(cwd, file)) };
 }
 
-test('a project shaped like excalidraw: a part per package, no mixed packages, tests apart, big parts split by subfolder, within 90 minutes', { timeout: 900000 }, async () => {
+test('a project shaped like excalidraw: packages/ grouped as one part, packages/excalidraw split by its subfolders at the third level, within 90 minutes', { timeout: 900000 }, async () => {
   const mock = await startMockOllama();
   const repo = gitRepo();
   try {
@@ -174,23 +302,20 @@ test('a project shaped like excalidraw: a part per package, no mixed packages, t
     assert.strictEqual(Object.values(state.files).filter((e) => typeof e.summary === 'string').length, SOURCE_FILES);
     for (const call of sim.calls.filter((c) => c.model === 'docs-model')) assert.ok(call.promptChars <= DOC_PROMPT_LIMIT, `${call.label}: ${call.promptChars}`);
 
-    // One part for each package, named after it, and for each other top-level folder.
+    // 15 parts are more than the README lists, so packages/, which holds 7 of them, is one part.
+    const docName = (layer) => `${layer.part ? `${layer.part}/` : ''}${layer.slug}`;
+    const docOf = (layer) => `docs/${docName(layer)}.md`;
+    const subsOf = (layer) => state.layers.filter((l) => l.part === docName(layer));
     const parts = state.layers.filter((l) => !l.part);
-    assert.deepStrictEqual(parts.map((l) => l.name), [
-      'Top Level', 'Docs', 'With Nextjs', 'With Script in Browser', 'Excalidraw App', 'Excalidraw Common',
-      'Excalidraw Element', 'Excalidraw', 'Excalidraw Math', 'Excalidraw Utilities', 'Scripts',
-    ]);
-    assert.ok(parts.length <= 12);
-    assert.ok(first.logs.includes('Docturnal: the project is documented as 11 parts (9 packages) with 23 sub-documents'), first.logs.join('\n'));
-    // No document holds files of two parts, every file is in exactly one, and a document holds
-    // tests only or no tests.
+    assert.deepStrictEqual(parts.map((l) => l.name), ['Top Level', 'Docs', 'With Nextjs', 'With Script in Browser', 'Excalidraw App', 'Firebase Project', 'Packages', 'Public', 'Scripts']);
+    assert.ok(first.logs.includes('Docturnal: the project is documented as 9 parts (11 packages) with 30 sub-documents'), first.logs.join('\n'));
+    // No document holds files of two packages or folders, every file is in exactly one, a
+    // document holds tests only or no tests, and none is deeper than three levels.
     const seen = new Set();
-    for (const part of parts) {
-      const all = state.layers.filter((l) => l === part || l.part === part.slug).flatMap((l) => l.files);
-      assert.strictEqual(new Set(all.map(partOfFile)).size, 1, `${part.name} mixes parts`);
-    }
     for (const layer of state.layers) {
+      assert.ok(new Set(layer.files.map(ownerOf)).size <= 1, `${layer.name} mixes packages`);
       assert.ok(layer.files.every(isTestFile) || !layer.files.some(isTestFile), `${layer.name} mixes tests and code`);
+      assert.ok(docName(layer).split('/').length <= 3, docName(layer));
       for (const file of layer.files) {
         assert.ok(!seen.has(file), file);
         seen.add(file);
@@ -198,68 +323,92 @@ test('a project shaped like excalidraw: a part per package, no mixed packages, t
     }
     assert.strictEqual(seen.size, SOURCE_FILES);
 
-    // packages/excalidraw: its root files in its own doc, a sub-document for each subfolder,
-    // with components/ and actions/ divided within themselves, and its tests apart.
-    const subsOf = (slug) => state.layers.filter((l) => l.part === slug);
-    const excalidraw = parts.find((p) => p.name === 'Excalidraw');
-    assert.ok(excalidraw.files.length === 30 && excalidraw.files.every((f) => path.posix.dirname(f) === 'packages/excalidraw'));
-    const folderOf = (layer) => [...new Set(layer.files.map((f) => f.split('/').slice(0, 3).join('/')))];
-    const bySubfolder = subsOf(excalidraw.slug).map((l) => folderOf(l));
-    assert.ok(bySubfolder.every((folders) => folders.length === 1), 'a sub-document spans two subfolders');
-    assert.deepStrictEqual([...new Set(bySubfolder.flat())].sort(), ['actions', 'components', 'data', 'fonts', 'hooks', 'renderer', 'scene', 'tests'].map((s) => `packages/excalidraw/${s}`));
-    assert.strictEqual(bySubfolder.flat().filter((f) => f.endsWith('/components')).length, 4);
-    assert.strictEqual(bySubfolder.flat().filter((f) => f.endsWith('/actions')).length, 2);
-    assert.deepStrictEqual(subsOf(excalidraw.slug).filter((l) => ['Data', 'Fonts', 'Hooks', 'Renderer', 'Scene', 'Tests'].includes(l.name)).map((l) => l.files.length), [26, 22, 6, 12, 16, 90]);
-    // A package of fewer than 40 code files is one document, with its tests apart.
-    const common = parts.find((p) => p.name === 'Excalidraw Common');
-    assert.deepStrictEqual([common.files.length, subsOf(common.slug).map((l) => [l.name, l.files.length])], [22, [['Tests', 4]]]);
-    // A package with all of its 80 files in src/ is divided within src/.
-    const element = parts.find((p) => p.name === 'Excalidraw Element');
-    assert.strictEqual(element.files.length, 0);
-    assert.deepStrictEqual(subsOf(element.slug).map((l) => folderOf(l)[0]), ['packages/element/src', 'packages/element/src', 'packages/element/tests']);
+    // The grouped part lists its packages, and its one more sentence is about them, not one
+    // folder's summary.
+    const grouped = parts.find((p) => p.name === 'Packages');
+    const holds = "Holds the project's 7 packages: Excalidraw Common, Excalidraw Element, Excalidraw Eslint Config, Excalidraw, Excalidraw Math, Excalidraw Prettier Config, and Excalidraw Utilities.";
+    assert.ok(grouped.description.startsWith(`${holds} `), grouped.description);
+    const sentence = grouped.description.slice(holds.length + 1);
+    assert.match(sentence, /^[A-Z][^.]*\.$/);
+    assert.ok(!Object.values(state.folders).includes(sentence), sentence);
+    assert.deepStrictEqual(grouped.files, []);
+    assert.deepStrictEqual(subsOf(grouped).map((l) => l.name), ['Excalidraw Common', 'Excalidraw Element', 'Excalidraw Eslint Config', 'Excalidraw', 'Excalidraw Math', 'Excalidraw Prettier Config', 'Excalidraw Utilities']);
 
-    // Every part's doc is written before any sub-document's, code before tests, and the
-    // sub-documents that do not fit are left for the next run and named in the pull request.
-    const docCalls = sim.calls.filter((c) => /^docs\//.test(c.label)).map((c) => c.label);
-    const isPartDoc = (label) => !label.slice('docs/'.length).includes('/');
-    assert.strictEqual(docCalls.filter(isPartDoc).length, 11);
-    assert.ok(docCalls.findIndex((l) => !isPartDoc(l)) > docCalls.findLastIndex(isPartDoc));
-    const docOf = (layer) => `docs/${layer.part ? `${layer.part}/` : ''}${layer.slug}.md`;
+    // packages/excalidraw, at the second level, keeps its root files, with a third-level
+    // document for each of its subfolders: components/ and actions/ divided within themselves,
+    // and its tests apart.
+    const excalidraw = subsOf(grouped).find((l) => l.name === 'Excalidraw');
+    assert.strictEqual(docName(excalidraw), 'packages/excalidraw');
+    assert.ok(excalidraw.files.length === 30 && excalidraw.files.every((f) => path.posix.dirname(f) === 'packages/excalidraw'));
+    const third = subsOf(excalidraw);
+    assert.ok(third.every((l) => docName(l).startsWith('packages/excalidraw/') && subsOf(l).length === 0));
+    const folderOf = (layer) => [...new Set(layer.files.map((f) => f.split('/').slice(0, 3).join('/')))];
+    assert.ok(third.every((l) => folderOf(l).length === 1), 'a sub-document spans two subfolders');
+    assert.deepStrictEqual([...new Set(third.flatMap(folderOf))].sort(), ['actions', 'components', 'data', 'fonts', 'hooks', 'renderer', 'scene', 'tests'].map((s) => `packages/excalidraw/${s}`));
+    assert.strictEqual(third.filter((l) => folderOf(l)[0].endsWith('/components')).length, 4);
+    assert.strictEqual(third.filter((l) => folderOf(l)[0].endsWith('/actions')).length, 2);
+    assert.deepStrictEqual(['data', 'fonts', 'hooks', 'renderer', 'scene', 'tests'].map((s) => third.find((l) => l.slug === s)).map((l) => [docName(l), l.files.length]),
+      [['packages/excalidraw/data', 26], ['packages/excalidraw/fonts', 22], ['packages/excalidraw/hooks', 6], ['packages/excalidraw/renderer', 12], ['packages/excalidraw/scene', 16], ['packages/excalidraw/tests', 90]]);
+    // A package of fewer than 40 code files is one document, with its tests below it, and one
+    // with all of its 80 files in src/ is divided within src/.
+    const common = subsOf(grouped).find((l) => l.name === 'Excalidraw Common');
+    assert.deepStrictEqual([common.files.length, subsOf(common).map((l) => [l.name, l.files.length])], [22, [['Tests', 4]]]);
+    const element = subsOf(grouped).find((l) => l.name === 'Excalidraw Element');
+    assert.deepStrictEqual([element.files.length, subsOf(element).map((l) => folderOf(l)[0])], [0, ['packages/element/src', 'packages/element/src', 'packages/element/tests']]);
+
+    // Every part's doc is written first, then the sub-documents with the most files below them,
+    // then tests; the ones that do not fit are left for the next run and named in the pull request.
+    const byDoc = new Map(state.layers.map((l) => [docOf(l), l]));
+    const written = sim.calls.filter((c) => /^docs\//.test(c.label)).map((c) => byDoc.get(c.label));
+    assert.ok(written.every(Boolean));
+    assert.deepStrictEqual(written.slice(0, parts.length).map((l) => l.name), parts.map((l) => l.name));
+    const below = (layer) => layer.files.length + subsOf(layer).reduce((n, s) => n + below(s), 0);
+    const code = written.slice(parts.length).filter((l) => !l.files.every(isTestFile));
+    for (let i = 1; i < code.length; i++) assert.ok(below(code[i]) <= below(code[i - 1]), `${code[i].name} before ${code[i - 1].name}`);
+    const firstTest = written.findIndex((l) => l.files.length && l.files.every(isTestFile));
+    assert.ok(firstTest === -1 || written.slice(firstTest).every((l) => l.files.every(isTestFile)));
     assert.ok(parts.every((p) => first.exists(docOf(p))));
     const left = state.layers.filter((l) => l.part && !first.exists(docOf(l)));
-    assert.ok(left.length > 0 && left.length < 23, `${left.length} sub-documents left`);
-    assert.deepStrictEqual(state.staleDocs.filter((s) => s !== 'README').sort(), left.map((l) => `${l.part}/${l.slug}`).sort());
+    assert.ok(left.length > 0 && left.length < 30, `${left.length} sub-documents left`);
+    assert.deepStrictEqual(state.staleDocs.filter((s) => s !== 'README').sort(), left.map(docName).sort());
     const lastRun = first.read('.docturnal/last-run.md');
     assert.match(lastRun, new RegExp(`- \\*\\*Documentation:\\*\\* every file is read, and \\d+ layer documents and the README are written\\. ${left.length} more documents follow on the next run\\.`));
     for (const layer of left) assert.ok(lastRun.includes(`\`${docOf(layer)}\`: time budget, after the part documents`), docOf(layer));
 
-    // Links both ways: a part's doc lists its sub-documents, linking the written ones, and each
-    // sub-document links its part and the README.
-    const partDoc = first.read(docOf(excalidraw));
-    for (const sub of subsOf(excalidraw.slug)) {
-      if (first.exists(docOf(sub))) {
-        assert.ok(partDoc.includes(`- [${sub.name}](${excalidraw.slug}/${sub.slug}.md): `), sub.name);
-        const subDoc = first.read(docOf(sub));
-        assert.ok(subDoc.includes(`- [Excalidraw](../${excalidraw.slug}.md): `));
-        assert.ok(subDoc.includes('- [Project README](../../README.md)'));
-      } else {
-        assert.ok(partDoc.includes(`- ${sub.name}: `) && !partDoc.includes(`](${excalidraw.slug}/${sub.slug}.md)`), sub.name);
+    // Links both ways at every level: a doc lists its sub-documents, linking the written ones,
+    // and each sub-document links the doc it is in and the README.
+    const checkLinks = (run, layer) => {
+      const doc = run.read(docOf(layer));
+      const depth = docName(layer).split('/').length;
+      for (const sub of subsOf(layer)) {
+        if (run.exists(docOf(sub))) {
+          assert.ok(doc.includes(`- [${sub.name}](${layer.slug}/${sub.slug}.md): `), `${layer.name} lists ${sub.name}`);
+          const subDoc = run.read(docOf(sub));
+          assert.ok(subDoc.includes(`- [${layer.name}](../${layer.slug}.md): `), `${sub.name} links ${layer.name}`);
+          assert.ok(subDoc.includes(`- [Project README](${'../'.repeat(depth + 1)}README.md)`), `${sub.name} links the README`);
+        } else {
+          assert.ok(doc.includes(`- ${sub.name}: `) && !doc.includes(`](${layer.slug}/${sub.slug}.md)`), sub.name);
+        }
       }
-    }
+    };
+    checkLinks(first, grouped);
+    checkLinks(first, excalidraw);
     // The README lists the parts, each with links to its written sub-documents.
     const readme = first.read('README.md');
     const table = readme.slice(readme.indexOf('<!-- docturnal:layers -->'), readme.indexOf('<!-- /docturnal:layers -->'));
     assert.match(table, /\| Part \| Description \| Details \|/);
-    assert.strictEqual(table.split('\n').filter((l) => l.startsWith('| [')).length, 11);
-    for (const layer of state.layers.filter((l) => l.part)) assert.strictEqual(table.includes(`(docs/${layer.part}/${layer.slug}.md)`), first.exists(docOf(layer)), layer.name);
+    assert.strictEqual(table.split('\n').filter((l) => l.startsWith('| [')).length, parts.length);
+    assert.ok(table.includes(`| [Packages](docs/packages.md) | ${holds} `));
+    for (const layer of subsOf(grouped)) assert.strictEqual(table.includes(`(docs/${docName(layer)}.md)`), first.exists(docOf(layer)), layer.name);
 
-    // The next run writes the sub-documents left, and each part's list then links them all.
+    // The next run writes the sub-documents left, and each list then links them all.
     const second = await runOnce(repo, mock);
     assert.ok(second.state.layers.every((l) => second.exists(docOf(l))), second.logs.filter((l) => /docs\//.test(l)).join('\n'));
     assert.deepStrictEqual(second.state.staleDocs, []);
-    const listed = second.read(docOf(excalidraw));
-    for (const sub of subsOf(excalidraw.slug)) assert.ok(listed.includes(`- [${sub.name}](${excalidraw.slug}/${sub.slug}.md): `), sub.name);
-    assert.ok(!listed.includes('not written yet'));
+    for (const layer of [grouped, excalidraw]) {
+      checkLinks(second, layer);
+      assert.ok(!second.read(docOf(layer)).includes('not written yet'), layer.name);
+    }
   } finally {
     await mock.close();
     repo.cleanup();
