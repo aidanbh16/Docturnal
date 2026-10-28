@@ -6,7 +6,12 @@ This layer contains test files that define and verify various aspects of the pro
 
 ## Overview
 
-This folder contains test files for various components of the app, including in-memory data structures, mock services, and unit tests for specific features.
+The Tests layer is responsible for ensuring that all parts of the project work as expected. It includes unit tests, integration tests, and end-to-end tests to cover different aspects of the application.
+
+## Responsibilities
+
+- **End-to-End Tests**: Tests that simulate real-world user interactions to ensure the application functions correctly.
+- **First Run**: Tests for the initial setup and configuration of the application.
 
 ## Key components
 
@@ -17,8 +22,8 @@ This folder contains test files for various components of the app, including in-
 | [`app/tests/mock-github.mjs`](../app/tests/mock-github.mjs) | An in-memory stand-in for the GitHub REST API calls the app makes. | `createMockGitHub`, `argValue` |
 | [`app/tests/pkcs8.spec.ts`](../app/tests/pkcs8.spec.ts) | Tests PKCS#1 to PKCS#8 conversion. |  |
 | [`app/tests/scheduler.spec.ts`](../app/tests/scheduler.spec.ts) | Tests local time and date functions. | `localTime`, `localDate`, `runs` |
-| [`app/tests/setup.spec.ts`](../app/tests/setup.spec.ts) | Tests setup and page script. | `setup`, `runPageScript` |
-| [`app/tests/webhook.spec.ts`](../app/tests/webhook.spec.ts) | Tests webhook functionality. | `sign`, `setup`, `installation`, `pushToUpdate` |
+| [`app/tests/setup.spec.ts`](../app/tests/setup.spec.ts) | This file sets up a testing environment for the application, including mock data, handlers, and setup functions for testing various scenarios. | `setup`, `createHandler`, `FakeKV`, `FakeQueue`, `createMockGitHub`, `ORIGIN` |
+| [`app/tests/webhook.spec.ts`](../app/tests/webhook.spec.ts) | This file contains unit tests for the webhook handler in the Docturnal project, focusing on signature validation, installation setup, and cron job execution. | `createHandler`, `createQueueHandler`, `createScheduledHandler`, `type Env`, `SettingsStore`, `createSession` |
 | [`test/action-steps.test.js`](../test/action-steps.test.js) | Which steps of action.yml run, from each step's if:, evaluated the way GitHub Actions does. | `steps`, `evaluate`, `running`, `names` |
 | [`test/anchors.test.js`](../test/anchors.test.js) | Anchors as a small model. | `lineOf` |
 | [`test/big-layers.test.js`](../test/big-layers.test.js) | Imports, purpose of, reads repository, layer named, section, items, reply. | `importsOf`, `purposeOf`, `readRepo`, `layerNamed`, `section`, `items` |
@@ -57,11 +62,13 @@ This folder contains test files for various components of the app, including in-
 
 Each folder contains specific test files that cover different aspects of the project.
 
+- **app/tests**: This folder includes test files for various components of the app, such as in-memory data structures, mock services, and unit tests for specific features.
+
 ## Configuration
 
 - Environment variables: `DOCTURNAL_SLOW_TESTS`, `GIT_CONFIG_GLOBAL`, `OLLAMA_HOST`, `OLLAMA_VERSION`, `SETTINGS`.
 - Action inputs: `backlog-batch-size`, `comment-level`, `context-tokens`, `docs-dir`, `docs-model`, `exclude`, `existing-code`, `extensions`, `job-timeout-minutes`, `model`, `path`, `time-budget-minutes`.
-- Configuration files: `.github/workflows/docturnal.yml`, `action.yml`, `app/tsconfig.json`, `app/wrangler.toml`, `pins/models.json`, `pins/ollama.json`.
+- Configuration files: `.docturnal/state.json`, `.github/workflows/docturnal.yml`, `action.yml`, `app/tsconfig.json`, `app/wrangler.toml`, `pins/models.json`, `pins/ollama.json`.
 
 ## Related layers
 

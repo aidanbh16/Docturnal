@@ -3,31 +3,53 @@
 ## Progress
 
 - **Documentation:** complete, with 7 layer documents and the README.
-- **Comments:** 15 of 88 files commented at the medium level.
-- **This pull request:** batch 1 of existing code, 15 files in the GitHub Integration and Configuration and State Management layers.
-- **Next:** batch 2 of existing code, after you merge or close this pull request. 73 existing files are left.
+- **Comments:** 17 of 88 files commented at the medium level.
+- **This pull request:** comments on 5 new or changed files.
+- **Next:** comments on existing code in batches of up to 15 files, starting with batch 2 and the most important files. 71 existing files are left.
 
-The latest run adds 11 comments to 3 files. Review the changes, then merge the pull request to keep them.
+The latest run adds 19 comments to 4 files, updates 2 docs and updates the README. Review the changes, then merge the pull request to keep them.
 
 ## Comments added
 
 | File | Comments added | Checked by a parser | Proposed comments |
 | --- | --- | --- | --- |
 | `app/src/handlers.ts` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `app/src/index.ts` | 6 | Yes (TypeScript) | proposed 11, 3 dropped by placement rules, 1 anchor not found, 1 restates the code, 6 added |
-| `app/src/setup.ts` | 4 | Yes (TypeScript) | proposed 20, 3 dropped by placement rules, 1 anchor not found, 10 dropped by the density limit, 1 inaccurate, 1 restates the code, 4 added |
-| `app/src/settings.ts` | 0 | Yes (TypeScript) | proposed 3, 2 dropped by placement rules, 1 anchor not found, 0 added |
-| `app/src/workflow.ts` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `app/src/scheduler.ts` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `app/src/session.ts` | 0 | Yes (TypeScript) | proposed 3, 1 dropped by placement rules, 2 restates the code, 0 added |
-| `app/src/github.ts` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `app/scripts/pkcs8.mjs` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `app/scripts/register.mjs` | 0 | Yes (TypeScript) | proposed 3, 1 dropped by placement rules, 1 anchor not found, 1 restates the code, 0 added |
-| `src/main.js` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `src/report.js` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `src/state.js` | 0 | Yes (TypeScript) | proposed 0, 0 added |
-| `src/readme.js` | 1 | Yes (TypeScript) | proposed 17, 8 dropped by placement rules, 4 dropped by the density limit, 1 inaccurate, 3 restates the code, 1 added |
-| `src/changes.js` | 0 | Yes (TypeScript) | proposed 0, 0 added |
+| `app/src/index.ts` | 1 | Yes (TypeScript) | proposed 15, 6 dropped by placement rules, 1 anchor not found, 3 dropped by the density limit, 4 restates the code, 1 added; earlier Docturnal comments: 6 kept |
+| `app/src/setup.ts` | 3 | Yes (TypeScript) | proposed 8, 3 dropped by placement rules, 1 anchor not found, 1 dropped by the density limit, 3 added; earlier Docturnal comments: 3 kept, 1 removed (within 5 lines of another comment: 1) |
+| `app/tests/setup.spec.ts` | 3 | Yes (TypeScript) | proposed 8, 1 dropped by placement rules, 4 anchor not found, 3 added |
+| `app/tests/webhook.spec.ts` | 12 | Yes (TypeScript) | proposed 46, 2 dropped by placement rules, 5 anchor not found, 5 dropped by the density limit, 2 inaccurate, 20 restates the code, 12 added |
+
+## Docs
+
+- Updated `docs/github-integration.md`
+- Updated `docs/tests.md`
+
+## README
+
+- Updated: "Project layout"
+
+## Left for the next run
+
+- `src/comments.js`: time budget
+- `src/process.js`: time budget
+- `src/restates.js`: time budget
+- `test/anchors.test.js`: time budget
+- `test/restates.test.js`: time budget
+- `test/mock-ollama.js`: time budget
+- `app/tests/mock-github.mjs`: time budget
+- `test/git-repo.js`: time budget
+- `test/edges.test.js`: time budget
+- `test/coverage.test.js`: time budget
+- `test/model-split.test.js`: time budget
+- `test/parts.test.js`: time budget
+- `test/e2e.sh`: time budget
+- `test/comments.test.js`: time budget
+- `test/helpers.js`: time budget
+- `test/big-layers.test.js`: time budget
+- `test/docs.test.js`: time budget
+- `test/ownership.test.js`: time budget
+- `test/supply-chain.test.js`: time budget
+- `test/heavy.test.js`: time budget
 
 ## Models
 

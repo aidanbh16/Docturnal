@@ -157,6 +157,7 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
     return new Response('ok\n', { status: 200 });
   }
 
+  // Registers a webhook handler for installation creation events.
   app.webhooks.on('installation.created', async ({ payload: p }) => {
     await queueSetups(p.installation.id, (p.repositories ?? []).map((r) => r.full_name), deps);
   });

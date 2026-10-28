@@ -1,37 +1,20 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-28T02:05:50.273Z",
+  "updatedAt": "2026-10-28T05:27:40.301Z",
   "commentLevel": "medium",
   "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
   "docsComplete": true,
   "batchesDone": 1,
   "pending": {
     "docs": false,
-    "changed": [],
-    "batch": {
-      "number": 1,
-      "layers": [
-        "GitHub Integration",
-        "Configuration and State Management"
-      ],
-      "files": [
-        "app/src/handlers.ts",
-        "app/src/index.ts",
-        "app/src/setup.ts",
-        "app/src/settings.ts",
-        "app/src/workflow.ts",
-        "app/src/scheduler.ts",
-        "app/src/session.ts",
-        "app/src/github.ts",
-        "app/scripts/pkcs8.mjs",
-        "app/scripts/register.mjs",
-        "src/main.js",
-        "src/report.js",
-        "src/state.js",
-        "src/readme.js",
-        "src/changes.js"
-      ]
-    }
+    "changed": [
+      "app/src/handlers.ts",
+      "app/src/index.ts",
+      "app/src/setup.ts",
+      "app/tests/setup.spec.ts",
+      "app/tests/webhook.spec.ts"
+    ],
+    "batch": null
   },
   "files": {
     "app/package.json": {
@@ -67,8 +50,8 @@
       "level": "medium"
     },
     "app/src/handlers.ts": {
-      "hash": "sha256-f63b77339037d1a1c6f7431208e9cfdade19d3e6e9c246588156fceb08c33530",
-      "summary": "Webhook and queue handlers.",
+      "hash": "sha256-ac24624334deb4044f796859e51c735f222933684055d12c01e12b3438c3072c",
+      "summary": "This file contains handlers for webhooks and queue operations in a GitHub Actions workflow. It manages repository setup, dispatching runs, and updating the workflow file. This file contains various utility functions for interacting with GitHub repositories and managing Docturnal workflows. It includes functions for reading and writing files, creating branches, and managing pull requests. This code handles the workflow update process for repositories, including proposing updates, setting up repositories, and offering workflow updates from the settings page. It manages pull requests, checks repository versions, and handles errors gracefully. This function dispatches a workflow based on the message's reason and installation ID, handling retries and skipping conditions.",
       "symbols": [
         "UPDATE_BRANCH",
         "SETUP_BRANCH",
@@ -80,27 +63,91 @@
         "WORKFLOW_UPDATE_PR_TITLE",
         "MAX_RETRIES",
         "DISPATCH_DELAY_SECONDS",
+        "NOT_REGISTERED_DELAY_SECONDS",
+        "QUEUE_BATCH_LIMIT",
+        "MAX_BODY",
         "SETUP_PR_BODY",
-        "workflowUpdateBody"
+        "ACTIVE_RUN_STATUSES",
+        "VERSION_CHANGES",
+        "changesSince",
+        "workflowUpdateBody",
+        "proposedVersion",
+        "FALLBACK_UPDATE_BODY",
+        "QueueMessage",
+        "Outcome",
+        "DONE",
+        "PathStyle",
+        "Deps",
+        "InfrastructureError",
+        "RepoRef",
+        "settingsUrl",
+        "withSettingsLink",
+        "errorStatus",
+        "errorMessage",
+        "retryAfterSeconds",
+        "retryDelay",
+        "failure",
+        "infrastructure",
+        "isProtectedBranchError",
+        "toBase64",
+        "fromBase64",
+        "realApiLogged",
+        "resetRealApiChecks",
+        "contentsRoute",
+        "logRealApiCheck",
+        "contentsRequest",
+        "readFile",
+        "writeWorkflowFile",
+        "createBranch",
+        "queueSetups",
+        "onRepositoriesRemoved",
+        "onInstallationDeleted",
+        "onSetupMerged"
       ],
       "level": "medium"
     },
     "app/src/index.ts": {
-      "hash": "sha256-1043564efa14b7de95532f4d13ddeb70b6cad514e764f158a8500339bdf0284f",
-      "summary": "The Docturnal GitHub App backend.",
+      "hash": "sha256-84c5a2f60cfe3617cbd1056f15605f5704734826f1d8b359a529fa014c21e1fd",
+      "summary": "This file defines the backend for the Docturnal GitHub App, which handles webhooks, serves the settings page, manages repository setups, and runs nightly runs. This file defines the main handlers for the application, including a fetch handler, a queue handler, and a scheduled handler. Each handler processes incoming requests and messages, handling setup, dispatch, and scheduled tasks.",
       "symbols": [
+        "App",
+        "Octokit",
+        "Deps",
+        "InfrastructureError",
+        "Outcome",
+        "PathStyle",
+        "QueueMessage",
+        "dispatchRun",
+        "failure",
+        "offerWorkflowUpdate",
+        "onInstallationDeleted",
+        "onRepositoriesRemoved",
+        "onPullRequestClosed",
+        "onSetupMerged",
+        "onUpdatePush",
+        "queueSetups",
+        "setUpRepository",
+        "workflowVersion",
         "Env",
         "Options",
-        "createHandler",
-        "createQueueHandler",
-        "createScheduledHandler",
-        "default",
         "normalizeEnv",
         "missingConfig",
+        "WEBHOOK_NEEDS",
+        "SETUP_NEEDS",
         "makeDeps",
         "makeApp",
         "containsInfrastructureError",
-        "handleWebhook"
+        "MAX_WEBHOOK_BYTES",
+        "handleWebhook",
+        "createHandler",
+        "withSecurityHeaders",
+        "routeRequest",
+        "createQueueHandler",
+        "createScheduledHandler",
+        "handleFetch",
+        "handleQueue",
+        "handleScheduled",
+        "runSchedule"
       ],
       "level": "medium",
       "comments": [
@@ -110,7 +157,7 @@
         },
         {
           "text": "// Creates dependencies for the app, including logging and settings.",
-          "anchor": "8192f0b364023a6b"
+          "anchor": "886f5a95a0d9f3d5"
         },
         {
           "text": "// Creates an Octokit app instance with the provided environment variables and options.",
@@ -119,6 +166,10 @@
         {
           "text": "// Handles incoming webhooks, verifying the signature and processing the payload.",
           "anchor": "691795daadb8924e"
+        },
+        {
+          "text": "// Registers a webhook handler for installation creation events.",
+          "anchor": "36af7d4eddc9719b"
         },
         {
           "text": "// Creates a handler function for incoming requests,\n// normalizing the environment and routing the request.",
@@ -176,21 +227,48 @@
       "level": "medium"
     },
     "app/src/setup.ts": {
-      "hash": "sha256-ca2e1e6137c783f03b1fe66b532bb35f0fb6874091d1b43dc6f5462b1c12e05a",
-      "summary": "The optional settings page at /setup.",
+      "hash": "sha256-6fdc03f3b5d03297606d4577334eda62b36d676c91d841eb35e9ef731b82f226",
+      "summary": "This file contains setup functions and constants for the Docturnal app, including GitHub sign-in, installation management, and setup options. This file contains setup-related functions for a Docturnal application, including handling time zones, user sessions, and GitHub sign-in processes. This function handles the setup process for Docturnal installations. It checks for prefetch requests, validates user input, and manages sign-in and settings updates. Handles incoming requests for setup operations, routing them to appropriate handlers based on method.",
       "symbols": [
-        "SESSION_COOKIE",
         "SetupEnv",
         "SetupOptions",
-        "formatHour",
-        "contentSecurityPolicy",
-        "readSession",
-        "createSession",
-        "handleSetup",
+        "Session",
+        "EXISTING_CODE_CHOICES",
+        "LEVEL_DESCRIPTIONS",
         "exchangeCode",
         "revokeToken",
-        "isPrefetch",
-        "userRequest"
+        "findUserInstallation",
+        "mayManage",
+        "escape",
+        "formatHour",
+        "timeZones",
+        "describe",
+        "STYLE",
+        "nonce",
+        "contentSecurityPolicy",
+        "page",
+        "errorPage",
+        "signInFailedPage",
+        "updateSection",
+        "formPage",
+        "cookieValue",
+        "sessionCookie",
+        "readSession",
+        "createSession",
+        "signInRedirect",
+        "handleGet",
+        "setup",
+        "sameOriginPost",
+        "handlePost",
+        "updateWorkflows",
+        "saveDetectedTimeZone",
+        "json",
+        "olderWorkflows",
+        "SettingsStore",
+        "Choices",
+        "DEFAULT_SETTINGS",
+        "WORKFLOW_VERSION",
+        "handleSetup"
       ],
       "level": "medium",
       "comments": [
@@ -203,12 +281,20 @@
           "anchor": "ba6ef71745c33326"
         },
         {
-          "text": "// Defines the global styles for the application.",
-          "anchor": "ccf2e907d7dec5e1"
+          "text": "// Returns a sorted array of supported time zones, including\n// 'UTC', the default setting, and the selected zone.",
+          "anchor": "e5db1e9c10450a36"
+        },
+        {
+          "text": "// Describes the schedule based on the settings' time, time zone, and comment level.",
+          "anchor": "4af47b90d119008a"
         },
         {
           "text": "// Installation ID must be a positive integer to proceed with sign-in or session retrieval.",
           "anchor": "b1d2c416cdad3192"
+        },
+        {
+          "text": "// Handles POST requests to update settings or manage workflows.",
+          "anchor": "d561956029b3d848"
         }
       ]
     },
@@ -268,24 +354,162 @@
       "level": null
     },
     "app/tests/setup.spec.ts": {
-      "hash": "sha256-1a19bf99a0d90e68be0a2c04446baf2b191c76a3fc0d25a6d929cf1d5c422d94",
-      "summary": "Tests setup and page script",
+      "hash": "sha256-95553d970693b9c1b9275bc7681c8c94b721ceae13e6924668ecc7d95ad784d2",
+      "summary": "This file sets up a testing environment for the application, including mock data, handlers, and setup functions for testing various scenarios. This file contains tests for various security features and settings of the Docturnal application, including sign-in, time zone saving, and settings management. These tests cover various aspects of the setup process, including user authentication, session management, and error handling during the sign-in process. These tests cover various scenarios related to the setup process, including handling signed-in sessions, GitHub installation checks, and workflow updates.",
       "symbols": [
         "setup",
-        "runPageScript"
+        "createHandler",
+        "FakeKV",
+        "FakeQueue",
+        "createMockGitHub",
+        "ORIGIN",
+        "PEM",
+        "ACME",
+        "START",
+        "fetchWithFailures",
+        "sleep",
+        "handle",
+        "get",
+        "post",
+        "signIn",
+        "advance",
+        "authorizeState",
+        "workflowYaml",
+        "WORKFLOW_PATH",
+        "WORKFLOW_VERSION",
+        "MAX_VERSION_CHECKS",
+        "UPDATE",
+        "cookie",
+        "csrf",
+        "form",
+        "t",
+        "response",
+        "page",
+        "queue",
+        "logs"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// The hiddenChecks option skips some checks to speed up the test.",
+          "anchor": "c579c41192457dc3"
+        },
+        {
+          "text": "// The failExchanges option simulates a failure during the GitHub check.",
+          "anchor": "675bc97efc5fe9e1"
+        },
+        {
+          "text": "// The hiddenChecks option skips some checks to speed up the test.",
+          "anchor": "c579c41192457dc3"
+        }
+      ]
     },
     "app/tests/webhook.spec.ts": {
-      "hash": "sha256-21d1030d734f8d4e63260df420cd43a6b7e125ba82b54d7e383b528f32c9991f",
-      "summary": "Tests webhook functionality",
+      "hash": "sha256-babcfcd5d7326cbc510cdcd268f71b6713c658f5adc5c176b629da7ed339526e",
+      "summary": "This file contains unit tests for the webhook handler in the Docturnal project, focusing on signature validation, installation setup, and cron job execution. These tests cover various scenarios related to webhook deliveries, settings management, and nightly runs in the Docturnal GitHub app. This file contains tests for the webhook functionality of the Docturnal project, covering various scenarios such as dispatching workflows, handling setup pull requests, and managing branch cleanup. This file contains tests for the Docturnal GitHub Actions workflow, including scenarios for handling long last-run.md files, ignoring pushes by non-bot users, logging failed pull request calls, and testing the workflow template and versions. This test suite covers various scenarios related to the nightly run process, including handling pull requests, managing declined updates, and ensuring the correct behavior of the GitHub API version. Tests that a pull request body includes a warning when the repository",
       "symbols": [
+        "createHandler",
+        "createQueueHandler",
+        "createScheduledHandler",
+        "type Env",
+        "SettingsStore",
+        "createSession",
+        "SESSION_COOKIE",
+        "WORKFLOW_PATH",
+        "WORKFLOW_VERSION",
+        "isOldTemplate",
+        "templateVersion",
+        "workflowYaml",
+        "FakeKV",
+        "FakeQueue",
+        "createMockGitHub",
+        "SECRET",
+        "generateKeyPairSync",
+        "createHmac",
         "sign",
         "setup",
+        "mockOptions",
+        "envOverrides",
+        "gh",
+        "queue",
+        "kv",
+        "logs",
+        "env",
+        "deliver",
+        "drain",
+        "cron",
         "installation",
-        "pushToUpdate"
+        "repos",
+        "id",
+        "action",
+        "account",
+        "login",
+        "repositories",
+        "sender",
+        "ref",
+        "deleted",
+        "repository",
+        "medium",
+        "current",
+        "beforeEach",
+        "describe",
+        "it",
+        "expect",
+        "401",
+        "rejects a bad signature",
+        "rejects a missing signature"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Tests the webhook handler's ability to reject a bad signature with a 401 status code.",
+          "anchor": "baf9bc855634541e"
+        },
+        {
+          "text": "// Tests the webhook handler's ability to handle a batch that\n// cannot be queued without stopping the batches after it.",
+          "anchor": "6b1a5f899f84b676"
+        },
+        {
+          "text": "// Describes the test case for deleting a branch when its pull request is merged.",
+          "anchor": "394596722bd25e80"
+        },
+        {
+          "text": "// Describes the test case for keeping docturnal/update\n// while a Docturnal run is in progress or queued.",
+          "anchor": "25ca40060718e9c1"
+        },
+        {
+          "text": "// Ensures only GitHub Actions bot pushes and pushes to the main branch are processed.",
+          "anchor": "03a0fcc3dad6ec51"
+        },
+        {
+          "text": "// Verifies no GitHub API calls were made for ignored pushes.",
+          "anchor": "b8fb73e290609abc"
+        },
+        {
+          "text": "// Ensures the workflow does not have a schedule or cron trigger.",
+          "anchor": "eb98d963b76cb0d9"
+        },
+        {
+          "text": "// Ensures the workflow does not have write permissions for actions.",
+          "anchor": "675c9fd520446d51"
+        },
+        {
+          "text": "// Tests the workflow versioning logic and updates.",
+          "anchor": "64eb8a44c25920d6"
+        },
+        {
+          "text": "// Runs the cron job at the specified time to check for updates.",
+          "anchor": "d506abb9ed5100a1"
+        },
+        {
+          "text": "// Seeds the KV store with necessary data for the test.",
+          "anchor": "79bbee881dec60e4"
+        },
+        {
+          "text": "// Ensures that a declined update is offered once more\n// after 14 days and never after a second decline.",
+          "anchor": "f734cc467da7dd5c"
+        }
+      ]
     },
     "app/tsconfig.json": {
       "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2",

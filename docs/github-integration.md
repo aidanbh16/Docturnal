@@ -6,7 +6,15 @@ This layer handles GitHub API version, requests, tasks, sessions, and workflows 
 
 ## Overview
 
-This layer is responsible for managing interactions with the GitHub API, including versioning, handling requests, scheduling tasks, managing session tokens, and configuring workflows for GitHub installations.
+This layer is responsible for managing interactions with GitHub, including handling API requests, scheduling tasks, managing sessions, and configuring workflows.
+
+## Responsibilities
+
+- Manages GitHub API version and handles requests.
+- Schedules tasks and manages session tokens.
+- Configures workflows for GitHub installations.
+- Handles webhooks and queue operations in a GitHub Actions workflow.
+- Manages repository setups and runs nightly runs.
 
 ## Key components
 
@@ -15,27 +23,24 @@ This layer is responsible for managing interactions with the GitHub API, includi
 | [`app/scripts/pkcs8.mjs`](../app/scripts/pkcs8.mjs) | Converts PKCS#1 to PKCS#8 for WebCrypto. | `toPkcs8Pem`, `checkPkcs8`, `derLength`, `der`, `pemBody`, `toPem` |
 | [`app/scripts/register.mjs`](../app/scripts/register.mjs) | Serves the app registration page on http://localhost:8790. |  |
 | [`app/src/github.ts`](../app/src/github.ts) | The GitHub REST API version the app uses. | `GITHUB_API_VERSION`, `withApiVersion` |
-| [`app/src/handlers.ts`](../app/src/handlers.ts) | Webhook and queue handlers. | `UPDATE_BRANCH`, `SETUP_BRANCH`, `WORKFLOW_UPDATE_BRANCH`, `LAST_RUN_PATH`, `BOT_LOGIN`, `UPDATE_PR_TITLE` |
-| [`app/src/index.ts`](../app/src/index.ts) | The Docturnal GitHub App backend. | `Env`, `Options`, `createHandler`, `createQueueHandler`, `createScheduledHandler`, `default` |
+| [`app/src/handlers.ts`](../app/src/handlers.ts) | This file contains handlers for webhooks and queue operations in a GitHub Actions workflow. | `UPDATE_BRANCH`, `SETUP_BRANCH`, `WORKFLOW_UPDATE_BRANCH`, `LAST_RUN_PATH`, `BOT_LOGIN`, `UPDATE_PR_TITLE` |
+| [`app/src/index.ts`](../app/src/index.ts) | This file defines the backend for the Docturnal GitHub App, which handles webhooks, serves the settings page, manages repository setups, and runs nightly runs. | `App`, `Octokit`, `Deps`, `InfrastructureError`, `Outcome`, `PathStyle` |
 | [`app/src/scheduler.ts`](../app/src/scheduler.ts) | The hourly cron. | `localHour`, `isDue`, `ScheduleEnv`, `runSchedule` |
 | [`app/src/session.ts`](../app/src/session.ts) | Signed, short-lived tokens for the setup page: the session cookie and the OAuth state. | `TokenPurpose`, `signToken`, `verifyToken`, `randomToken`, `sameToken`, `base64url` |
 | [`app/src/settings.ts`](../app/src/settings.ts) | Per-installation settings in Cloudflare KV. | `COMMENT_LEVELS`, `CommentLevel`, `EXISTING_CODE`, `ExistingCode`, `Settings`, `Choices` |
-| [`app/src/setup.ts`](../app/src/setup.ts) | The optional settings page at /setup. | `SESSION_COOKIE`, `SetupEnv`, `SetupOptions`, `formatHour`, `contentSecurityPolicy`, `readSession` |
+| [`app/src/setup.ts`](../app/src/setup.ts) | This file contains setup functions and constants for the Docturnal app, including GitHub sign-in, installation management, and setup options. | `SetupEnv`, `SetupOptions`, `Session`, `EXISTING_CODE_CHOICES`, `LEVEL_DESCRIPTIONS`, `exchangeCode` |
 | [`app/src/workflow.ts`](../app/src/workflow.ts) | The workflow file the app commits to each repository. | `WORKFLOW_PATH`, `WORKFLOW_FILE`, `WORKFLOW_VERSION`, `workflowYaml`, `isOldTemplate`, `templateVersion` |
 
 ## How it works
 
-- **app/scripts**: Contains scripts for handling PKCS#1 to PKCS#8 conversions and serving the app registration page.
-  - `pkcs8.mjs`: Converts PKCS#1 to PKCS#8 for WebCrypto.
-  - `register.mjs`: Serves the app registration page on http://localhost:8790.
-  - `github.ts`: Specifies the version of the GitHub REST API the app uses.
-  - `handlers.ts`: Manages webhook and queue handlers.
-  - `index.ts`: The backend for the Docturnal GitHub App.
-  - `scheduler.ts`: Manages the hourly cron job.
-  - `session.ts`: Manages signed, short-lived tokens for the setup page.
-  - `settings.ts`: Manages per-installation settings in Cloudflare KV.
-  - `setup.ts`: Manages the optional settings page at /setup.
-  - `workflow.ts`: Manages the workflow file the app commits to each repository.
+The files in this layer work together to manage interactions with GitHub.
+
+- `github.ts` defines the GitHub REST API version the app uses.
+- `index.ts` defines the backend for the Docturnal GitHub App, handling webhooks, serving the settings page, managing repository setups, and running nightly runs.
+- `session.ts` manages signed, short-lived tokens for the setup page, including the session cookie and the OAuth state.
+- `settings.ts` stores per-installation settings in Cloudflare KV.
+- `setup.ts` contains setup functions and constants for the Docturnal app, including GitHub sign-in, installation management, and setup options.
+- `workflow.ts` defines the workflow file the app commits to each repository.
 
 ## Configuration
 

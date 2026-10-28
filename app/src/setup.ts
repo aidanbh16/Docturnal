@@ -236,16 +236,18 @@ export function formatHour(hour: number): string {
   return hour < 12 ? `${hour} AM` : `${hour - 12} PM`;
 }
 
+// Returns a sorted array of supported time zones, including
+// 'UTC', the default setting, and the selected zone.
 function timeZones(selected: string): string[] {
   const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('timeZone') ?? [];
   return [...new Set([...supported, 'UTC', DEFAULT_SETTINGS.timeZone, selected])].sort();
 }
 
+// Describes the schedule based on the settings' time, time zone, and comment level.
 function describe(settings: Choices): string {
   return `every night at ${formatHour(settings.time)}, ${settings.timeZone} time, with ${settings.commentLevel === 'off' ? 'no comments (docs only)' : `${settings.commentLevel} comments`}`;
 }
 
-// Defines the global styles for the application.
 const STYLE = `
 :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --panel: #f6f8fa; --accent: #0969da; --accent-fg: #ffffff; --error: #cf222e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d; --panel: #151b23; --accent: #4493f8; --accent-fg: #0d1117; --error: #f85149; } }
@@ -562,6 +564,7 @@ function sameOriginPost(request: Request): boolean {
   }
 }
 
+// Handles POST requests to update settings or manage workflows.
 async function handlePost(request: Request, env: SetupEnv, options: SetupOptions): Promise<Response> {
   const now = options.now();
   const session = await readSession(request, env, now);
