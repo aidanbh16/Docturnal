@@ -65,6 +65,7 @@ function normalizeEnv(raw: Env): Env {
   };
 }
 
+// Checks if the required environment variables are set.
 function missingConfig(env: Env, needed: string[]): string | null {
   const bindings = ['SETUP_QUEUE', 'SETTINGS'];
   const missing = needed.filter((key) => !env[key as keyof Env]).map((key) => (bindings.includes(key) ? `the ${key} binding` : key));
@@ -74,6 +75,7 @@ function missingConfig(env: Env, needed: string[]): string | null {
 const WEBHOOK_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'WEBHOOK_SECRET', 'SETUP_QUEUE', 'SETTINGS'];
 const SETUP_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'SETTINGS'];
 
+// Creates dependencies for the app, including logging and settings.
 function makeDeps(env: Env, log: (line: string) => void, origin?: string): Deps {
   return {
     log,
@@ -87,6 +89,7 @@ function makeDeps(env: Env, log: (line: string) => void, origin?: string): Deps 
   };
 }
 
+// Creates an Octokit app instance with the provided environment variables and options.
 function makeApp(env: Env, options: Options): App {
   return new App({
     appId: env.APP_ID,
@@ -108,6 +111,7 @@ function containsInfrastructureError(err: unknown): boolean {
 
 const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024;
 
+// Handles incoming webhooks, verifying the signature and processing the payload.
 async function handleWebhook(request: Request, env: Env, options: Options, log: (line: string) => void): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed\n', { status: 405 });
   const missing = missingConfig(env, WEBHOOK_NEEDS);
@@ -187,6 +191,8 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
   return new Response('ok\n', { status: 200 });
 }
 
+// Creates a handler function for incoming requests,
+// normalizing the environment and routing the request.
 export function createHandler(options: Options = {}) {
   const log = options.log ?? ((line: string) => console.log(line));
   const route = routeRequest(options, log);
@@ -202,6 +208,7 @@ function withSecurityHeaders(response: Response): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Routes incoming requests to the appropriate handler based on the path.
 function routeRequest(options: Options, log: (line: string) => void) {
   return async (request: Request, rawEnv: Env, _ctx?: Pick<ExecutionContext, 'waitUntil'>): Promise<Response> => {
     const env = normalizeEnv(rawEnv);

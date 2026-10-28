@@ -12,6 +12,7 @@ export const SESSION_COOKIE = 'docturnal_session';
 const SESSION_SECONDS = 15 * 60;
 const STATE_SECONDS = 10 * 60;
 
+// Defines the structure of the environment object used for setup.
 export interface SetupEnv {
   CLIENT_ID: string;
   CLIENT_SECRET: string;
@@ -21,6 +22,7 @@ export interface SetupEnv {
   GITHUB_WEB_URL?: string;
 }
 
+// Defines the structure of the options object used for setup.
 export interface SetupOptions {
   fetch: typeof fetch;
   log: (line: string) => void;
@@ -217,6 +219,7 @@ function describe(settings: Choices): string {
   return `every night at ${formatHour(settings.time)}, ${settings.timeZone} time, with ${settings.commentLevel === 'off' ? 'no comments (docs only)' : `${settings.commentLevel} comments`}`;
 }
 
+// Defines the global styles for the application.
 const STYLE = `
 :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --panel: #f6f8fa; --accent: #0969da; --accent-fg: #ffffff; --error: #cf222e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d; --panel: #151b23; --accent: #4493f8; --accent-fg: #0d1117; --error: #f85149; } }
@@ -426,6 +429,7 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
       path = state.path ?? 'link';
       retry = state.retry === true;
     }
+    // Installation ID must be a positive integer to proceed with sign-in or session retrieval.
     if (!Number.isInteger(installationId) || installationId <= 0) {
       return errorPage(400, 'This link is missing the installation. Open the settings link in a Docturnal pull request.');
     }
