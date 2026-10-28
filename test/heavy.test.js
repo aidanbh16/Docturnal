@@ -144,20 +144,22 @@ test('heavy: a second run asks for nothing that already has a comment', async ()
 
 test('heavy: a failed request leaves its own targets for the next run and keeps the others', async () => {
   const handler = writing(describe);
-  // The request that holds payslip fails, with every target in it.
+  // The request that holds payslip fails, with every target in it, and so does payslip's
+  // retry alone; the other functions in it get theirs on their retries.
   let lost = [];
   const mock = await startMockOllama((body) => {
     if (kindOf(body) !== 'comments' || !targetsOf(body).some((t) => t.name === 'payslip')) return handler(body);
-    lost = targetsOf(body).filter((t) => t.kind === 'function').map((t) => t.name);
+    if (!lost.length) lost = targetsOf(body).filter((t) => t.kind === 'function').map((t) => t.name);
     return 'not json';
   });
   try {
     const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
     assert.ok(lost.includes('payslip') && lost.length < FUNCTIONS.length);
-    for (const name of FUNCTIONS) assert.strictEqual(hasBlockAbove(result.text, name), !lost.includes(name), name);
-    assert.strictEqual(result.failedRequests, 1);
+    for (const name of FUNCTIONS) assert.strictEqual(hasBlockAbove(result.text, name), name !== 'payslip', name);
+    assert.strictEqual(result.failedRequests, 2);
     assert.match(result.errors[0], /^lines [\d, ]+: the reply is not valid JSON$/);
-    assert.deepStrictEqual(result.undocumented.map((d) => d.name).sort(), [...lost].sort());
+    assert.match(result.errors[1], /^lines \d+: the reply is not valid JSON$/);
+    assert.deepStrictEqual(result.undocumented.map((d) => d.name), ['payslip']);
   } finally {
     await mock.close();
   }

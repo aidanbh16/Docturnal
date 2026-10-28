@@ -16,8 +16,9 @@ const { hasUnknownUrl } = require('./links');
 
 // A comment with a web link the repository does not already have.
 const LINK_NOT_FOUND = 'link not found in the repository';
+const ONLY_ITS_NAME = 'restates the code (only its name)';
 const { findOwned, recordFor } = require('./owned');
-const { restatement, restates } = require('./restates');
+const { onlyItsName, restatement, restates } = require('./restates');
 const { LOW_LINES, MEDIUM_BLOCK_SCORE, MEDIUM_LINES, parsedTargets } = require('./targets');
 const { verifyCandidates } = require('./verify');
 
@@ -41,13 +42,13 @@ const PER_RUN = { low: 3, medium: 8, heavy: 20 };
 
 const TARGET_PROMPT = `You write code comments. You never rewrite code.
 
-Each target shows its code, each line as "number| code". The comment goes directly above the target's line. Write one comment for each target:
+Each target shows its code, each line as "number| code". The comment goes directly above the target's line. Write a comment for every target:
 - A function, method, class, or component: what it is for, what it takes and returns, and its side effects.
 - A type or interface: what it describes.
 - A constant: what the value means, and its unit.
-- A block: what it achieves, and why when the code shows it.
+- A block: what it achieves, and why when the code shows it. Only a block may be left out, when its code needs no explanation.
 
-Keep to each target's word limit, in 1 or 2 plain sentences in the present tense. Explain intent, units, constraints, and edge cases; never narrate the syntax, such as "loops over the items". Describe only the target. Give the text only: no comment markers, no tags such as @param, no tool directives, and no mention of yourself or AI.
+Keep to each target's word limit, in 1 or 2 plain sentences in the present tense. Start with what the code does, with a verb such as "Returns", "Copies", or "Tracks", never with "This function" or "A function that". Explain intent, units, constraints, and edge cases; never narrate the syntax, such as "loops over the items". Describe only the target. Give the text only: no comment markers, no tags such as @param, no tool directives, and no mention of yourself or AI.
 
 Return each target's id with its comment.`;
 
@@ -175,6 +176,55 @@ function cleanText(raw, language) {
   // JSDoc tags such as @type change type checking in JavaScript.
   if (language.blockStyle === 'jsdoc' && /(^|[\s{])@[A-Za-z]/.test(joined)) return { reason: 'JSDoc tag' };
   return { paragraphs, joined };
+}
+
+// Openers that say what kind of code follows instead of what it does: "Exports a function
+// to copy", "This function copies", "A React component that renders", "It copies". The
+// comment then starts with the verb: "Copies", "Renders".
+const KIND_OPENER = new RegExp(
+  '^\\s*(?:(?:this|it)\\s+is\\s+)?(?:(?:exports|defines|declares|implements)\\s+)?(?:(?:a|an|the|this)\\s+)?' +
+  '(?:(?:exported|default|async|asynchronous|helper|utility|react|custom|small|simple|private|public|static|internal|main)\\s+)*' +
+  '(?:function|method|class|component|hook|helper|utility|constant|type|interface|module|block|code|snippet|loop|statement)\\b' +
+  '(?:\\s+`[^`]*`)?\\s*,?\\s*(?:(that|which)\\s+(will\\s+)?|((?:is\\s+)?(?:used|meant|designed|intended)\\s+to|to|will)\\s+)?',
+  'i',
+);
+const SUBJECT_OPENER = /^\s*it\s+(?=[a-z]+s\b)/i;
+const NOT_VERBS = new Set(['is', 'was', 'its', 'this', 'his', 'as', 'us', 'has', 'does', 'thus', 'plus']);
+
+// The third-person form of a verb in its base form: copy, copies; push, pushes; go, goes.
+function thirdPerson(verb) {
+  if (verb === 'have') return 'has';
+  if (/[^aeiou]y$/.test(verb)) return `${verb.slice(0, -1)}ies`;
+  if (/(s|x|z|ch|sh|o)$/.test(verb)) return `${verb}es`;
+  return `${verb}s`;
+}
+
+// Takes such an opener off the start of a comment the model wrote, when what follows it is
+// a verb, so the comment starts with what the code does. Anything else is left as it is.
+function stripOpener(text) {
+  if (typeof text !== 'string') return text;
+  const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const kind = KIND_OPENER.exec(text);
+  if (kind && kind[0].trim()) {
+    const rest = text.slice(kind[0].length);
+    const first = (rest.match(/^[A-Za-z]+/) || [''])[0];
+    const lower = first.toLowerCase();
+    if (kind[2] || kind[3]) {
+      // "to copy", "will copy": a base form, made third person.
+      if (/^[a-z]+$/.test(first) && lower !== 'be' && !/(ing|ed)$/.test(lower)) return capital(thirdPerson(lower) + rest.slice(first.length));
+    } else if (/^[a-z]+s$/.test(first) && !NOT_VERBS.has(lower)) {
+      // "that copies", "This function copies".
+      return capital(rest);
+    }
+    return text;
+  }
+  const subject = SUBJECT_OPENER.exec(text);
+  if (subject) {
+    const rest = text.slice(subject[0].length);
+    const first = rest.match(/^[a-z]+/)[0];
+    if (!NOT_VERBS.has(first)) return capital(rest);
+  }
+  return text;
 }
 
 // Wraps text at width, then narrows the width as far as the line count allows, so the lines
@@ -477,7 +527,7 @@ function buildCandidates(ctx, level, groups, { withEarlier = true } = {}) {
       reject(proposal, problem);
       continue;
     }
-    const cleaned = cleanText(proposal.text, language);
+    const cleaned = cleanText(stripOpener(proposal.text), language);
     if (cleaned.reason) {
       reject(proposal, cleaned.reason);
       continue;
@@ -491,7 +541,11 @@ function buildCandidates(ctx, level, groups, { withEarlier = true } = {}) {
       reject(proposal, shaped.reason);
       continue;
     }
-    add({ source: 'model', proposal }, target, shaped);
+    // A summary of a declaration target: the target says so; a proposal without one, such as
+    // a test's, is one when it sits on a declaration that is not a constant.
+    const summary = typeof proposal.summary === 'boolean' ? proposal.summary : info[target - 1].isDeclaration && !info[target - 1].isConstant;
+    const names = Array.isArray(proposal.names) ? proposal.names : [info[target - 1].symbol];
+    add({ source: 'model', proposal, summary, names }, target, shaped);
   }
 
   if (rules.blocks) {
@@ -521,19 +575,24 @@ function selectComments(ctx, built, verdicts, drop) {
   const earlierFirst = [...built.candidates].sort((a, b) => (a.source === 'earlier' ? 0 : 1) - (b.source === 'earlier' ? 0 : 1));
   for (const c of earlierFirst) {
     const verdict = verdicts.get(c) || {};
-    // Only a new line comment is dropped for adding nothing. A comment already in the file,
-    // Docturnal's or a person's, stays, and a block comment is what heavy level promises
-    // every function.
-    const judged = c.source === 'model' && c.kind === 'line';
+    // A new summary of a declaration (a function, method, class, component, or exported
+    // declaration) is never dropped for restating: it always shares words with the names.
+    // Only the accuracy check applies, and a rule that drops it when it says no more than
+    // the name ("Gets the value." for getValue).
+    const summary = c.source === 'model' && c.summary;
+    // Only a new line comment on anything else is dropped for adding nothing. A comment
+    // already in the file, Docturnal's or a person's, stays, and a block comment is what heavy
+    // level promises every function.
+    const judged = c.source === 'model' && c.kind === 'line' && !summary;
     // After the model's answers, a word count catches restatements the model let through.
-    // Comments on constants are exempt, since naming what a constant holds is their job, and
-    // so are comments on declarations, the function summary at medium and low that heavy
-    // writes as a block: a summary always shares words with the function's own names.
+    // Comments on constants are exempt, since naming what a constant holds is their job.
     const words = judged && !c.constant && !c.declaration
       ? restatement(c.paragraphs.join(' '), codeUnder(ctx.lines, c.target).map((l) => l.text))
       : null;
     if (verdict.accurate === false) {
       drop(c, 'inaccurate');
+    } else if (summary && onlyItsName(c.paragraphs.join(' '), c.names)) {
+      drop(c, ONLY_ITS_NAME);
     } else if (judged && verdict.useful === false) {
       drop(c, 'restates the code');
     } else if (judged && verdict.repeats === true && c.functionComment) {
@@ -665,6 +724,10 @@ function enclosingSymbol(info, i) {
   for (let j = i - 1; j >= 0; j--) if (info[j].symbol && info[j].symbolEnd !== null && info[j].symbolEnd >= i) return j;
   return -1;
 }
+
+// A declaration target: a function, method, class, component, type, or exported constant,
+// whose comment is a summary. Blocks and the constants heavy level adds are not.
+const isDeclarationTarget = (t) => t.what !== 'block' && (t.what !== 'constant' || Boolean(t.exported));
 
 const isClassLine = (text) => /\bclass\b/.test(text.split('(')[0]);
 
@@ -983,7 +1046,7 @@ function limitToLevel(ctx, built) {
   // new comment then takes their place.
   const fresh = { ...built, candidates: built.candidates.filter((c) => c.source === 'model') };
   selectComments(ctx, fresh, new Map(), (c, reason, extra = {}) => {
-    if (categoryOf(reason) === 'density') dropped.set(c, { reason, extra });
+    if (categoryOf(reason) === 'density' || reason === ONLY_ITS_NAME) dropped.set(c, { reason, extra });
   });
   for (const [c, { reason, extra }] of dropped) {
     built.rejections.push({ line: c.proposal.line, reason, category: categoryOf(reason), ...extra });
@@ -998,7 +1061,7 @@ function limitToLevel(ctx, built) {
 // finishComments, with plan.targets and plan.planned (the requests to make).
 function planTargets({ path, text, level = 'medium', contextTokens = 8192, records = [], knownUrls, exportNames = [], usage = new Map() }) {
   const language = languageForPath(path);
-  const plan = { path, language: language && language.id, level, text, failedRequests: 0, errors: [], replies: [], targets: [], more: 0, replaceable: [], planned: [], next: 0, groups: [], requests: 0, proposeMs: 0, checkMs: 0, checkRequests: 0, ctx: null, built: null, verdicts: new Map() };
+  const plan = { path, language: language && language.id, level, text, failedRequests: 0, errors: [], replies: [], targets: [], more: 0, replaceable: [], planned: [], next: 0, groups: [], requests: 0, proposeMs: 0, checkMs: 0, checkRequests: 0, ctx: null, built: null, verdicts: new Map(), missing: new Map(), retries: 0 };
   if (!language) return { ...plan, skipped: 'unsupported language' };
   if (isMinified(splitLines(stripBom(text).body))) return { ...plan, skipped: 'minified' };
   const ctx = prepareFile({ text, language, level, records, knownUrls });
@@ -1024,15 +1087,30 @@ function planTargets({ path, text, level = 'medium', contextTokens = 8192, recor
 // above its target's line. Counts the requests, their time, and each reply's cause.
 // shouldStop(written, request): true when the time left does not fit the next request and the
 // checks of the comments written so far; the rest of the file is then left (plan.unfinished).
-async function writeTargets(plan, requests, { model, contextTokens = 8192, chat = ollama.chat, host, now = Date.now, shouldStop = () => false }) {
+// A declaration target that gets no comment is asked for once more, alone: onRetry(requests)
+// takes those requests (by default, they are made at once, after the others).
+async function writeTargets(plan, requests, { model, contextTokens = 8192, chat = ollama.chat, host, now = Date.now, shouldStop = () => false, onRetry = null }) {
   const started = now();
   const groups = [];
-  for (const request of requests) {
+  const queue = [...requests];
+  const retry = onRetry || ((more) => queue.push(...more));
+  while (queue.length) {
+    const request = queue.shift();
     if (shouldStop(groups.flat().length, request)) {
       plan.unfinished = true;
       break;
     }
     const span = request.targets.map((t) => t.line).join(', ');
+    // The targets this request leaves without a comment, and why, for the log.
+    const without = (cause, got = new Set()) => {
+      const lost = request.targets.filter((t, i) => !got.has(i + 1));
+      for (const t of lost) plan.missing.set(t.line, { cause, declaration: isDeclarationTarget(t), retried: Boolean(request.retry) });
+      const again = request.retry ? [] : lost.filter(isDeclarationTarget);
+      if (again.length) {
+        plan.retries += again.length;
+        retry(again.map((t) => ({ ...buildTargetRequests({ path: plan.path, language: plan.ctx.language, level: plan.level, lines: plan.ctx.lines, targets: [t], contextTokens })[0], retry: true })));
+      }
+    };
     try {
       plan.requests++;
       const reply = await chat({
@@ -1047,14 +1125,19 @@ async function writeTargets(plan, requests, { model, contextTokens = 8192, chat 
       const parsed = readReply(reply, { contextTokens, count: request.targets.length });
       const group = [...parsed.texts].map(([id, text]) => {
         const target = request.targets[id - 1];
-        return { line: target.line, text, kind: target.kind };
+        plan.missing.delete(target.line);
+        return { line: target.line, text, kind: target.kind, summary: isDeclarationTarget(target), names: [target.name, target.owner] };
       });
       groups.push(group);
-      plan.replies.push({ lines: span, asked: request.targets.length, proposed: group.length, cause: parsed.cause, salvaged: parsed.salvaged });
+      plan.replies.push({ lines: span, asked: request.targets.length, proposed: group.length, cause: parsed.cause, salvaged: parsed.salvaged, retry: Boolean(request.retry) });
+      // A target alone that got none says so, rather than that the reply left it out.
+      if (parsed.cause) without(request.targets.length === 1 && parsed.cause === REPLY_CAUSES.missing ? REPLY_CAUSES.none : parsed.cause, new Set(parsed.texts.keys()));
     } catch (err) {
+      const cause = Object.values(REPLY_CAUSES).includes(err.message) ? err.message : REPLY_CAUSES.failed;
       plan.failedRequests++;
       plan.errors.push(`lines ${span}: ${err.message}`);
-      plan.replies.push({ lines: span, asked: request.targets.length, proposed: 0, cause: Object.values(REPLY_CAUSES).includes(err.message) ? err.message : REPLY_CAUSES.failed });
+      plan.replies.push({ lines: span, asked: request.targets.length, proposed: 0, cause, retry: Boolean(request.retry) });
+      without(cause);
     }
   }
   plan.proposeMs += now() - started;
@@ -1075,7 +1158,9 @@ async function proposeNext(plan, options) {
   const request = plan.planned[plan.next];
   if (options.shouldStop && options.shouldStop(plan.groups.flat().length, request)) return false;
   plan.next++;
-  plan.groups.push(...(await writeTargets(plan, [request], { ...options, shouldStop: undefined })));
+  // A retry is the file's next request, so it takes its turn and its time like any other.
+  const onRetry = (more) => plan.planned.splice(plan.next, 0, ...more);
+  plan.groups.push(...(await writeTargets(plan, [request], { ...options, shouldStop: undefined, onRetry })));
   return true;
 }
 
@@ -1246,11 +1331,28 @@ async function commentFile(options) {
 }
 
 // The replies line for the log, when a request gave fewer comments than it asked for: each
-// request's lines and cause, with counts only.
+// request's lines and cause, a declaration's retry alone marked, with counts only.
 function replySummary(plan) {
   const notable = (plan.replies || []).filter((r) => r.cause);
   if (!notable.length) return '';
-  return `replies: ${notable.map((r) => `lines ${r.lines}: ${r.cause}${r.salvaged ? `, ${r.proposed} complete ${r.proposed === 1 ? 'comment' : 'comments'} kept` : r.cause === REPLY_CAUSES.missing ? `, ${r.proposed} of ${r.asked}` : ''}`).join('; ')}`;
+  return `replies: ${notable.map((r) => `${r.retry ? 'retry of ' : ''}lines ${r.lines}: ${r.cause}${r.salvaged ? `, ${r.proposed} complete ${r.proposed === 1 ? 'comment' : 'comments'} kept` : r.cause === REPLY_CAUSES.missing ? `, ${r.proposed} of ${r.asked}` : ''}`).join('; ')}`;
+}
+
+// The targets left without a comment, for the log: how many, how many of them declarations
+// (each asked for again alone), and why, with counts only.
+function missingSummary(plan) {
+  const missing = [...(plan.missing || new Map()).values()];
+  if (!missing.length) return '';
+  const causes = new Map();
+  for (const m of missing) causes.set(m.cause, (causes.get(m.cause) || 0) + 1);
+  const declarations = missing.filter((m) => m.declaration);
+  const others = missing.length - declarations.length;
+  const retried = declarations.filter((m) => m.retried).length;
+  const kinds = [
+    others ? `${others} ${others === 1 ? 'block or constant' : 'blocks or constants'}` : '',
+    declarations.length ? `${declarations.length} ${declarations.length === 1 ? 'declaration' : 'declarations'}${retried ? `, ${retried} after a retry alone` : ''}` : '',
+  ].filter(Boolean).join(', ');
+  return `${missing.length} ${missing.length === 1 ? 'target' : 'targets'} got no comment (${kinds}): ${[...causes].map(([cause, n]) => `${cause}: ${n}`).join(', ')}`;
 }
 
 module.exports = {
@@ -1278,6 +1380,8 @@ module.exports = {
   settleProposals,
   readReply,
   replaceInaccurate,
+  missingSummary,
   replySummary,
   salvageReply,
+  stripOpener,
 };

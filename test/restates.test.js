@@ -179,6 +179,8 @@ test('"It initializes a pending variable to track any pending operations." above
   assert.strictEqual(applied.added, 0);
   assert.deepStrictEqual(applied.stats.dropped.restates, { 'restates the code (word match)': 1 });
   assert.strictEqual(applied.rejections[0].narrates, true);
+  // Its opener is taken off before the word match, and it still narrates.
+  assert.strictEqual(restatement('Initializes a pending variable to track any pending operations.', ['  let pending = null;']).narrates, true);
 });
 
 test('a comment that narrates a declaration is kept when it gives a reason, an edge case, or words of its own', () => {

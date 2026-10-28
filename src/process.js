@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { PER_RUN, checkComments, finishComments, needsCheck, planTargets, proposeNext, replaceInaccurate, replySummary, settleProposals } = require('./comments');
+const { PER_RUN, checkComments, finishComments, missingSummary, needsCheck, planTargets, proposeNext, replaceInaccurate, replySummary, settleProposals } = require('./comments');
 const { createCaller } = require('./docs');
 const ollama = require('./ollama');
 const { importersOf, nameUsage } = require('./importance');
@@ -307,6 +307,8 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       }
       const replies = replySummary(plan);
       if (replies) log(`${item.path}: ${replies}`);
+      const missing = missingSummary(plan);
+      if (missing) log(`${item.path}: ${missing}`);
       if (plan.requests && plan.failedRequests === plan.requests && !(plan.built && plan.built.candidates.length)) {
         leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
         continue;

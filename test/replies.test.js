@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { MAX_EXCERPT_LINES, MAX_TARGETS_PER_REQUEST, REPLY_CAUSES: CAUSE, checkComments, finishComments, planComments, planTargets, readReply, replySummary, salvageReply } = require('../src/comments');
+const { MAX_EXCERPT_LINES, MAX_TARGETS_PER_REQUEST, REPLY_CAUSES: CAUSE, checkComments, finishComments, missingSummary, planComments, planTargets, readReply, replySummary, salvageReply } = require('../src/comments');
 
 const CONTEXT = 8192;
 
@@ -130,7 +130,10 @@ test('a reply that leaves out a target says so in the log, with counts only', as
     return JSON.stringify({ comments: all.slice(1) });
   });
   const plan = await planComments({ path: 'src/steps.js', text: functions(8), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, exportNames: names(8) });
-  assert.match(replySummary(plan), /^replies: lines [\d, ]+: the reply left out some targets, \d of \d$/);
+  // The function left out is a declaration, so it is asked for again alone, and the mock
+  // leaves it out again.
+  assert.match(replySummary(plan), /^replies: lines [\d, ]+: the reply left out some targets, \d of \d; retry of lines \d+: the model wrote none$/);
+  assert.match(missingSummary(plan), /^1 target got no comment \(1 declaration, 1 after a retry alone\): the model wrote none: 1$/);
   assert.doesNotMatch(replySummary(plan), /Weights/);
 });
 

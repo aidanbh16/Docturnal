@@ -485,7 +485,9 @@ test('commentFile survives a malformed model response', async () => {
   try {
     const result = await commentFile({ path: 'src/retry.js', text: RETRY_JS, level: 'medium', model: 'm', host: mock.host, exportNames: ['retry'] });
     assert.strictEqual(result.added, 0);
-    assert.strictEqual(result.failedRequests, 1);
+    // The exported function is asked for once more, alone, and that reply fails too.
+    assert.strictEqual(result.failedRequests, 2);
+    assert.strictEqual(mock.requests.length, 2);
     assert.strictEqual(result.text, RETRY_JS);
   } finally {
     await mock.close();
