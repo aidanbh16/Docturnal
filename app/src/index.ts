@@ -12,6 +12,7 @@ import {
   type QueueMessage,
   dispatchRun,
   failure,
+  offerWorkflowUpdate,
   onInstallationDeleted,
   onRepositoriesRemoved,
   onPullRequestClosed,
@@ -19,6 +20,7 @@ import {
   onUpdatePush,
   queueSetups,
   setUpRepository,
+  workflowVersion,
 } from './handlers';
 import { runSchedule } from './scheduler';
 import { SettingsStore } from './settings';
@@ -76,9 +78,10 @@ const WEBHOOK_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'WEBHOOK_SECRET', 'SETUP_QUEUE',
 const SETUP_NEEDS = ['APP_ID', 'PRIVATE_KEY', 'CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'SETTINGS'];
 
 // Creates dependencies for the app, including logging and settings.
-function makeDeps(env: Env, log: (line: string) => void, origin?: string): Deps {
+function makeDeps(env: Env, log: (line: string) => void, origin?: string, now?: () => number): Deps {
   return {
     log,
+    now,
     origin: origin || env.PUBLIC_URL || undefined,
     actionRepository: env.ACTION_REPOSITORY ?? '',
     pathStyle: (env.CONTENTS_PATH_STYLE === 'plain' ? 'plain' : 'encoded') as PathStyle,
@@ -120,7 +123,7 @@ async function handleWebhook(request: Request, env: Env, options: Options, log: 
     return new Response('Not configured\n', { status: 500 });
   }
 
-  const deps = makeDeps(env, log, new URL(request.url).origin);
+  const deps = makeDeps(env, log, new URL(request.url).origin, options.now);
   const app = makeApp(env, options);
 
   // GitHub caps webhook payloads at 25 MB; anything larger is refused before it is read.
@@ -228,7 +231,22 @@ function routeRequest(options: Options, log: (line: string) => void) {
         const response = await octokit.request('GET /installation/repositories', { per_page: 1 });
         return (response.data as { total_count: number }).total_count;
       };
-      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now, sleep: options.sleep, installationRepoCount });
+      // The workflow version of each repository, read on its default branch as the app.
+      const workflowVersions = async (installationId: number, repos: string[]) => {
+        const octokit = (await makeApp(env, options).getInstallationOctokit(installationId)) as unknown as Octokit;
+        const deps = makeDeps(env, log, new URL(request.url).origin);
+        const entries = await Promise.all(repos.map(async (full) => {
+          const [owner, repo] = full.split('/');
+          return [full, await workflowVersion(octokit, { owner, repo }, undefined, deps)] as [string, number | null];
+        }));
+        return new Map(entries);
+      };
+      // One queue message per repository, so each update is its own piece of work.
+      const requestWorkflowUpdates = async (installationId: number, repos: string[], origin: string) => {
+        const messages = repos.map((repo) => ({ body: { kind: 'workflow-update', installationId, repo, origin } as QueueMessage }));
+        for (let i = 0; i < messages.length; i += 100) await env.SETUP_QUEUE.sendBatch(messages.slice(i, i + 100));
+      };
+      return handleSetup(request, env, { fetch: doFetch, log, now: options.now ?? Date.now, sleep: options.sleep, installationRepoCount, workflowVersions, requestWorkflowUpdates });
     }
     return new Response('Not found\n', { status: 404 });
   };
@@ -245,7 +263,7 @@ export function createQueueHandler(options: Options = {}) {
       batch.retryAll({ delaySeconds: 300 });
       return;
     }
-    const deps = makeDeps(env, log);
+    const deps = makeDeps(env, log, undefined, options.now);
     const app = makeApp(env, options);
     for (const message of batch.messages) {
       const body = message.body;
@@ -254,7 +272,9 @@ export function createQueueHandler(options: Options = {}) {
         const octokit = (await app.getInstallationOctokit(body.installationId)) as unknown as Octokit;
         outcome = body.kind === 'setup'
           ? await setUpRepository(octokit, body, message.attempts, deps)
-          : await dispatchRun(octokit, body, message.attempts, deps);
+          : body.kind === 'workflow-update'
+            ? await offerWorkflowUpdate(octokit, body, message.attempts, deps)
+            : await dispatchRun(octokit, body, message.attempts, deps);
       } catch (err) {
         outcome = failure(`${body.kind} ${body.repo}`, err, message.attempts, deps);
       }

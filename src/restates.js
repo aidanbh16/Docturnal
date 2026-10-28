@@ -60,9 +60,27 @@ function stem(word) {
   return word;
 }
 
+// A comment that narrates a declaration: "It initializes a pending variable to track any
+// pending operations." above `let pending = null;`. After the verb, its words name the line's
+// identifiers, or say nothing about the code (FILLER).
+const NARRATES = /^\s*(?:it|this)\s+(?:initiali[sz]es|sets|declares|creates|defines|assigns|stores|holds|instantiates|introduces)\b/i;
+const FILLER = new Set(['variable', 'var', 'constant', 'track', 'tracking', 'keep', 'hold', 'store', 'operation', 'later', 'use', 'new', 'local', 'flag', 'state', 'data', 'information', 'instance', 'object', 'reference', 'placeholder', 'initial', 'default', 'up', 'some', 'possible', 'potential']
+  .map((w) => stem(w)));
+
+// True when the comment narrates the declaration on firstLine: an "It"/"This" and a verb such
+// as initializes, then only words that are the line's identifiers or filler.
+function narratesDeclaration(comment, firstLine) {
+  const lead = NARRATES.exec(comment);
+  if (!lead) return false;
+  const identifiers = new Set(words(firstLine).map(stem));
+  const rest = words(comment.slice(lead[0].length)).filter((w) => !STOPWORDS.has(w)).map(stem);
+  return rest.every((w) => identifiers.has(w) || FILLER.has(w));
+}
+
 // codeLines: the code under the comment, without line numbers.
-// Returns { coverage, reason } where coverage is the share of the comment's content words
-// the code covers (null when the comment has none) and reason says why it is kept anyway.
+// Returns { coverage, reason, narrates } where coverage is the share of the comment's content
+// words the code covers (null when the comment has none), reason says why it is kept anyway,
+// and narrates is true for a comment that only narrates the declaration under it.
 function restatement(comment, codeLines) {
   const code = codeLines.join('\n');
   const codeStems = new Set(words(code).map(stem));
@@ -76,14 +94,16 @@ function restatement(comment, codeLines) {
   else if (EDGE_CASE.test(comment)) reason = 'names an edge case';
   else if (UNITS.some((unit) => content.includes(stem(unit)) && !codeStems.has(stem(unit)))) reason = 'names a unit';
 
-  if (!content.length) return { coverage: null, reason };
+  const narrates = narratesDeclaration(comment, codeLines[0] || '');
+  if (!content.length) return { coverage: null, reason, narrates };
   const covered = content.filter((w) => codeStems.has(w)).length;
-  return { coverage: covered / content.length, reason };
+  return { coverage: covered / content.length, reason, narrates };
 }
 
 // True when the comment only restates the code.
 function restates(result) {
-  return result.coverage !== null && result.coverage >= RESTATES_AT && !result.reason;
+  if (result.reason) return false;
+  return result.narrates === true || (result.coverage !== null && result.coverage >= RESTATES_AT);
 }
 
 module.exports = { RESTATES_AT, restatement, restates, stem, words };

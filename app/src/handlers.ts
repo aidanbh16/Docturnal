@@ -80,7 +80,8 @@ const FALLBACK_UPDATE_BODY = 'Docturnal added comments to your code and updated 
 
 export type QueueMessage =
   | { kind: 'setup'; installationId: number; repo: string; origin?: string }
-  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel; existingCode?: ExistingCode };
+  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel; existingCode?: ExistingCode }
+  | { kind: 'workflow-update'; installationId: number; repo: string; origin?: string };
 
 export type Outcome = { retry: false } | { retry: true; delaySeconds: number };
 const DONE: Outcome = { retry: false };
@@ -97,6 +98,8 @@ export interface Deps {
   enqueue: (messages: { body: QueueMessage; delaySeconds?: number }[]) => Promise<void>;
   // The Worker's own address, for the settings link in pull request bodies.
   origin?: string;
+  // The clock, for re-offering a declined workflow update; Date.now by default.
+  now?: () => number;
 }
 
 // Raised when work cannot be queued or settings cannot be stored, so the webhook can answer
@@ -215,11 +218,12 @@ async function contentsRequest(
   { owner, repo }: RepoRef,
   path: string,
   extra: Record<string, string>,
-  deps: Deps
+  deps: Deps,
+  quiet = false
 ): Promise<any> {
   const { route, params } = contentsRoute(method, path, deps.pathStyle);
   const all = { owner, repo, ...params, ...extra };
-  const checked = path === WORKFLOW_PATH;
+  const checked = path === WORKFLOW_PATH && !quiet;
   try {
     const response = await octokit.request(route as 'GET /', all);
     if (checked) logRealApiCheck(octokit, route, all, response.status, deps);
@@ -230,9 +234,11 @@ async function contentsRequest(
   }
 }
 
-async function readFile(octokit: Octokit, target: RepoRef, path: string, ref: string, deps: Deps): Promise<{ content: string; sha: string } | null> {
+// Without a ref, GitHub reads the default branch.
+// quiet: a read that is not the real-API check, such as the version check for a pull request.
+async function readFile(octokit: Octokit, target: RepoRef, path: string, ref: string | undefined, deps: Deps, quiet = false): Promise<{ content: string; sha: string } | null> {
   try {
-    const data = await contentsRequest(octokit, 'GET', target, path, { ref }, deps);
+    const data = await contentsRequest(octokit, 'GET', target, path, ref ? { ref } : {}, deps, quiet);
     if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string') return null;
     return { content: fromBase64(data.content), sha: data.sha };
   } catch (err) {
@@ -361,6 +367,9 @@ export async function onUpdatePush(octokit: Octokit, payload: any, deps: Deps): 
     const report = await readFile(octokit, { owner, repo }, LAST_RUN_PATH, UPDATE_BRANCH, deps);
     let { title, body } = report && report.content.trim() ? splitTitle(report.content) : { title: UPDATE_PR_TITLE, body: FALLBACK_UPDATE_BODY };
     if (body.length > MAX_BODY) body = `${body.slice(0, MAX_BODY)}\n\nThe rest of this description is in \`${LAST_RUN_PATH}\`.`;
+    // A repository on an older workflow is told so, just above the settings link.
+    const version = await workflowVersion(octokit, { owner, repo }, payload.repository.default_branch, deps);
+    if (version !== null && version < WORKFLOW_VERSION) body = `${body.trimEnd()}\n\n${olderWorkflowLine(version)}`;
     body = withSettingsLink(body, deps.origin, payload.installation.id);
 
     const { data: open } = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'open', head: `${owner}:${UPDATE_BRANCH}` });
@@ -404,10 +413,45 @@ async function openSetupPullRequest(octokit: Octokit, target: RepoRef, defaultBr
   return pr.number;
 }
 
+// A declined update is offered once more after this many days, since one accidental close
+// should not keep a repository on an old workflow for good. A second decline is final.
+export const REOFFER_DAYS = 14;
+
+// Why each version matters, for the line at the top of a re-offered update.
+const VERSION_REASONS: Record<number, string> = {
+  2: 'lets only one run happen at a time, so two runs never push at once',
+  3: 'removes the Node.js 20 deprecation warning from every run',
+  4: 'makes each run commit its work before the job times out',
+  5: 'pins the code that checks out your repository to one exact commit',
+};
+
+// The line at the top of an update offered again after a decline.
+export function reofferLine(from: number): string {
+  const reasons: string[] = [];
+  for (let v = Math.max(from, 1) + 1; v <= WORKFLOW_VERSION; v++) if (VERSION_REASONS[v]) reasons.push(VERSION_REASONS[v]);
+  const why = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')}, and ${reasons[reasons.length - 1]}` : reasons[0] ?? 'keeps Docturnal working as intended';
+  return `You closed the earlier pull request for this update, so Docturnal offers it once more: it ${why}. If you close this one too, Docturnal won't offer version ${WORKFLOW_VERSION} again.`;
+}
+
+type Proposal =
+  | { number: number; action: 'opened' | 'updated' | 'already proposed'; reoffer?: boolean }
+  | { action: 'declined'; reofferAt: number }
+  | { action: 'declined twice' };
+
+interface PullSummary {
+  number: number;
+  state: string;
+  body?: string | null;
+  merged_at?: string | null;
+  closed_at?: string | null;
+}
+
 // Proposes the current template to a repository with an older one, through a pull request.
-// Each version is proposed once: an open pull request for an older version is brought up
-// to date, and a closed one for the current version means the owner declined it.
-// Returns the pull request number and what happened, or null when it was declined.
+// An open pull request for an older version is brought up to date. A closed, unmerged one
+// for the current version is a decline: the update is offered once more REOFFER_DAYS after
+// it, with a line on why it matters, and never after a second decline. A decline of an older
+// version never blocks a newer one. force, from the settings page's button, offers it
+// whatever was declined before.
 async function proposeWorkflowUpdate(
   octokit: Octokit,
   target: RepoRef,
@@ -415,14 +459,26 @@ async function proposeWorkflowUpdate(
   from: number,
   origin: string | undefined,
   installationId: number,
-  deps: Deps
-): Promise<{ number: number; action: 'opened' | 'updated' | 'already proposed' } | null> {
+  deps: Deps,
+  { force = false }: { force?: boolean } = {}
+): Promise<Proposal> {
   const { owner, repo } = target;
-  const body = withSettingsLink(workflowUpdateBody(from), origin, installationId);
-  const { data: earlier } = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'all', head: `${owner}:${WORKFLOW_UPDATE_BRANCH}` });
-  const open = earlier.find((pr: { state: string }) => pr.state === 'open');
+  const { data: earlier } = await octokit.request('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'all', head: `${owner}:${WORKFLOW_UPDATE_BRANCH}`, per_page: 100 });
+  const pulls = earlier as PullSummary[];
+  const open = pulls.find((pr) => pr.state === 'open');
   if (open && proposedVersion(open.body) >= WORKFLOW_VERSION) return { number: open.number, action: 'already proposed' };
-  if (!open && earlier.some((pr: { body?: string | null }) => proposedVersion(pr.body) >= WORKFLOW_VERSION)) return null;
+  const declined = pulls.filter((pr) => pr.state === 'closed' && !pr.merged_at && proposedVersion(pr.body) >= WORKFLOW_VERSION);
+  let reoffer = false;
+  if (!open && declined.length && !force) {
+    if (declined.length >= 2) return { action: 'declined twice' };
+    // Without a close time, the decline counts as just now.
+    const closed = Date.parse(declined[0].closed_at ?? '');
+    const reofferAt = (Number.isFinite(closed) ? closed : (deps.now ?? Date.now)()) + REOFFER_DAYS * 86400000;
+    if ((deps.now ?? Date.now)() < reofferAt) return { action: 'declined', reofferAt };
+    reoffer = true;
+  }
+  const text = workflowUpdateBody(from);
+  const body = withSettingsLink(reoffer ? `${reofferLine(from)}\n\n${text}` : text, origin, installationId);
 
   // An open pull request keeps its branch; otherwise the branch starts again from the default branch.
   if (!open) await createBranch(octokit, target, WORKFLOW_UPDATE_BRANCH, defaultBranch, { reset: true });
@@ -442,16 +498,17 @@ async function proposeWorkflowUpdate(
     base: defaultBranch,
     body,
   });
-  return { number: pr.number, action: 'opened' };
+  return { number: pr.number, action: 'opened', reoffer };
 }
 
 function describeVersion(version: number): string {
   return version === 0 ? 'the workflow has the old schedule' : `the workflow is version ${version}`;
 }
 
-function describeProposal(proposal: { number: number; action: string } | null): string {
-  if (!proposal) return `the update to version ${WORKFLOW_VERSION} was declined earlier, left it unchanged`;
-  if (proposal.action === 'opened') return `opened update pull request #${proposal.number}`;
+function describeProposal(proposal: Proposal): string {
+  if (proposal.action === 'declined') return `the update to version ${WORKFLOW_VERSION} was declined earlier, left it unchanged until ${new Date(proposal.reofferAt).toISOString().slice(0, 10)}`;
+  if (proposal.action === 'declined twice') return `the update to version ${WORKFLOW_VERSION} was declined twice, left it unchanged`;
+  if (proposal.action === 'opened') return `${proposal.reoffer ? 'offered the declined update again in' : 'opened update'} pull request #${proposal.number}`;
   if (proposal.action === 'updated') return `updated pull request #${proposal.number} to version ${WORKFLOW_VERSION}`;
   return `update pull request #${proposal.number} was already proposed`;
 }
@@ -522,6 +579,48 @@ export async function setUpRepository(octokit: Octokit, message: SetupMessage, a
   }
 }
 
+type WorkflowUpdateMessage = Extract<QueueMessage, { kind: 'workflow-update' }>;
+
+// Opens the workflow update pull request in one repository, from the settings page's
+// "Update the Docturnal workflow" button, whatever was declined before. A repository whose
+// workflow is current, missing, or not Docturnal's is left alone.
+export async function offerWorkflowUpdate(octokit: Octokit, message: WorkflowUpdateMessage, attempts: number, deps: Deps): Promise<Outcome> {
+  const [owner, repo] = message.repo.split('/');
+  const target = { owner, repo };
+  const label = `workflow update ${message.repo}`;
+  try {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
+    const defaultBranch = data.default_branch as string;
+    const workflow = await readFile(octokit, target, WORKFLOW_PATH, defaultBranch, deps);
+    const version = workflow ? templateVersion(workflow.content, deps.actionRepository) : null;
+    if (version === null || version >= WORKFLOW_VERSION) {
+      deps.log(`${label}: ${version === null ? 'no Docturnal workflow' : `already version ${version}`}, nothing to update`);
+      return DONE;
+    }
+    const proposal = await proposeWorkflowUpdate(octokit, target, defaultBranch, version, message.origin ?? deps.origin, message.installationId, deps, { force: true });
+    deps.log(`${label}: requested from the settings page, ${describeVersion(version)}, ${describeProposal(proposal)}`);
+    return DONE;
+  } catch (err) {
+    return failure(label, err, attempts, deps);
+  }
+}
+
+// The template version on the default branch, or null when there is no Docturnal workflow
+// or it cannot be read.
+export async function workflowVersion(octokit: Octokit, target: RepoRef, ref: string | undefined, deps: Deps): Promise<number | null> {
+  try {
+    const workflow = await readFile(octokit, target, WORKFLOW_PATH, ref, deps, true);
+    return workflow ? templateVersion(workflow.content, deps.actionRepository) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The line a run's pull request gets while the repository's workflow is older than the current one.
+export function olderWorkflowLine(version: number): string {
+  return `This repository uses an older Docturnal workflow${version >= 1 ? ` (version ${version})` : ''}. Update it from the settings link below.`;
+}
+
 // True when a Docturnal run in this repository has not finished yet.
 async function hasActiveRun(octokit: Octokit, { owner, repo }: RepoRef): Promise<boolean> {
   for (const status of ACTIVE_RUN_STATUSES) {
@@ -549,7 +648,7 @@ async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, 
     try {
       const proposal = await proposeWorkflowUpdate(octokit, target, ref, version, deps.origin, message.installationId, deps);
       // Logged only when something changed, so a declined or pending proposal is not logged every night.
-      if (proposal && proposal.action !== 'already proposed') deps.log(`dispatch ${message.repo}: ${describeVersion(version)}, ${describeProposal(proposal)}`);
+      if (proposal.action === 'opened' || proposal.action === 'updated') deps.log(`dispatch ${message.repo}: ${describeVersion(version)}, ${describeProposal(proposal)}`);
     } catch (err) {
       deps.log(`dispatch ${message.repo}: could not propose the workflow update, ${errorMessage(err)}`);
     }

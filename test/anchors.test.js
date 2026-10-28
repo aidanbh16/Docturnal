@@ -124,5 +124,6 @@ test('a placed tolerant anchor puts the comment above that exact line', () => {
     proposals: [{ line: 11, anchor: '14| let current = [...groups]', text: 'Holds the groups as they are split, in place of the input list.', kind: 'line' }],
   });
   assert.strictEqual(result.added, 1);
-  assert.match(result.text, /\n {2}\/\/ Holds the groups as they are split, in place of the input list\.\n {2}let current = \[\.\.\.groups\];\n/);
+  // The fixture's line endings depend on the checkout, and the comment takes the file's.
+  assert.match(result.text, /\n {2}\/\/ Holds the groups as they are split, in place of the input list\.\r?\n {2}let current = \[\.\.\.groups\];\r?\n/);
 });

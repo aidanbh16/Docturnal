@@ -7,6 +7,7 @@
 import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, type Settings, SettingsStore, isCommentLevel, isDefault, isExistingCode, isValidHour, isValidTimeZone } from './settings';
 import { GITHUB_API_VERSION } from './github';
 import { randomToken, sameToken, signToken, verifyToken } from './session';
+import { WORKFLOW_VERSION } from './workflow';
 
 export const SESSION_COOKIE = 'docturnal_session';
 const SESSION_SECONDS = 15 * 60;
@@ -31,6 +32,31 @@ export interface SetupOptions {
   // How many repositories the installation has, asked as the app itself (an installation
   // token), so the count includes repositories the signed-in user cannot see.
   installationRepoCount: (installationId: number) => Promise<number>;
+  // The workflow version of each repository, asked as the app, or null when a repository has
+  // no Docturnal workflow or it cannot be read.
+  workflowVersions?: (installationId: number, repos: string[]) => Promise<Map<string, number | null>>;
+  // Queues the workflow update pull request for each repository, whatever was declined before.
+  requestWorkflowUpdates?: (installationId: number, repos: string[], origin: string) => Promise<void>;
+}
+
+// The most repositories the page checks for an older workflow when it loads, so a large
+// installation stays within the Worker's request limits. The button queues every repository
+// past these too, and each is checked again on the queue.
+export const MAX_VERSION_CHECKS = 25;
+
+// The repositories, among the first MAX_VERSION_CHECKS, whose workflow is older than the
+// current version. A failed check shows no button rather than an error.
+async function olderWorkflows(options: SetupOptions, installationId: number, repos: string[]): Promise<{ repo: string; version: number }[]> {
+  if (!options.workflowVersions || !repos.length) return [];
+  try {
+    const versions = await options.workflowVersions(installationId, repos.slice(0, MAX_VERSION_CHECKS));
+    return [...versions]
+      .filter((entry): entry is [string, number] => entry[1] !== null && entry[1] < WORKFLOW_VERSION)
+      .map(([repo, version]) => ({ repo, version }));
+  } catch {
+    options.log(`setup ${installationId}: could not check the workflow versions`);
+    return [];
+  }
 }
 
 // Right after an install or an update, GitHub may not list the installation for the user yet,
@@ -309,7 +335,22 @@ function signInFailedPage(installationId: number, path: SignInPath): Response {
 <a class="button" href="/setup?installation_id=${installationId}">Try signing in again</a>`);
 }
 
-function formPage(session: Session, settings: Settings): Response {
+// The "Update the Docturnal workflow" button, shown only while a repository uses an older workflow.
+function updateSection(session: Session, older: { repo: string; version: number }[]): string {
+  if (!older.length) return '';
+  const list = older.map((o) => `<li>${escape(o.repo)} (version ${o.version})</li>`).join('');
+  return `<h2>Docturnal workflow</h2>
+<p>These repositories use an older Docturnal workflow. Version ${WORKFLOW_VERSION} lets only one run happen at a time and pins the code that checks out your repository.</p>
+<ul class="muted">${list}</ul>
+<form method="post" action="/setup">
+<input type="hidden" name="csrf" value="${escape(session.csrf)}">
+<input type="hidden" name="action" value="update-workflow">
+<button type="submit">Update the Docturnal workflow</button>
+</form>
+<p class="muted">Docturnal opens a pull request in each one for you to review and merge.</p>`;
+}
+
+function formPage(session: Session, settings: Settings, older: { repo: string; version: number }[] = []): Response {
   const hours = Array.from({ length: 24 }, (_, hour) =>
     `<option value="${hour}"${hour === settings.time ? ' selected' : ''}>${formatHour(hour)}</option>`).join('');
   const zones = timeZones(settings.timeZone).map((zone) =>
@@ -366,6 +407,7 @@ ${existing}
 <button type="submit">Save</button>
 </form>
 <p class="muted" id="unsaved">If you close this page without saving, nothing changes: Docturnal runs ${escape(describe(settings))}.</p>
+${updateSection(session, older)}
 ${repos}
 ${script}`);
 }
@@ -497,7 +539,7 @@ async function handleGet(request: Request, env: SetupEnv, options: SetupOptions)
   const session = await readSession(request, env, now);
   if (session && (!requested || requested === session.installationId)) {
     const settings = await new SettingsStore(env.SETTINGS).getOrDefault(session.installationId);
-    return formPage(session, settings);
+    return formPage(session, settings, await olderWorkflows(options, session.installationId, settings.repos));
   }
   if (Number.isInteger(requested) && requested > 0) return signInRedirect(env, url.origin, requested, now);
   return errorPage(400, 'Open this page from the settings link in a Docturnal pull request.');
@@ -539,6 +581,7 @@ async function handlePost(request: Request, env: SetupEnv, options: SetupOptions
     return errorPage(403, 'This form expired. Reload the page and try again.');
   }
   const store = new SettingsStore(env.SETTINGS);
+  if (form.get('action') === 'update-workflow') return updateWorkflows(request, store, session, options);
   if (form.has('detectedTimeZone')) return saveDetectedTimeZone(store, session, String(form.get('detectedTimeZone')), options);
 
   const time = Number(form.get('time'));
@@ -558,6 +601,38 @@ async function handlePost(request: Request, env: SetupEnv, options: SetupOptions
   return page(200, 'Settings saved', `<h1>Settings saved</h1>
 <p>Docturnal now runs ${escape(describe(saved))}, starting with the next run.</p>
 <a class="button" href="/setup">Change them again</a>`);
+}
+
+// The "Update the Docturnal workflow" button: queues the update pull request for the
+// repositories found on an older version, and for any past the ones the page checks,
+// whatever was declined before. Each is checked again on the queue, so a repository already
+// on the current version gets nothing.
+async function updateWorkflows(request: Request, store: SettingsStore, session: Session, options: SetupOptions): Promise<Response> {
+  if (!options.requestWorkflowUpdates) return errorPage(503, "The workflow can't be updated from here right now. Try again later.");
+  const { repos } = await store.getOrDefault(session.installationId);
+  const older = await olderWorkflows(options, session.installationId, repos);
+  const unchecked = repos.slice(MAX_VERSION_CHECKS);
+  const queued = [...older.map((o) => o.repo), ...unchecked];
+  if (!queued.length) {
+    return page(200, 'Workflow up to date', `<h1>Workflow up to date</h1>
+<p>Every repository in this installation already uses Docturnal workflow version ${WORKFLOW_VERSION}.</p>
+<a class="button" href="/setup">Back to the settings</a>`);
+  }
+  try {
+    await options.requestWorkflowUpdates(session.installationId, queued, new URL(request.url).origin);
+  } catch {
+    options.log(`setup ${session.installationId}: could not queue the workflow updates`);
+    return errorPage(503, "The workflow updates couldn't be started. Try again in a few minutes.");
+  }
+  options.log(`setup ${session.installationId}: queued workflow updates for ${queued.length} ${queued.length === 1 ? 'repository' : 'repositories'}`);
+  const list = older.map((o) => `<li>${escape(o.repo)}</li>`).join('');
+  const more = unchecked.length ? `<p class="muted">Docturnal also checks the other ${unchecked.length} ${unchecked.length === 1 ? 'repository' : 'repositories'} and updates any that need it.</p>` : '';
+  return page(200, 'Workflow update started', `<h1>Workflow update started</h1>
+<p>Docturnal is opening a pull request to update the workflow to version ${WORKFLOW_VERSION}${older.length ? ' in:' : '.'}</p>
+${older.length ? `<ul>${list}</ul>` : ''}
+${more}
+<p>Each pull request appears within a minute. Merge it to finish the update.</p>
+<a class="button" href="/setup">Back to the settings</a>`);
 }
 
 function json(data: unknown, status = 200): Response {

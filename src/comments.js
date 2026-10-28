@@ -724,7 +724,7 @@ function selectComments(ctx, built, verdicts, drop) {
     } else if (judged && verdict.repeats === true && c.functionComment) {
       drop(c, 'repeats the function comment');
     } else if (words && restates(words)) {
-      drop(c, 'restates the code (word match)', { coverage: words.coverage });
+      drop(c, 'restates the code (word match)', { coverage: words.coverage, narrates: words.narrates });
     } else if (firstAt.has(c.target)) {
       drop(c, firstAt.get(c.target) === 'earlier' ? 'kept the earlier comment' : 'duplicate line');
     } else {

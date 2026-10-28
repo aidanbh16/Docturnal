@@ -305,7 +305,7 @@ describe('installation', () => {
     await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
     await t.drain();
     expect(t.gh.state.pulls).toHaveLength(1);
-    expect(t.logs).toContain('setup octo/hello: the workflow has the old schedule, the update to version 5 was declined earlier, left it unchanged');
+    expect(t.logs.some((l: string) => /^setup octo\/hello: the workflow has the old schedule, the update to version 5 was declined earlier, left it unchanged until \d{4}-\d{2}-\d{2}$/.test(l))).toBe(true);
   });
 
   it('queues the first run on retry when an earlier attempt created the file but could not queue the run', async () => {
@@ -949,5 +949,112 @@ describe('Worker entry module', () => {
     for (const [name, value] of Object.entries(entry)) {
       if (name !== 'default') expect(typeof value, name).toBe('function');
     }
+  });
+});
+
+describe('declined workflow updates', () => {
+  // A repository on version 3, run every night at midnight in New York (05:07 UTC in winter).
+  function world(files: Record<string, string> = { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V3 }) {
+    const t = setup({ files });
+    t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
+    let clock = 0;
+    const night = async (utc: string) => {
+      clock = Date.parse(utc);
+      await t.cron(utc);
+      await t.queue.drain((batch) => createQueueHandler({ fetch: t.gh.fetch, log: (l) => t.logs.push(l), now: () => clock })(batch, t.env));
+    };
+    const decline = (number: number, closedAt: string) => {
+      const pr = t.gh.state.pulls.find((p: { number: number }) => p.number === number);
+      Object.assign(pr, { state: 'closed', closed_at: closedAt, merged_at: null });
+    };
+    return { t, night, decline };
+  }
+
+  it('offers a declined update once more after 14 days, with why it matters, and never after a second decline', async () => {
+    const { t, night, decline } = world();
+    await night('2026-01-15T05:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.pulls[0].body).not.toContain('You closed the earlier pull request');
+    decline(1, '2026-01-15T12:00:00Z');
+
+    // Within 14 days of the close: nothing new, and the run goes on as before.
+    await night('2026-01-16T05:07:00Z');
+    await night('2026-01-29T05:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(1);
+    expect(t.gh.state.dispatches).toHaveLength(3);
+
+    // 14 days after the close: offered once more, with a line on why it matters at the top.
+    await night('2026-01-30T05:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(2);
+    const again = t.gh.state.pulls[1];
+    expect(again).toMatchObject({ number: 2, state: 'open', title: WORKFLOW_UPDATE_PR_TITLE });
+    expect(again.body.startsWith("You closed the earlier pull request for this update, so Docturnal offers it once more: it makes each run commit its work before the job times out, and pins the code that checks out your repository to one exact commit. If you close this one too, Docturnal won't offer version 5 again.\n\nThis pull request updates")).toBe(true);
+    expect(again.body).toContain('<!-- docturnal-workflow-version: 5 -->');
+    expect(t.logs).toContain('dispatch octo/hello: the workflow is version 3, offered the declined update again in pull request #2');
+
+    // While it is open, it is not proposed again; declined a second time, never again.
+    await night('2026-01-31T05:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(2);
+    decline(2, '2026-02-01T12:00:00Z');
+    await night('2026-02-20T05:07:00Z');
+    await night('2026-06-20T04:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(2);
+    await t.deliver('installation_repositories', { action: 'added', installation: { id: 1 }, repositories_added: [{ full_name: 'octo/hello' }] });
+    await t.drain();
+    expect(t.logs).toContain('setup octo/hello: the workflow is version 3, the update to version 5 was declined twice, left it unchanged');
+    expect(t.gh.state.pulls).toHaveLength(2);
+  });
+
+  it('a merged update is not a decline, and a decline without a close time waits 14 days from now', async () => {
+    const { t, night } = world();
+    t.gh.state.pulls.push({ repo: 'octo/hello', number: 40, state: 'closed', merged_at: '2025-12-01T00:00:00Z', title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: '<!-- docturnal-workflow-version: 5 -->' });
+    t.gh.state.pulls.push({ repo: 'octo/hello', number: 41, state: 'closed', title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: '<!-- docturnal-workflow-version: 5 -->' });
+    await night('2026-01-15T05:07:00Z');
+    expect(t.gh.state.pulls).toHaveLength(2);
+  });
+
+  it('always offers a newer version, however often an older one was declined', async () => {
+    const { t, night } = world();
+    for (const number of [10, 11]) {
+      t.gh.state.pulls.push({ repo: 'octo/hello', number, state: 'closed', closed_at: '2026-01-14T00:00:00Z', merged_at: null, title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: 'Updates to version 4.\n\n<!-- docturnal-workflow-version: 4 -->' });
+    }
+    await night('2026-01-15T05:07:00Z');
+    const opened = t.gh.state.pulls.filter((p: { state: string }) => p.state === 'open');
+    expect(opened).toHaveLength(1);
+    expect(opened[0].body).toContain('<!-- docturnal-workflow-version: 5 -->');
+    expect(opened[0].body).not.toContain('You closed the earlier pull request');
+    expect(t.logs).toContain('dispatch octo/hello: the workflow is version 3, opened update pull request #1');
+  });
+
+  it('the settings page button opens the update right away, even after two declines; a current workflow is left alone', async () => {
+    const { t, decline } = world();
+    for (const number of [1, 2]) {
+      t.gh.state.pulls.push({ repo: 'octo/hello', number, state: 'open', title: WORKFLOW_UPDATE_PR_TITLE, head: 'docturnal/workflow-update', base: 'main', body: '<!-- docturnal-workflow-version: 5 -->' });
+      decline(number, '2026-01-10T00:00:00Z');
+    }
+    t.gh.state.nextPull = 3;
+    await t.queue.sendBatch([{ body: { kind: 'workflow-update', installationId: 1, repo: 'octo/hello', origin: ORIGIN } }]);
+    await t.drain();
+    expect(t.gh.state.pulls).toHaveLength(3);
+    expect(t.gh.state.pulls[2]).toMatchObject({ number: 3, state: 'open', title: WORKFLOW_UPDATE_PR_TITLE });
+    expect(t.gh.state.pulls[2].body.endsWith(SETTINGS_LINK)).toBe(true);
+    expect(t.logs).toContain('workflow update octo/hello: requested from the settings page, the workflow is version 3, opened update pull request #3');
+
+    const current = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW } });
+    await current.queue.sendBatch([{ body: { kind: 'workflow-update', installationId: 1, repo: 'octo/hello', origin: ORIGIN } }]);
+    await current.drain();
+    expect(current.gh.state.pulls).toEqual([]);
+    expect(current.logs).toContain('workflow update octo/hello: already version 5, nothing to update');
+  });
+
+  it("a run's pull request says when the repository uses an older workflow, just above the settings link", async () => {
+    const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW_V3, 'docturnal/update:.docturnal/last-run.md': '# Docturnal: documentation\n\n## Progress\n\n- **Documentation:** complete.\n' } });
+    await t.deliver('push', pushToUpdate());
+    expect(t.gh.state.pulls[0].body).toBe(`## Progress\n\n- **Documentation:** complete.\n\nThis repository uses an older Docturnal workflow (version 3). Update it from the settings link below.\n\n---\n\n${SETTINGS_LINK}`);
+    expect(t.logs).toEqual(['push octo/hello: opened pull request #1']);
+
+    const current = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW, 'docturnal/update:.docturnal/last-run.md': '# Docturnal: documentation\n\nDone.\n' } });
+    await current.deliver('push', pushToUpdate());
+    expect(current.gh.state.pulls[0].body).toBe(`Done.\n\n---\n\n${SETTINGS_LINK}`);
   });
 });

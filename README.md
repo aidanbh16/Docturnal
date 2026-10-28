@@ -63,7 +63,7 @@ There is never more than one open Docturnal pull request. It comes from the `doc
 
 After the pull request closes, merged or not, Docturnal deletes its branch. If a Docturnal run is still going at that moment, the branch stays until a later Docturnal pull request closes. The next night that finds changes starts a new pull request. Docturnal deletes its other branches, `docturnal/setup` and `docturnal/workflow-update`, the same way when their pull requests close.
 
-When Docturnal's workflow file changes, the app opens a pull request titled "Update Docturnal workflow" with the new version. It proposes each version once. If you close that pull request, Docturnal keeps running with the workflow you have.
+When Docturnal's workflow file changes, the app opens a pull request titled "Update Docturnal workflow" with the new version. If you close that pull request, Docturnal keeps running with the workflow you have, and offers the update once more 14 days later, with a note on why it matters. If you close it a second time, Docturnal doesn't offer that version again, but always offers a newer one. You can open the update any time with the "Update the Docturnal workflow" button on the settings page, which appears while a repository uses an older workflow. Until you update, each Docturnal pull request says which version the repository uses.
 
 ## Comment levels
 

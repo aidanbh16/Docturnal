@@ -2,8 +2,10 @@ import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { createHandler, type Env } from '../src/index';
-import { createSession, SESSION_COOKIE } from '../src/setup';
+import { createSession, MAX_VERSION_CHECKS, SESSION_COOKIE } from '../src/setup';
+import { WORKFLOW_PATH, WORKFLOW_VERSION, workflowYaml } from '../src/workflow';
 import { FakeKV } from './fake-kv';
+import { FakeQueue } from './fake-queue';
 import { createMockGitHub } from './mock-github.mjs';
 
 const ORIGIN = 'https://docturnal.example';
@@ -24,8 +26,10 @@ const START = Date.parse('2026-10-22T12:00:00Z');
 // as the failure: an HTTP status, or 'network' for a request that never gets an answer.
 // hiddenChecks: how many times GitHub's list of the user's installations comes back without
 // any, as it might right after an install.
-function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hiddenChecks = 0 }: { settings?: Record<string, unknown>; clientSecret?: string; failExchanges?: number; failWith?: number | 'network'; hiddenChecks?: number } = {}) {
+// mock: more options for the GitHub mock, such as repos and files.
+function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hiddenChecks = 0, mock = {} }: { settings?: Record<string, unknown>; clientSecret?: string; failExchanges?: number; failWith?: number | 'network'; hiddenChecks?: number; mock?: Record<string, unknown> } = {}) {
   const gh = createMockGitHub({
+    ...mock,
     oauth: {
       clientSecret,
       // Each code works once, like GitHub's.
@@ -47,6 +51,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
     },
   });
   const kv = new FakeKV();
+  const queue = new FakeQueue<unknown>();
   if (settings) kv.seed(1, settings as Parameters<FakeKV['seed']>[1]);
   const logs: string[] = [];
   let now = START;
@@ -57,7 +62,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
     CLIENT_ID: 'Iv1.client',
     CLIENT_SECRET: 'client-secret',
     SETTINGS: kv as unknown as KVNamespace,
-    SETUP_QUEUE: {} as Queue,
+    SETUP_QUEUE: queue as unknown as Queue,
     GITHUB_API_URL: 'https://api.github.test',
     GITHUB_WEB_URL: 'https://github.test',
   } as Env;
@@ -115,7 +120,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
     const csrf = form.match(/name="csrf" value="([^"]+)"/)![1];
     return { cookie, csrf, form, csp };
   }
-  return { gh, kv, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
+  return { gh, kv, queue, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
 }
 
 const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' };
@@ -667,5 +672,68 @@ describe('sign-in codes from GitHub', () => {
     expect(t.installationChecks).toHaveLength(1);
     expect(t.sleeps).toEqual([]);
     expect(t.logs).toEqual(['setup 1: rejected, the signed-in user cannot access this installation']);
+  });
+});
+
+describe('the "Update the Docturnal workflow" button', () => {
+  const OLD = workflowYaml('acme/docturnal').replace(`# Docturnal workflow version ${WORKFLOW_VERSION}.`, '# Docturnal workflow version 3.');
+  // octo/hello is on version 3; octo/other is current.
+  function world() {
+    const t = setup({ settings: { repos: ['octo/hello', 'octo/other'] }, mock: { repos: ['octo/hello', 'octo/other'] } });
+    t.gh.state.repos.get('octo/hello').files.set(`main:${WORKFLOW_PATH}`, OLD);
+    t.gh.state.repos.get('octo/other').files.set(`main:${WORKFLOW_PATH}`, workflowYaml('acme/docturnal'));
+    return t;
+  }
+  const UPDATE = { action: 'update-workflow' };
+
+  it('shows only while a repository uses an older workflow, and queues its update on click', async () => {
+    const t = world();
+    const { cookie, csrf, form } = await t.signIn();
+    expect(form).toContain('<button type="submit">Update the Docturnal workflow</button>');
+    expect(form).toContain('<li>octo/hello (version 3)</li>');
+    expect(form).not.toContain('octo/other (version');
+    const response = await t.post({ ...UPDATE, csrf }, cookie);
+    expect(response.status).toBe(200);
+    const page = await response.text();
+    expect(page).toContain('<h1>Workflow update started</h1>');
+    expect(page).toContain('<ul><li>octo/hello</li></ul>');
+    expect(t.queue.pending.map((m) => m.body)).toEqual([{ kind: 'workflow-update', installationId: 1, repo: 'octo/hello', origin: ORIGIN }]);
+    expect(t.logs).toContain('setup 1: queued workflow updates for 1 repository');
+
+    // Once every repository is current, the page has no button, and a click changes nothing.
+    t.gh.state.repos.get('octo/hello').files.set(`main:${WORKFLOW_PATH}`, workflowYaml('acme/docturnal'));
+    const current = await (await t.get('/setup', cookie)).text();
+    expect(current).not.toContain('Update the Docturnal workflow');
+    const again = await t.post({ ...UPDATE, csrf }, cookie);
+    expect(await again.text()).toContain('Every repository in this installation already uses Docturnal workflow version 5.');
+    expect(t.queue.pending).toHaveLength(1);
+  });
+
+  it('requires the session from the ownership check, the CSRF token, and our own origin', async () => {
+    const t = world();
+    const { cookie, csrf } = await t.signIn();
+    expect((await t.post({ ...UPDATE, csrf })).status).toBe(403);
+    expect((await t.post({ ...UPDATE, csrf: 'wrong' }, cookie)).status).toBe(403);
+    expect((await t.post({ ...UPDATE, csrf }, cookie, 'https://evil.example')).status).toBe(403);
+    expect((await t.post({ ...UPDATE, csrf }, cookie, null, { referer: 'https://evil.example/' })).status).toBe(403);
+    expect(t.logs).toContain('setup 1: rejected, the form token did not match');
+    // Someone who could not pass the ownership check has no session for this installation:
+    // a session for their own installation reaches only its repositories.
+    const mallory = `${SESSION_COOKIE}=${await createSession(t.env, { installationId: 99, account: 'mallory', csrf: 'c' }, START)}`;
+    const other = await t.post({ ...UPDATE, csrf: 'c', installation_id: '1' }, mallory);
+    expect(await other.text()).toContain('already uses Docturnal workflow version 5');
+    // A collaborator cannot sign in at all.
+    expect((await t.get('/setup?code=collaborator-code&installation_id=1&setup_action=install')).status).toBe(403);
+    expect(t.queue.pending).toEqual([]);
+  });
+
+  it('queues the repositories past the ones the page checks, and says so', async () => {
+    const repos = Array.from({ length: MAX_VERSION_CHECKS + 2 }, (_, i) => `octo/r${String(i).padStart(2, '0')}`);
+    const t = setup({ settings: { repos }, mock: { repos, files: { [`main:${WORKFLOW_PATH}`]: OLD } } });
+    const { cookie, csrf, form } = await t.signIn();
+    expect((form.match(/\(version 3\)/g) ?? []).length).toBe(MAX_VERSION_CHECKS);
+    const page = await (await t.post({ ...UPDATE, csrf }, cookie)).text();
+    expect(page).toContain('Docturnal also checks the other 2 repositories and updates any that need it.');
+    expect(t.queue.pending.map((m) => (m.body as { repo: string }).repo)).toEqual(repos);
   });
 });

@@ -268,7 +268,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       report: { path: item.path, verifier: plan.ctx ? plan.ctx.language.verifier : undefined, added: result.added, rejections: result.rejections, stats: result.stats },
     });
     for (const r of result.rejections) {
-      if (r.coverage !== undefined) log(`${item.path}: line ${r.line} dropped as restating the code (coverage ${r.coverage.toFixed(2)})`);
+      if (r.coverage !== undefined) log(`${item.path}: line ${r.line} dropped as restating the code (${r.narrates ? 'narrates the declaration, ' : ''}coverage ${r.coverage === null ? 'none' : r.coverage.toFixed(2)})`);
     }
     log(`${item.path}: ${proposalSummary(result.stats, { reasons: true })}`);
     const anchors = anchorSummary(result.stats.anchors);

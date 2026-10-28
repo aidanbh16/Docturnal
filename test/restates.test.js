@@ -135,7 +135,7 @@ test('in a run, the restating comments are dropped and counted, and the epsilon 
     const dropped = result.rejections.filter((r) => r.category === 'restates');
     assert.strictEqual(dropped.length, 5);
     for (const r of dropped) {
-      assert.deepStrictEqual(Object.keys(r).sort(), ['category', 'coverage', 'line', 'reason']);
+      assert.deepStrictEqual(Object.keys(r).sort(), ['category', 'coverage', 'line', 'narrates', 'reason']);
       assert.ok(r.coverage >= RESTATES_AT);
     }
   } finally {
@@ -171,5 +171,41 @@ test('never applied to block comments, comments on constants or declarations, or
     assert.match(medium.text, /\/\/ Gross pay from hours and rate, with overtime\.\nfunction grossPay/);
   } finally {
     await mock.close();
+  }
+});
+
+// From the real run on src/readme.js: the comment passed the word match at 0.4, since "track"
+// and "operations" are not in the code, though they say nothing about it either.
+test('"It initializes a pending variable to track any pending operations." above `let pending = null;` restates the code', () => {
+  const comment = 'It initializes a pending variable to track any pending operations.';
+  const result = restatement(comment, ['  let pending = null;', '  const suppressed = new Map((saved ? saved.suppressed : []).map((s) => [s.key, s.heading]));']);
+  assert.strictEqual(result.narrates, true);
+  assert.strictEqual(restates(result), true);
+
+  // In a file: dropped as restating the code, and counted.
+  const { applyProposals } = require('../src/comments');
+  const { languageById } = require('../src/languages');
+  const text = 'async function planReadme({ current, saved }) {\n  const report = { updated: [] };\n  const errors = [];\n  let pending = null;\n  return { report, errors, pending, current, saved };\n}\n';
+  const applied = applyProposals({ text, language: languageById('javascript'), level: 'medium', proposals: [{ line: 4, anchor: 'let pending = null;', text: comment, kind: 'line' }] });
+  assert.strictEqual(applied.added, 0);
+  assert.deepStrictEqual(applied.stats.dropped.restates, { 'restates the code (word match)': 1 });
+  assert.strictEqual(applied.rejections[0].narrates, true);
+});
+
+test('a comment that narrates a declaration is kept when it gives a reason, an edge case, or words of its own', () => {
+  const line = ['let pending = null;'];
+  const kept = [
+    'It sets pending to null because the README may not need a model call at all.',
+    'It initializes pending to null when nothing is left for the next run.',
+    'This creates the queue of folders waiting for a summary.',
+    'It stores the time budget left for the README.',
+    'Pending stays null unless the README waits for the next run.',
+    // It narrates the line, but names an edge case.
+    'It initializes pending to null.',
+  ];
+  assert.strictEqual(restatement('It initializes pending to null.', line).narrates, true);
+  for (const comment of kept) assert.strictEqual(restates(restatement(comment, line)), false, comment);
+  for (const comment of ['This declares the pending variable.', 'It sets up a pending flag.', 'It creates a new pending state variable for later use.']) {
+    assert.strictEqual(restates(restatement(comment, line)), true, comment);
   }
 });
