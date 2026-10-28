@@ -273,6 +273,7 @@ async function planReadme({
 }) {
   const report = { updated: [], notReadded: [], fallback: false };
   const errors = [];
+  // It initializes a pending variable to track any pending operations.
   let pending = null;
   const suppressed = new Map((saved ? saved.suppressed : []).map((s) => [s.key, s.heading]));
   const parsed = current === null ? { eol: '\n', preamble: '', parts: [] } : parseReadme(current);

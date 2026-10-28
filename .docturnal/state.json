@@ -1,18 +1,42 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-27T23:18:28.393Z",
+  "updatedAt": "2026-10-28T02:05:50.273Z",
   "commentLevel": "medium",
   "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
   "docsComplete": true,
-  "batchesDone": 0,
+  "batchesDone": 1,
   "pending": {
-    "docs": true,
+    "docs": false,
     "changed": [],
-    "batch": null
+    "batch": {
+      "number": 1,
+      "layers": [
+        "GitHub Integration",
+        "Configuration and State Management"
+      ],
+      "files": [
+        "app/src/handlers.ts",
+        "app/src/index.ts",
+        "app/src/setup.ts",
+        "app/src/settings.ts",
+        "app/src/workflow.ts",
+        "app/src/scheduler.ts",
+        "app/src/session.ts",
+        "app/src/github.ts",
+        "app/scripts/pkcs8.mjs",
+        "app/scripts/register.mjs",
+        "src/main.js",
+        "src/report.js",
+        "src/state.js",
+        "src/readme.js",
+        "src/changes.js"
+      ]
+    }
   },
   "files": {
     "app/package.json": {
-      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247"
+      "hash": "sha256-7c747e7b957262f8134c8dada97d361f3592d4afc733e082c9a49aa5c4fab247",
+      "level": null
     },
     "app/scripts/pkcs8.mjs": {
       "hash": "sha256-cf47aa2847e73e847c5d28840f06d4e0b59c2d6874db082bc617e74cc773d8ff",
@@ -25,13 +49,13 @@
         "pemBody",
         "toPem"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/scripts/register.mjs": {
       "hash": "sha256-637002ab0b353837146669257bbd2e5aff7b6d6d25b5b7b908b917d3573f777b",
       "summary": "Serves the app registration page on http://localhost:8790.",
       "symbols": [],
-      "level": null
+      "level": "medium"
     },
     "app/src/github.ts": {
       "hash": "sha256-d433d34d022578fe67cc8132c5ccdebc023e7449a75de4c07170eb5de0117123",
@@ -40,7 +64,7 @@
         "GITHUB_API_VERSION",
         "withApiVersion"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/handlers.ts": {
       "hash": "sha256-f63b77339037d1a1c6f7431208e9cfdade19d3e6e9c246588156fceb08c33530",
@@ -59,10 +83,10 @@
         "SETUP_PR_BODY",
         "workflowUpdateBody"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/index.ts": {
-      "hash": "sha256-def0402730a5daee062c4800e4e8e2b1e3178cacf6d7e8116554c3fa56c562db",
+      "hash": "sha256-1043564efa14b7de95532f4d13ddeb70b6cad514e764f158a8500339bdf0284f",
       "summary": "The Docturnal GitHub App backend.",
       "symbols": [
         "Env",
@@ -78,7 +102,33 @@
         "containsInfrastructureError",
         "handleWebhook"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Checks if the required environment variables are set.",
+          "anchor": "fc114e7ad7249634"
+        },
+        {
+          "text": "// Creates dependencies for the app, including logging and settings.",
+          "anchor": "8192f0b364023a6b"
+        },
+        {
+          "text": "// Creates an Octokit app instance with the provided environment variables and options.",
+          "anchor": "df1574482ed18def"
+        },
+        {
+          "text": "// Handles incoming webhooks, verifying the signature and processing the payload.",
+          "anchor": "691795daadb8924e"
+        },
+        {
+          "text": "// Creates a handler function for incoming requests,\n// normalizing the environment and routing the request.",
+          "anchor": "ff3085132bebca45"
+        },
+        {
+          "text": "// Routes incoming requests to the appropriate handler based on the path.",
+          "anchor": "43d6e41eea0cfd77"
+        }
+      ]
     },
     "app/src/scheduler.ts": {
       "hash": "sha256-5390627ab704a42756be0db42f28debfdf18ef229a35a02937dc4855c69f72dd",
@@ -89,7 +139,7 @@
         "ScheduleEnv",
         "runSchedule"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/session.ts": {
       "hash": "sha256-661473e30156df82c0182f82cc1c20805ca5ef280285fa248c278d412b99ddf5",
@@ -104,7 +154,7 @@
         "fromBase64url",
         "signingKey"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/settings.ts": {
       "hash": "sha256-783fa080c720dbf26ef487711f3c80d4ea9d0925b8acb8b714cbc563d18cc0c1",
@@ -123,10 +173,10 @@
         "isCommentLevel",
         "isExistingCode"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/src/setup.ts": {
-      "hash": "sha256-db6daba38bd4529b9555f96e6b191c6486beaf6304789ffd0db8759214b40c4e",
+      "hash": "sha256-ca2e1e6137c783f03b1fe66b532bb35f0fb6874091d1b43dc6f5462b1c12e05a",
       "summary": "The optional settings page at /setup.",
       "symbols": [
         "SESSION_COOKIE",
@@ -142,7 +192,25 @@
         "isPrefetch",
         "userRequest"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Defines the structure of the environment object used for setup.",
+          "anchor": "d0e9f1923288dc31"
+        },
+        {
+          "text": "// Defines the structure of the options object used for setup.",
+          "anchor": "ba6ef71745c33326"
+        },
+        {
+          "text": "// Defines the global styles for the application.",
+          "anchor": "ccf2e907d7dec5e1"
+        },
+        {
+          "text": "// Installation ID must be a positive integer to proceed with sign-in or session retrieval.",
+          "anchor": "b1d2c416cdad3192"
+        }
+      ]
     },
     "app/src/workflow.ts": {
       "hash": "sha256-f5daf56e4fa6a679ebe7e12b9df1c45a1cb8ec6c1bd952e68c3c4b63dc2eae27",
@@ -156,7 +224,7 @@
         "templateVersion",
         "usesDocturnal"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/tests/fake-kv.ts": {
       "hash": "sha256-0ac9ec9f376d5402e9f524e4ddb087aca35ff95d05c61247c2bdf6fec1874433",
@@ -220,10 +288,12 @@
       "level": null
     },
     "app/tsconfig.json": {
-      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2"
+      "hash": "sha256-c265d57a14525d390ffaa076a8c1775603ed19c53f2cba659d8f3ce283fc3da2",
+      "level": null
     },
     "package.json": {
-      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f"
+      "hash": "sha256-57d08e0c85e962a80fdbe41cb8a3e8798f189e0df79f3eaa3bbc7952e732632f",
+      "level": null
     },
     "scripts/archive-hashes.js": {
       "hash": "sha256-ce9efe842638ac9bbbace3f33ddf3f7b50dc033565f58dd6d61bc500bb27b5da",
@@ -306,7 +376,7 @@
         "planWork",
         "readCandidates"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/clusters.js": {
       "hash": "sha256-6295cd63eb8a2fcc97627fe5a0ebc2e2e8be56218a25be375d8adc42f76cbf61",
@@ -538,7 +608,7 @@
         "backlogRanker",
         "makePlan"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/models.js": {
       "hash": "sha256-a30749e3f2c1d2f1523ddf546b34cdb5d4768520cdf40a8cd164c96abe8aa539",
@@ -654,7 +724,7 @@
       "level": null
     },
     "src/readme.js": {
-      "hash": "sha256-68152795d689f3c72593aec280594823fe1b22a9ee1844813edc4be62e6fe0c4",
+      "hash": "sha256-17b21518484fd6b6df9f4f8b7c6198f27f4172c0e93d7d07c0788148157d39e0",
       "summary": "The repository's README.md, the main document.",
       "symbols": [
         "readmeIsPlain",
@@ -670,7 +740,13 @@
         "renderBlock",
         "sectionHash"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// It initializes a pending variable to track any pending operations.",
+          "anchor": "c9d44fda42540c9d"
+        }
+      ]
     },
     "src/report.js": {
       "hash": "sha256-87b1cefa84a1d4922d8c68e0ad4d37cf98da85bcc01b488db7a5b27a15cde4f4",
@@ -689,7 +765,7 @@
         "shortReason",
         "listOf"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/restates.js": {
       "hash": "sha256-cbbc325f53c7082452d3232875198167a6827913316404232bb252d024f89af3",
@@ -745,7 +821,7 @@
         "strings",
         "readPending"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/structure.js": {
       "hash": "sha256-97dbd7a0ffb9ec133a9e9f3d6847a9db19ba785c74ae8f8918f113986a760bd5",
