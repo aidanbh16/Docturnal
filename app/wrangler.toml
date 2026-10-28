@@ -48,3 +48,8 @@ id = "5f469f681733435f9b626ca32df7bbd4"
 # installations whose chosen local hour has arrived.
 [triggers]
 crons = ["7 * * * *"]
+
+# Workers Logs keeps the log lines of each invocation, including the hourly cron and the
+# queue, so nightly runs leave a record. The app logs no tokens, payloads, or code.
+[observability]
+enabled = true
