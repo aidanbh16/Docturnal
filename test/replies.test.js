@@ -1,15 +1,15 @@
 'use strict';
 
-// The comment requests and their replies: each request leaves room in the context for its
-// whole answer and asks for no more comments than the level can take; a reply cut off keeps
-// its complete comments; a request that gives no proposals says why, by category; and only
-// the comments the level can take are sent to the accuracy check.
+// The comment requests and their replies: each request shows only its targets' code and
+// leaves room in the context for its whole answer; it asks for exactly the targets the
+// level has room for; a reply cut off keeps its complete comments; a request that gives
+// fewer comments than it asked for says why, by category; and every comment written goes to
+// the accuracy check, since none is over the level.
 
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { MAX_PROPOSALS, REPLY_CAUSES: CAUSE, buildWindows, checkComments, finishComments, planComments, readReply, replySummary, salvageReply } = require('../src/comments');
-const { splitLines } = require('../src/analyze');
+const { MAX_EXCERPT_LINES, MAX_TARGETS_PER_REQUEST, REPLY_CAUSES: CAUSE, checkComments, finishComments, planComments, planTargets, readReply, replySummary, salvageReply } = require('../src/comments');
 
 const CONTEXT = 8192;
 
@@ -22,6 +22,7 @@ function functions(n, { commented = false } = {}) {
   }
   return `${out.join('\n')}\n`;
 }
+const names = (n) => Array.from({ length: n }, (_, i) => `step${i}`);
 
 // A chat function that records each request and answers with reply(request).
 function recorder(reply) {
@@ -33,96 +34,112 @@ function recorder(reply) {
   return { chat, requests };
 }
 
-const proposalsFor = (request) => {
-  const prompt = request.messages.map((m) => m.content).join('\n');
-  return [...prompt.matchAll(/^(\d+)\| (function \w+\(items\) \{)$/gm)].map(([, line, code]) => ({ line: Number(line), anchor: code, text: 'Weights each item by its step, so later steps count more.', kind: 'line' }));
-};
+// The model's answer: one comment for every target the request lists.
+const answer = (request) => JSON.stringify({
+  comments: [...request.messages[1].content.matchAll(/^Target (\d+), line/gm)].map(([, id]) => ({ id: Number(id), text: 'Weights each item by its step, so later steps count more.' })),
+});
 
-test('a reply cut off at its length limit keeps its finished summary and complete comments', () => {
-  const content = '{"summary": "Adds the steps.", "symbols": ["step0", "step1"], "comments": [{"line": 1, "anchor": "function step0(items) {", "text": "One \\"quoted\\" word, and a brace }.", "kind": "line"}, {"line": 7, "anchor": "function step1(it';
-  const salvaged = salvageReply(content);
-  assert.deepStrictEqual(salvaged, {
-    summary: 'Adds the steps.',
-    symbols: ['step0', 'step1'],
-    comments: [{ line: 1, anchor: 'function step0(items) {', text: 'One "quoted" word, and a brace }.', kind: 'line' }],
-  });
-  const read = readReply({ content, doneReason: 'length', promptTokens: 5000, replyTokens: 2000 }, { contextTokens: CONTEXT, cap: 10 });
+test('a reply cut off at its length limit keeps its complete comments', () => {
+  const content = '{"comments": [{"id": 1, "text": "One \\"quoted\\" word, and a brace }."}, {"id": 2, "text": "Cut of';
+  assert.deepStrictEqual(salvageReply(content), { comments: [{ id: 1, text: 'One "quoted" word, and a brace }.' }] });
+  const read = readReply({ content, doneReason: 'length', promptTokens: 900, replyTokens: 120 }, { contextTokens: CONTEXT, count: 2 });
   assert.strictEqual(read.cause, CAUSE.length);
-  assert.strictEqual(read.comments.length, 1);
+  assert.deepStrictEqual([...read.texts], [[1, 'One "quoted" word, and a brace }.']]);
   assert.strictEqual(read.salvaged, true);
 });
 
-test('each reply that gives no proposals says why, by category', () => {
-  const opts = { contextTokens: CONTEXT, cap: 5 };
-  assert.strictEqual(readReply('{"summary": "x", "symbols": [], "comments": []}', opts).cause, CAUSE.none);
-  assert.strictEqual(readReply('{"summary": "x", "symbols": [], "comments": []}', { ...opts, cap: 0 }).cause, CAUSE.capped);
-  assert.strictEqual(readReply('{"summary": "x", "symbols": []}', opts).cause, CAUSE.noList);
-  assert.strictEqual(readReply({ content: '{"summary": "x", "symbols": [], "comments": []}', promptTokens: 7000, replyTokens: 1190 }, opts).cause, CAUSE.context);
+test('each reply that gives fewer comments than asked says why, by category', () => {
+  const opts = { contextTokens: CONTEXT, count: 2 };
+  assert.strictEqual(readReply('{"comments": []}', opts).cause, CAUSE.none);
+  assert.strictEqual(readReply('{"comments": [{"id": 2, "text": "Only the second."}]}', opts).cause, CAUSE.missing);
+  // An id not asked for, a repeated id, and an empty text count as missing.
+  assert.strictEqual(readReply('{"comments": [{"id": 1, "text": "First."}, {"id": 1, "text": "Again."}, {"id": 3, "text": "Extra."}, {"id": 2, "text": " "}]}', opts).cause, CAUSE.missing);
+  assert.strictEqual(readReply({ content: '{"comments": []}', promptTokens: 7000, replyTokens: 1190 }, opts).cause, CAUSE.context);
+  assert.throws(() => readReply('{"summary": "x"}', opts), { message: CAUSE.noList });
   assert.throws(() => readReply('not json at all', opts), { message: CAUSE.json });
-  assert.throws(() => readReply({ content: '{"summ', doneReason: 'length' }, opts), { message: CAUSE.length });
-  assert.throws(() => readReply({ content: '{"summ', promptTokens: 6000, replyTokens: 2192 }, opts), { message: CAUSE.context });
-  assert.strictEqual(readReply('{"summary": "x", "symbols": [], "comments": [{"line": 1}]}', opts).cause, null);
+  assert.throws(() => readReply({ content: '{"comm', doneReason: 'length' }, opts), { message: CAUSE.length });
+  assert.throws(() => readReply({ content: '{"comm', promptTokens: 6000, replyTokens: 2192 }, opts), { message: CAUSE.context });
+  const full = readReply('{"comments": [{"id": 1, "text": "First."}, {"id": 2, "text": "Second."}]}', opts);
+  assert.strictEqual(full.cause, null);
+  assert.deepStrictEqual([...full.texts.keys()], [1, 2]);
 });
 
-test('every comment request fits its prompt and its whole answer in the context', async () => {
-  // Long lines with five-digit line numbers: the prefixes count as tokens too.
-  const text = `${Array.from({ length: 12000 }, (_, i) => `const value${i} = compute(${i}, 'a label of some length for the line');`).join('\n')}\n`;
-  const lines = splitLines(text);
-  for (const w of buildWindows(lines, CONTEXT)) {
-    let tokens = 0;
-    for (let i = w.start; i < w.end; i++) tokens += Math.ceil((lines[i].text.length + 1) / 3) + String(i + 1).length + 2;
-    assert.ok(tokens <= CONTEXT - 1000 - 2000, `lines ${w.start + 1}-${w.end}: ${tokens} tokens`);
+test('every comment request shows at most 40 lines a target and fits its whole answer in the context', async () => {
+  // Long functions of long lines, with five-digit line numbers.
+  const out = Array.from({ length: 11000 }, (_, i) => `// filler line ${i}`);
+  for (let f = 0; f < 30; f++) {
+    out.push(`export function big${f}(input) {`);
+    for (let i = 0; i < 120; i++) out.push(`  const value${i} = compute(input, ${i + 2}, 'a label of some length for the line, repeated: ${'x'.repeat(150)}');`);
+    out.push('  return input;', '}', '');
   }
-  const { chat, requests } = recorder((request) => JSON.stringify({ summary: 'Steps.', symbols: [], comments: proposalsFor(request) }));
-  await planComments({ path: 'src/steps.js', text: functions(120), level: 'medium', model: 'm', contextTokens: CONTEXT, chat });
+  const text = `${out.join('\n')}\n`;
+  for (const level of ['low', 'medium', 'heavy']) {
+    for (const contextTokens of [CONTEXT, 4096]) {
+      const plan = planTargets({ path: 'src/big.js', text, level, contextTokens, exportNames: Array.from({ length: 30 }, (_, f) => `big${f}`) });
+      assert.ok(plan.planned.length > 0, level);
+      for (const r of plan.planned) {
+        const prompt = r.messages.map((m) => m.content).join('\n');
+        assert.ok(r.targets.length >= 1 && r.targets.length <= MAX_TARGETS_PER_REQUEST);
+        const shown = prompt.match(/^\d+\| /gm).length;
+        assert.ok(shown <= MAX_EXCERPT_LINES * r.targets.length, `${shown} lines for ${r.targets.length} targets`);
+        assert.ok(r.numPredict > 0 && r.numPredict <= 16 + MAX_TARGETS_PER_REQUEST * (50 * 2 + 24), `num_predict ${r.numPredict}`);
+        assert.ok(prompt.length / 3 + r.numPredict <= contextTokens, `${level}, ${contextTokens}: ${prompt.length} characters and ${r.numPredict} tokens`);
+      }
+    }
+  }
+  const { chat, requests } = recorder(answer);
+  await planComments({ path: 'src/steps.js', text: functions(120), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, exportNames: names(120) });
   assert.ok(requests.length >= 1);
   for (const r of requests) {
-    assert.ok(r.options.num_predict > 0 && r.options.num_predict <= 2000);
+    assert.ok(r.options.num_predict > 0 && r.options.num_predict <= 16 + 4 * (25 * 2 + 24));
     assert.strictEqual(r.options.num_ctx, CONTEXT);
     assert.strictEqual(r.withReason, true);
   }
 });
 
-test('a request asks for no more comments than the level can take, and none when it is full', async () => {
-  const { chat, requests } = recorder((request) => JSON.stringify({ summary: 'Steps.', symbols: [], comments: proposalsFor(request) }));
-  // 24 functions of 5 code lines: 120 code lines, room for 10 at medium; half again is 15.
-  await planComments({ path: 'src/steps.js', text: functions(24), level: 'medium', model: 'm', contextTokens: CONTEXT, chat });
-  assert.match(requests[0].messages[1].content, /^Propose at most 15 comments\.$/m);
-  assert.strictEqual(requests[0].options.num_predict, 300 + 15 * 70);
-  // Every function already commented: the level is full.
-  const full = recorder(() => JSON.stringify({ summary: 'Steps.', symbols: [], comments: [] }));
-  const plan = await planComments({ path: 'src/steps.js', text: functions(24, { commented: true }), level: 'medium', model: 'm', contextTokens: CONTEXT, chat: full.chat });
-  assert.match(full.requests[0].messages[1].content, /so return an empty comments list\.$/m);
-  assert.strictEqual(full.requests[0].options.num_predict, 300);
-  assert.match(replySummary(plan), /^replies: lines 1-\d+: the code already has as many comments as the level allows$/);
-  // At heavy level, every declaration may take a block comment.
-  const heavy = recorder(() => JSON.stringify({ summary: 'Steps.', symbols: [], comments: [] }));
-  await planComments({ path: 'src/steps.js', text: functions(24, { commented: true }), level: 'heavy', model: 'm', contextTokens: CONTEXT, chat: heavy.chat });
-  assert.match(heavy.requests[0].messages[1].content, new RegExp(`^Propose at most ${Math.min(MAX_PROPOSALS, 24)} comments\\.$`, 'm'));
+test('the targets are the comments the level has room for, and a file that is full gets no request', async () => {
+  const { chat, requests } = recorder(answer);
+  // 24 exported functions of 5 code lines: 120 code lines, room for 10 at medium, 5 lines apart;
+  // one run takes the 8 best of them, and the other 2 wait for a later batch.
+  const plan = await planComments({ path: 'src/steps.js', text: functions(24), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, exportNames: names(24) });
+  assert.strictEqual(plan.targets.length, 8);
+  assert.strictEqual(plan.more, 2);
+  const asked = requests.flatMap((r) => [...r.messages[1].content.matchAll(/^Target \d+, line (\d+)/gm)].map((m) => Number(m[1])));
+  assert.deepStrictEqual(asked.sort((a, b) => a - b), plan.targets.map((t) => t.line));
+  // Small functions go four to a request.
+  assert.strictEqual(requests.length, 2);
+  assert.strictEqual(requests[0].options.num_predict, 16 + 4 * (25 * 2 + 24));
+  // Every function already commented: the level is full, so no request at all.
+  const full = recorder(() => { throw new Error('no request expected'); });
+  const done = await planComments({ path: 'src/steps.js', text: functions(24, { commented: true }), level: 'medium', model: 'm', contextTokens: CONTEXT, chat: full.chat, exportNames: names(24) });
+  assert.strictEqual(full.requests.length, 0);
+  assert.strictEqual(done.requests, 0);
+  assert.strictEqual(replySummary(done), '');
+  assert.strictEqual(finishComments(done).added, 0);
+  // At heavy level, a commented function needs nothing either, and the magic number in each
+  // loop is in a statement that shares the loop's line, where no comment can go.
+  const heavy = recorder(answer);
+  const blocks = await planComments({ path: 'src/steps.js', text: functions(24, { commented: true }), level: 'heavy', model: 'm', contextTokens: CONTEXT, chat: heavy.chat, exportNames: names(24) });
+  assert.deepStrictEqual(blocks.targets, []);
+  assert.strictEqual(heavy.requests.length, 0);
 });
 
-test('a file in a batch whose comments already fill the level needs no request', async () => {
-  const { chat, requests } = recorder(() => { throw new Error('no request expected'); });
-  const plan = await planComments({
-    path: 'src/steps.js', text: functions(24, { commented: true }), level: 'medium', model: 'm', contextTokens: CONTEXT, chat,
-    known: { summary: 'Computes weighted totals per step.', symbols: ['step0'] },
+test('a reply that leaves out a target says so in the log, with counts only', async () => {
+  const { chat } = recorder((request) => {
+    const all = JSON.parse(answer(request)).comments;
+    return JSON.stringify({ comments: all.slice(1) });
   });
-  assert.strictEqual(requests.length, 0);
-  assert.strictEqual(plan.summary, 'Computes weighted totals per step.');
-  assert.deepStrictEqual(plan.symbols, ['step0']);
-  assert.strictEqual(plan.requests, 0);
-  assert.match(replySummary(plan), /no request made$/);
-  assert.strictEqual(finishComments(plan).added, 0);
+  const plan = await planComments({ path: 'src/steps.js', text: functions(8), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, exportNames: names(8) });
+  assert.match(replySummary(plan), /^replies: lines [\d, ]+: the reply left out some targets, \d of \d$/);
+  assert.doesNotMatch(replySummary(plan), /Weights/);
 });
 
-test('only the comments the level can take go to the accuracy check', async () => {
-  // 24 proposals; medium allows 10, at least 5 lines apart.
-  const { chat } = recorder((request) => JSON.stringify({ summary: 'Steps.', symbols: [], comments: proposalsFor(request).concat(proposalsFor(request).map((p) => ({ ...p, line: p.line + 2, anchor: `for (const item of items) total += item.size * ${(p.line + 5) / 6 + 1};` }))) }));
+test('every comment written goes to the accuracy check: none is over the level', async () => {
+  const { chat } = recorder(answer);
   let clock = 0;
-  const plan = await planComments({ path: 'src/steps.js', text: functions(24), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, now: () => clock });
-  assert.ok(plan.built.candidates.length <= 10, `${plan.built.candidates.length} to check`);
-  const dropped = plan.built.rejections.filter((r) => r.category === 'density').length;
-  assert.ok(dropped >= plan.built.proposed - 10 - plan.built.rejections.filter((r) => r.category !== 'density').length);
+  const plan = await planComments({ path: 'src/steps.js', text: functions(24), level: 'medium', model: 'm', contextTokens: CONTEXT, chat, now: () => clock, exportNames: names(24) });
+  assert.strictEqual(plan.built.candidates.length, 8);
+  assert.deepStrictEqual(plan.built.rejections, []);
   const checked = [];
   await checkComments(plan, {
     model: 'm',
@@ -134,9 +151,10 @@ test('only the comments the level can take go to the accuracy check', async () =
       return JSON.stringify({ verdicts: items.map((id) => ({ id, accurate: true, useful: true, repeats: false })) });
     },
   });
-  assert.strictEqual(checked.length, plan.built.candidates.length);
-  assert.ok(plan.checkMs > 0 && plan.checkRequests === Math.ceil(checked.length / 8));
+  assert.strictEqual(checked.length, 8);
+  assert.ok(plan.checkMs > 0 && plan.checkRequests === 1);
   const result = finishComments(plan);
-  assert.strictEqual(result.added, plan.built.candidates.length);
-  assert.strictEqual(result.stats.proposed, 48);
+  assert.strictEqual(result.added, 8);
+  assert.strictEqual(result.stats.proposed, 8);
+  assert.deepStrictEqual(result.rejections, []);
 });

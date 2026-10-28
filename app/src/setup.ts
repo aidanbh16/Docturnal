@@ -4,7 +4,7 @@
 // settings are still those defaults, the page saves the browser's time zone as soon as it
 // loads, so closing it gives midnight in the user's own time zone.
 
-import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, type Settings, SettingsStore, isCommentLevel, isDefault, isExistingCode, isValidHour, isValidTimeZone } from './settings';
+import { COMMENT_LEVELS, type Choices, type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, PRIVATE_MINUTES, type Settings, SettingsStore, isCommentLevel, isDefault, isExistingCode, isPrivateMinutes, isValidHour, isValidTimeZone } from './settings';
 import { GITHUB_API_VERSION } from './github';
 import { randomToken, sameToken, signToken, verifyToken } from './session';
 import { WORKFLOW_VERSION } from './workflow';
@@ -242,7 +242,7 @@ function timeZones(selected: string): string[] {
 }
 
 function describe(settings: Choices): string {
-  return `every night at ${formatHour(settings.time)}, ${settings.timeZone} time, with ${settings.commentLevel === 'off' ? 'no comments (docs only)' : `${settings.commentLevel} comments`}`;
+  return `every night at ${formatHour(settings.time)}, ${settings.timeZone} time, with ${settings.commentLevel === 'off' ? 'no comments (docs only)' : `${settings.commentLevel} comments`}, for up to ${settings.privateMinutes} minutes in private repositories`;
 }
 
 // Defines the global styles for the application.
@@ -340,7 +340,7 @@ function updateSection(session: Session, older: { repo: string; version: number 
   if (!older.length) return '';
   const list = older.map((o) => `<li>${escape(o.repo)} (version ${o.version})</li>`).join('');
   return `<h2>Docturnal workflow</h2>
-<p>These repositories use an older Docturnal workflow. Version ${WORKFLOW_VERSION} lets only one run happen at a time and pins the code that checks out your repository.</p>
+<p>These repositories use an older Docturnal workflow. Version ${WORKFLOW_VERSION} lets only one run happen at a time, pins the code that checks out your repository, and keeps nights in a private repository within the time limit you choose.</p>
 <ul class="muted">${list}</ul>
 <form method="post" action="/setup">
 <input type="hidden" name="csrf" value="${escape(session.csrf)}">
@@ -356,6 +356,7 @@ function formPage(session: Session, settings: Settings, older: { repo: string; v
   const zones = timeZones(settings.timeZone).map((zone) =>
     `<option value="${escape(zone)}"${zone === settings.timeZone ? ' selected' : ''}>${escape(zone.replace(/_/g, ' '))}</option>`).join('');
   const existing = EXISTING_CODE_CHOICES.map((choice) => `<label class="level"><input type="radio" name="existingCode" value="${choice.value}"${choice.value === settings.existingCode ? ' checked' : ''}><div>${escape(choice.label)}<span>${escape(choice.description)}</span></div></label>`).join('\n');
+  const minutes = PRIVATE_MINUTES.map((m) => `<option value="${m}"${m === settings.privateMinutes ? ' selected' : ''}>${m} minutes${m === DEFAULT_SETTINGS.privateMinutes ? ' (default)' : ''}</option>`).join('');
   const levels = COMMENT_LEVELS.map((level) => `<label class="level"><input type="radio" name="commentLevel" value="${level}"${level === settings.commentLevel ? ' checked' : ''}><div>${level.charAt(0).toUpperCase()}${level.slice(1)}<span>${escape(LEVEL_DESCRIPTIONS[level])}</span></div></label>`).join('\n');
   const repos = settings.repos.length
     ? `<p class="muted">These settings apply to every repository in this installation:</p><ul class="muted">${settings.repos.map((r) => `<li>${escape(r)}</li>`).join('')}</ul>`
@@ -404,6 +405,9 @@ ${levels}
 <legend>Existing code</legend>
 ${existing}
 </fieldset>
+<label for="privateMinutes">Time limit for private repositories</label>
+<select id="privateMinutes" name="privateMinutes">${minutes}</select>
+<p class="muted">Each night's run in a private repository counts toward your free GitHub Actions minutes, so Docturnal stops after this long and continues the next night. Public repositories get 90 minutes.</p>
 <button type="submit">Save</button>
 </form>
 <p class="muted" id="unsaved">If you close this page without saving, nothing changes: Docturnal runs ${escape(describe(settings))}.</p>
@@ -587,17 +591,20 @@ async function handlePost(request: Request, env: SetupEnv, options: SetupOptions
   const time = Number(form.get('time'));
   const timeZone = String(form.get('timeZone') ?? '');
   const commentLevel = String(form.get('commentLevel') ?? '');
-  // A form from before this setting existed keeps the stored choice.
+  // A form from before a setting existed keeps the stored choice; it is read only then.
   const existingRaw = form.get('existingCode');
-  const existingCode = existingRaw === null ? ((await store.getChoices(session.installationId)) ?? DEFAULT_SETTINGS).existingCode : String(existingRaw);
-  if (!isValidHour(time) || !isValidTimeZone(timeZone) || !isCommentLevel(commentLevel) || !isExistingCode(existingCode)) {
-    return errorPage(400, 'Choose a time, a time zone, a comment level, and what to do with existing code.');
+  const minutesRaw = form.get('privateMinutes');
+  const stored = existingRaw === null || minutesRaw === null ? ((await store.getChoices(session.installationId)) ?? DEFAULT_SETTINGS) : DEFAULT_SETTINGS;
+  const existingCode = existingRaw === null ? stored.existingCode : String(existingRaw);
+  const privateMinutes = minutesRaw === null ? stored.privateMinutes : Number(minutesRaw);
+  if (!isValidHour(time) || !isValidTimeZone(timeZone) || !isCommentLevel(commentLevel) || !isExistingCode(existingCode) || !isPrivateMinutes(privateMinutes)) {
+    return errorPage(400, 'Choose a time, a time zone, a comment level, what to do with existing code, and a time limit for private repositories.');
   }
 
   // Only the settings key is written; the repository list belongs to the webhooks.
-  const saved: Choices = { time, timeZone, commentLevel, existingCode };
+  const saved: Choices = { time, timeZone, commentLevel, existingCode, privateMinutes };
   await store.putChoices(session.installationId, saved);
-  options.log(`setup ${session.installationId}: saved ${formatHour(time)} ${timeZone}, ${commentLevel} comments, existing code ${existingCode}`);
+  options.log(`setup ${session.installationId}: saved ${formatHour(time)} ${timeZone}, ${commentLevel} comments, existing code ${existingCode}, ${privateMinutes} minutes in private repositories`);
   return page(200, 'Settings saved', `<h1>Settings saved</h1>
 <p>Docturnal now runs ${escape(describe(saved))}, starting with the next run.</p>
 <a class="button" href="/setup">Change them again</a>`);

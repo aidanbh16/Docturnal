@@ -44,7 +44,7 @@ const FOLDERS = new Map(Object.entries(RUN.folders));
 // models; and the run itself, with git and the state. A file added to src/ later goes with the run.
 const NAMES = ['comment', 'docs', 'ollama', 'run'];
 const SETS = {
-  comment: ['accuracy', 'analyze', 'comments', 'languages', 'owned', 'python', 'python-helper', 'restates', 'verify'],
+  comment: ['accuracy', 'analyze', 'comments', 'languages', 'owned', 'python', 'python-helper', 'restates', 'targets', 'verify'],
   docs: ['clusters', 'configuration', 'docs', 'folders', 'grounding', 'layers', 'links', 'readme', 'split', 'structure'],
   ollama: ['install-ollama', 'models', 'ollama', 'verify-models'],
 };

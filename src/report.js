@@ -7,7 +7,6 @@ const MAX_REJECTION_ROWS = 100;
 // What happened to proposed comments, by category, in report order.
 const DROP_LABELS = {
   placement: 'dropped by placement rules',
-  anchor: 'anchor not found',
   length: 'dropped by the length limit',
   density: 'dropped by the density limit',
   inaccurate: 'inaccurate',
@@ -54,7 +53,7 @@ function shortReason(reason) {
   return reason.replace(/^(cannot analyze file):.*$/s, '$1');
 }
 
-// One file's proposals as counts, for example "proposed 3, 1 anchor not found, 1 inaccurate,
+// One file's proposals as counts, for example "proposed 3, 1 restates the code, 1 inaccurate,
 // 1 added", then what happened to the comments Docturnal wrote on earlier runs. With reasons,
 // each category lists its reasons with counts. It never includes comment text or code.
 function proposalSummary(stats, { reasons = false } = {}) {
@@ -94,7 +93,7 @@ const listOf = (items) => (items.length > 1 ? `${items.slice(0, -1).join(', ')} 
 // The progress section that opens every pull request: how far the documentation and the
 // comments have come, what this pull request holds, and what comes next.
 // p: { docsComplete, summarized, documentable, layers, level, commented, commentable,
-//      existingCode, pending, backlogLeft, nextBatch, batchSize }
+//      existingCode, pending, backlogLeft, nextBatch, batchSize, timeLimit: { minutes, private } }
 function progressLines(p) {
   const lines = ['## Progress', ''];
   // Docs left by the time budget, such as a large project's sub-documents after its part
@@ -125,6 +124,13 @@ function progressLines(p) {
   else if (p.pending.batch) next = `batch ${p.nextBatch} of existing code, after you merge or close this pull request. ${plural(p.backlogLeft, 'existing file')} ${p.backlogLeft === 1 ? 'is' : 'are'} left.`;
   else next = `comments on existing code in batches of up to ${p.batchSize} files, starting with batch ${p.nextBatch} and the most important files. ${plural(p.backlogLeft, 'existing file')} ${p.backlogLeft === 1 ? 'is' : 'are'} left.`;
   lines.push(`- **Next:** ${next}`);
+  // A private repository's runs count toward its owner's Actions minutes, so its nights are
+  // shorter, as the settings choose.
+  if (p.timeLimit) {
+    lines.push(p.timeLimit.private
+      ? `- **Time limit:** ${plural(p.timeLimit.minutes, 'minute')} a night, the limit for private repositories. You can change it in the settings.`
+      : `- **Time limit:** ${plural(p.timeLimit.minutes, 'minute')} a night.`);
+  }
   return lines;
 }
 

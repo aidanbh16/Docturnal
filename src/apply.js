@@ -9,7 +9,7 @@ const path = require('path');
 
 const { docExists, needsComments } = require('./changes');
 const { createCaller, docName, generateDocs, writeDocs } = require('./docs');
-const { commitAndPush, listFiles, mergedSince } = require('./git');
+const { commitAndPush, isPrivateRepository, listFiles, mergedSince } = require('./git');
 const { requirePlainPath } = require('./safe-path');
 const { updateReadme, writeReadme } = require('./readme');
 const { README_RESERVE_MINUTES } = require('./process');
@@ -228,6 +228,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
       .filter((file) => !(pending.batch && pending.batch.files.includes(file))).length,
     nextBatch: batchesDone + 1,
     batchSize: config.backlogBatchSize,
+    timeLimit: { minutes: config.timeBudgetMinutes, private: isPrivateRepository(env) },
   };
   const title = pullRequestTitle(pending);
   const report = buildReport({

@@ -452,4 +452,4 @@ function analyzeLines(text, lines, language) {
   return analyzeGeneric(lines, language);
 }
 
-module.exports = { analyzeLines, lineStarts, matchToken, splitLines };
+module.exports = { analyzeLines, lineIndexAt, lineStarts, matchToken, splitLines };

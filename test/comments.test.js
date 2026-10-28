@@ -3,14 +3,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { cleanText, commentFile, buildWindows } = require('../src/comments');
-const { applyAnchored: applyProposals, withAccuracy, withAnchor } = require('./helpers');
+const { applyProposals, cleanText, commentFile } = require('../src/comments');
+const { writing } = require('./helpers');
 const { classifyFile, languageById } = require('../src/languages');
 const { baseUrl } = require('../src/ollama');
 const { findPython } = require('../src/python');
 const { verifyCandidates } = require('../src/verify');
-const { splitLines } = require('../src/analyze');
-const { kindOf, startMockOllama } = require('./mock-ollama');
+const { kindOf, startMockOllama, targetsOf } = require('./mock-ollama');
 
 const noPython = findPython() ? false : 'python3 is not available';
 
@@ -448,23 +447,10 @@ test('level off adds nothing', () => {
   assert.strictEqual(result.text, RETRY_JS);
 });
 
-test('windows split long files into line ranges that fit the budget', () => {
-  const lines = splitLines(source(Array.from({ length: 3000 }, (_, i) => `const value${i} = compute(${i});`)));
-  const windows = buildWindows(lines, 4096);
-  assert.ok(windows.length > 1);
-  assert.strictEqual(windows[0].start, 0);
-  assert.strictEqual(windows[windows.length - 1].end, 3000);
-  for (let i = 1; i < windows.length; i++) assert.strictEqual(windows[i].start, windows[i - 1].end);
-});
-
 // --- End to end with the mock Ollama server ---
 
-test('commentFile asks the model per window and applies its proposals', async () => {
-  const mock = await startMockOllama(withAccuracy(() => ({
-    summary: 'Retries a function a fixed number of times.',
-    symbols: ['retry'],
-    comments: [withAnchor(RETRY_JS, { line: 10, text: 'Rethrow the final failure instead of a generic error.', kind: 'line' })],
-  })));
+test('commentFile asks for each target by its line and puts the comment directly above it', async () => {
+  const mock = await startMockOllama(writing(() => 'Retries a call that can fail, and rethrows its last error so callers see it.'));
   try {
     const result = await commentFile({
       path: 'src/retry.js',
@@ -472,20 +458,23 @@ test('commentFile asks the model per window and applies its proposals', async ()
       level: 'medium',
       model: 'qwen2.5-coder:3b',
       host: mock.host,
+      exportNames: ['retry'],
     });
     assert.strictEqual(result.added, 1);
-    assert.strictEqual(result.summary, 'Retries a function a fixed number of times.');
-    assert.deepStrictEqual(result.symbols, ['retry']);
-    assert.match(result.text, /\/\/ Rethrow the final failure/);
+    assert.match(result.text, /^\/\/ Retries a call that can fail[^\n]*\nfunction retry\(fn, attempts\) \{/);
 
-    // One request for proposals, then one accuracy check.
+    // One request for the one target, then one accuracy check.
     assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'accuracy']);
     const request = mock.requests[0];
     assert.strictEqual(request.model, 'qwen2.5-coder:3b');
     assert.strictEqual(request.stream, true);
-    assert.deepStrictEqual(request.format.required, ['summary', 'symbols', 'comments']);
-    assert.match(request.messages[1].content, /^File: src\/retry\.js\nLanguage: JavaScript\n/);
+    assert.deepStrictEqual(request.format.required, ['comments']);
+    assert.deepStrictEqual(Object.keys(request.format.properties.comments.items.properties), ['id', 'text']);
+    assert.match(request.messages[1].content, /^File: src\/retry\.js\nLanguage: JavaScript\n\nTarget 1, line 1: the function `retry` \(exported\)\. At most 25 words\.\n1\| function retry/);
     assert.match(request.messages[1].content, /\n10\|   throw lastError;/);
+    assert.deepStrictEqual(targetsOf(request).map((t) => t.line), [1]);
+    // The answer only has room for the comments asked for.
+    assert.strictEqual(request.options.num_predict, 16 + 25 * 2 + 24);
   } finally {
     await mock.close();
   }
@@ -494,9 +483,9 @@ test('commentFile asks the model per window and applies its proposals', async ()
 test('commentFile survives a malformed model response', async () => {
   const mock = await startMockOllama(() => 'not json');
   try {
-    const result = await commentFile({ path: 'src/retry.js', text: RETRY_JS, level: 'medium', model: 'm', host: mock.host });
+    const result = await commentFile({ path: 'src/retry.js', text: RETRY_JS, level: 'medium', model: 'm', host: mock.host, exportNames: ['retry'] });
     assert.strictEqual(result.added, 0);
-    assert.strictEqual(result.failedWindows, 1);
+    assert.strictEqual(result.failedRequests, 1);
     assert.strictEqual(result.text, RETRY_JS);
   } finally {
     await mock.close();

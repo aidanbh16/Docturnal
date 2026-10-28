@@ -12,7 +12,7 @@ const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
 const { promisify } = require('node:util');
 
-const { defaultHandler, kindOf, startMockOllama } = require('./mock-ollama');
+const { defaultHandler, kindOf, startMockOllama, targetsOf } = require('./mock-ollama');
 
 const ROOT = path.join(__dirname, '..');
 const PAYROLL = fs.readFileSync(path.join(__dirname, 'fixtures/payroll.js'), 'utf8');
@@ -30,10 +30,10 @@ const gitEnv = {
 };
 let clones = 0;
 let mock;
-// Set per test: how the mock answers each accuracy check, and proposals it adds to each
-// comments request.
+// Set per test: how the mock answers each accuracy check, and the text it writes for a
+// target instead of its usual one (nothing to keep that).
 let onCheck = () => undefined;
-let addComments = () => [];
+let rewrite = () => null;
 const fallback = defaultHandler();
 
 function git(cwd, ...args) {
@@ -78,7 +78,9 @@ describe('the accuracy check in a run', () => {
         if (answer instanceof Error) throw answer;
       }
       const reply = fallback(body, index);
-      if (kindOf(body) === 'comments') reply.comments.push(...addComments(body));
+      if (kindOf(body) === 'comments') {
+        for (const c of reply.comments) c.text = rewrite(body, targetsOf(body).find((x) => x.id === c.id)) || c.text;
+      }
       return reply;
     });
     fs.writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '');
@@ -112,7 +114,7 @@ describe('the accuracy check in a run', () => {
     assert.strictEqual(loadRequest.keep_alive, '30m');
     assert.strictEqual(loadRequest.options.num_ctx, mock.requests.find((r) => kindOf(r) === 'accuracy').options.num_ctx);
     // Each call is logged with its model and duration, and never with code.
-    assert.match(log, /^Ollama: comments for src\/payroll\.js, lines 1 to \d+ with comment-model, \d+\.\d s$/m);
+    assert.match(log, /^Ollama: comments for src\/payroll\.js, lines? [\d, ]+ with comment-model, \d+\.\d s$/m);
     assert.match(log, /^Ollama: loading docs-model with docs-model, \d+\.\d s$/m);
     assert.match(log, /^Ollama: accuracy check for src\/payroll\.js with docs-model, \d+\.\d s$/m);
     assert.ok(!log.includes('OVERTIME_MULTIPLIER'));
@@ -150,26 +152,30 @@ describe('the accuracy check in a run', () => {
 
   it('logs the coverage score of each comment dropped as a restatement, never its text', async () => {
     onCheck = () => undefined;
-    const sumHours = '  for (const day of days) total += day.hours;';
-    fs.appendFileSync(path.join(seed, 'src/payroll.js'), `\nfunction sumHours(days) {\n  let total = 0;\n${sumHours}\n  return total;\n}\n`);
+    // Bitwise math and a magic number: a complex block, which medium level comments. The
+    // function is long enough to give the file room for one more comment.
+    const minutes = '  const minutes = (total * 60) | 0;';
+    const rest = ['const weekly = days.filter((day) => day.week);', 'const named = weekly.map((day) => day.name);', 'const sorted = named.sort();',
+      'const unique = [...new Set(sorted)];', 'const first = unique[0];', 'const last = unique[unique.length - 1];', 'return { minutes, first, last };'];
+    fs.appendFileSync(path.join(seed, 'src/payroll.js'), `\nfunction workedMinutes(days) {\n  let total = 0;\n  for (const day of days) total += day.hours;\n${minutes}\n${rest.map((l) => `  ${l}`).join('\n')}\n}\n`);
     git(seed, 'add', '-A');
-    git(seed, 'commit', '-qm', 'Add sumHours');
+    git(seed, 'commit', '-qm', 'Add workedMinutes');
     git(seed, 'push', '-q', 'origin', 'main');
     let line;
-    addComments = (body) => {
-      const match = body.messages[1].content.match(/^(\d+)\|   for \(const day of days\) total \+= day\.hours;$/m);
-      if (!match) return [];
-      line = Number(match[1]);
-      return [{ line, anchor: sumHours.trim(), text: "Adds each day's hours to the total.", kind: 'line' }];
+    rewrite = (body, target) => {
+      const code = (body.messages[1].content.match(new RegExp(`^${target.line}\\| (.*)$`, 'm')) || [])[1];
+      if (code !== minutes) return null;
+      line = target.line;
+      return 'Sets minutes to the total times 60.';
     };
     try {
       const { log } = await runMain();
       assert.ok(line > 0);
       assert.match(log, new RegExp(`^src/payroll\\.js: line ${line} dropped as restating the code \\(coverage 1\\.00\\)$`, 'm'));
-      assert.ok(!log.includes("Adds each day's hours"));
+      assert.ok(!log.includes('Sets minutes to the total'));
       assert.match(log, /restates the code \(restates the code \(word match\): 1\)/);
     } finally {
-      addComments = () => [];
+      rewrite = () => null;
     }
   });
 

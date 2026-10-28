@@ -200,10 +200,27 @@ grep -q 'nothing changed since the last run' "$RUN_LOG" || fail "run 2 did not r
 pass "run 2 with no changes makes no model calls and pushes nothing"
 
 # --- Run 3: one file edited ---
+# The file already has its one comment from batch 1, so the new function is long enough to
+# give medium level room for another, and far enough from that comment.
 cat >> "$WORK/seed/src/db/client.js" <<'EOF'
 
-export function disconnect(client) {
-  return { ...client, connected: false };
+const RETRY_LIMIT = 3;
+
+export function disconnect(client, options = {}) {
+  const closed = { ...client, connected: false };
+  if (options.reason) {
+    closed.reason = options.reason;
+  }
+  if (options.at) {
+    closed.closedAt = options.at;
+  }
+  const log = options.log || [];
+  log.push(closed.url);
+  closed.log = log;
+  closed.retries = Math.min(options.retries || 0, RETRY_LIMIT);
+  closed.pending = [];
+  closed.done = true;
+  return closed;
 }
 EOF
 seed_commit "Add disconnect"

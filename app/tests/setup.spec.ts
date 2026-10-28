@@ -123,7 +123,7 @@ function setup({ settings, clientSecret, failExchanges = 0, failWith = 502, hidd
   return { gh, kv, queue, logs, env, sleeps, installationChecks, handle: (request: Request) => handle(request, env), get, post, signIn, advance: (ms: number) => (now += ms) };
 }
 
-const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' };
+const SAVE = { time: '2', timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none', privateMinutes: '60' };
 
 describe('who may change the settings', () => {
   it('a personal account: the owner may, a collaborator on one of its repositories may not', async () => {
@@ -168,7 +168,9 @@ describe('setup page sign-in', () => {
     expect(form).toContain('<option value="0" selected>12 AM (midnight)</option>');
     expect(form).toContain('value="America/New_York" selected');
     expect(form).toContain('value="medium" checked');
-    expect(form).toContain('If you close this page without saving, nothing changes: Docturnal runs every night at 12 AM (midnight), America/New_York time, with medium comments.');
+    expect(form).toContain('If you close this page without saving, nothing changes: Docturnal runs every night at 12 AM (midnight), America/New_York time, with medium comments, for up to 30 minutes in private repositories.');
+    expect(form).toContain('<option value="30" selected>30 minutes (default)</option>');
+    expect(form).toContain('<label for="privateMinutes">Time limit for private repositories</label>');
     // With default settings, the page saves the browser's time zone when it loads.
     expect(form).toContain('resolvedOptions().timeZone');
     expect(form).toContain("body.set('detectedTimeZone', zone)");
@@ -177,10 +179,12 @@ describe('setup page sign-in', () => {
     const saved = await t.post({ ...SAVE, csrf }, cookie);
     expect(saved.status).toBe(200);
     const page = await saved.text();
-    expect(page).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
-    expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' });
-    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none' });
-    expect(t.logs).toContain('setup 1: saved 2 AM America/Los_Angeles, heavy comments, existing code none');
+    expect(page).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments, for up to 60 minutes in private repositories');
+    expect(t.kv.json('install:1:settings')).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none', privateMinutes: 60 });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 2, timeZone: 'America/Los_Angeles', commentLevel: 'heavy', existingCode: 'none', privateMinutes: 60 });
+    expect(t.logs).toContain('setup 1: saved 2 AM America/Los_Angeles, heavy comments, existing code none, 60 minutes in private repositories');
+    // Only the listed time limits are accepted.
+    expect((await t.post({ ...SAVE, privateMinutes: '45', csrf }, cookie)).status).toBe(400);
     expect(t.kv.repos(1)).toEqual(['octo/hello']);
 
     // Saved settings are shown next time, without the browser suggestion.
@@ -313,9 +317,9 @@ describe("saving the browser's time zone", () => {
 
     expect(requests.map((r) => r.get('detectedTimeZone'))).toEqual(['America/Los_Angeles']);
     expect(select.value).toBe('America/Los_Angeles');
-    expect(t.kv.installation(1)).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual', repos: ['octo/hello'] });
-    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual' });
-    expect(unsaved.textContent).toBe('Your time zone, America/Los_Angeles, is saved. If you close this page now, Docturnal runs every night at 12 AM (midnight), America/Los_Angeles time, with medium comments.');
+    expect(t.kv.installation(1)).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual', privateMinutes: 30, repos: ['octo/hello'] });
+    expect(t.kv.data.get('install:1:settings')!.metadata).toEqual({ time: 0, timeZone: 'America/Los_Angeles', commentLevel: 'medium', existingCode: 'gradual', privateMinutes: 30 });
+    expect(unsaved.textContent).toBe('Your time zone, America/Los_Angeles, is saved. If you close this page now, Docturnal runs every night at 12 AM (midnight), America/Los_Angeles time, with medium comments, for up to 30 minutes in private repositories.');
     expect(t.logs).toContain("setup 1: saved the browser's time zone, America/Los_Angeles");
 
     // The next visit shows the saved time zone and does not save again.
@@ -330,7 +334,7 @@ describe("saving the browser's time zone", () => {
     await runPageScript(t, form, cookie, 'Europe/Berlin', csp);
     // Only the settings key is written; repository keys are the webhooks' to create.
     expect([...t.kv.data.keys()]).toEqual(['install:1:settings']);
-    expect(t.kv.json('install:1:settings')).toEqual({ time: 0, timeZone: 'Europe/Berlin', commentLevel: 'medium', existingCode: 'gradual' });
+    expect(t.kv.json('install:1:settings')).toEqual({ time: 0, timeZone: 'Europe/Berlin', commentLevel: 'medium', existingCode: 'gradual', privateMinutes: 30 });
   });
 
   it('sends nothing when the browser is already in New York or its time zone is not listed', async () => {
@@ -427,7 +431,7 @@ describe('saving settings', () => {
     const { cookie, csrf } = await t.signIn();
     const response = await t.post({ ...SAVE, csrf }, cookie, 'null');
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments');
+    expect(await response.text()).toContain('Docturnal now runs every night at 2 AM, America/Los_Angeles time, with heavy comments, for up to 60 minutes in private repositories');
   });
 
   it('checks the Referer when the Origin is null, and still requires the session and CSRF token', async () => {
@@ -586,7 +590,7 @@ describe('sign-in codes from GitHub', () => {
     expect(back.status).toBe(200);
     const html = await back.text();
     expect(html).toContain('<h1>Docturnal is installed</h1>');
-    expect(html).toContain('It will run every night at 12 AM (midnight), America/New_York time, with medium comments. You can change the settings any time from the link in each Docturnal pull request.');
+    expect(html).toContain('It will run every night at 12 AM (midnight), America/New_York time, with medium comments, for up to 30 minutes in private repositories. You can change the settings any time from the link in each Docturnal pull request.');
     expect(html).toContain('Try signing in again');
     expect(t.logs).toEqual([
       'setup 1 (install): the sign-in code did not work (HTTP 502), signing in again',
@@ -705,7 +709,7 @@ describe('the "Update the Docturnal workflow" button', () => {
     const current = await (await t.get('/setup', cookie)).text();
     expect(current).not.toContain('Update the Docturnal workflow');
     const again = await t.post({ ...UPDATE, csrf }, cookie);
-    expect(await again.text()).toContain('Every repository in this installation already uses Docturnal workflow version 5.');
+    expect(await again.text()).toContain('Every repository in this installation already uses Docturnal workflow version 6.');
     expect(t.queue.pending).toHaveLength(1);
   });
 
@@ -721,7 +725,7 @@ describe('the "Update the Docturnal workflow" button', () => {
     // a session for their own installation reaches only its repositories.
     const mallory = `${SESSION_COOKIE}=${await createSession(t.env, { installationId: 99, account: 'mallory', csrf: 'c' }, START)}`;
     const other = await t.post({ ...UPDATE, csrf: 'c', installation_id: '1' }, mallory);
-    expect(await other.text()).toContain('already uses Docturnal workflow version 5');
+    expect(await other.text()).toContain('already uses Docturnal workflow version 6');
     // A collaborator cannot sign in at all.
     expect((await t.get('/setup?code=collaborator-code&installation_id=1&setup_action=install')).status).toBe(403);
     expect(t.queue.pending).toEqual([]);

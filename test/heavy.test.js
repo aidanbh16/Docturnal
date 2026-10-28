@@ -1,18 +1,19 @@
 'use strict';
 
 // Heavy level: a block comment above every function, class, and component, which the
-// density limit never drops, plus line comments on non-obvious logic, which it still limits.
+// density limit never drops, plus line comments on constants and complex blocks, which it
+// still limits. Code chooses every one of these spots before the model writes a word.
 
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { commentFile } = require('../src/comments');
-const { applyAnchored: applyProposals, withAnchor } = require('./helpers');
+const { applyProposals, commentFile } = require('../src/comments');
+const { writing } = require('./helpers');
 const { findPython } = require('../src/python');
 const { languageById } = require('../src/languages');
-const { accuracyReply, blocksReply, kindOf, startMockOllama } = require('./mock-ollama');
+const { kindOf, startMockOllama, targetsOf } = require('./mock-ollama');
 
 const js = languageById('javascript');
 const noPython = !findPython();
@@ -21,6 +22,7 @@ const noPython = !findPython();
 const PAYROLL = fs.readFileSync(path.join(__dirname, 'fixtures/payroll.js'), 'utf8');
 const FUNCTIONS = ['grossPay', 'incomeTax', 'netPay', 'formatCurrency', 'payslip'];
 const lineOf = (code) => PAYROLL.split('\n').findIndex((l) => l.startsWith(code)) + 1;
+const EXPORTS = { exportNames: FUNCTIONS };
 
 // What the model proposed in the real run: one block comment and four line comments.
 const FIRST_PASS = [
@@ -29,17 +31,18 @@ const FIRST_PASS = [
   { line: lineOf('  const overtime'), text: 'Only hours past the threshold earn the multiplier.', kind: 'line' },
   { line: lineOf('const OVERTIME_THRESHOLD_HOURS'), text: 'Weekly hours before overtime starts.', kind: 'line' },
   { line: lineOf('  return Math.round'), text: 'Rounds to cents so payslip totals add up.', kind: 'line' },
-].map((p) => withAnchor(PAYROLL, p));
+];
 
 function hasBlockAbove(text, name) {
   return new RegExp(`/\\*\\*\\n(?: \\*.*\\n)+ \\*/\\n(?:function|const) ${name}\\b`).test(text);
 }
 
-function firstPassHandler(body) {
-  if (kindOf(body) === 'blocks') return blocksReply(body);
-  if (kindOf(body) === 'accuracy') return accuracyReply(body);
-  return { summary: 'Computes pay, tax, and payslips.', symbols: FUNCTIONS, comments: FIRST_PASS };
-}
+// The model's comment for each target: what a function is for, and why for the rest.
+const describe = (t) => (t.name && t.kind !== 'constant'
+  ? `Works out ${t.name} per employee, without side effects.`
+  : t.kind === 'constant' ? 'Hours and rates as the employment contract states them.' : 'Rounds to cents so payslip totals add up.');
+
+const without = (text) => text.split('\n').filter((l) => !/^\s*(\/\*\*| \*|\/\/)/.test(l)).join('\n');
 
 test('heavy: a block comment above a function never uses up the level or the gap', () => {
   const result = applyProposals({ text: PAYROLL, language: js, level: 'heavy', proposals: FIRST_PASS });
@@ -66,96 +69,116 @@ test('heavy: block comments are added even when line comments have used up the l
   assert.strictEqual(result.added + limited, lineComments.length + blocks.length);
 });
 
-test('heavy: every function in payroll.js gets a block comment, with one follow-up request', async () => {
-  const mock = await startMockOllama(firstPassHandler);
+test('heavy: every function in payroll.js gets a block comment, and every comment written is kept', async () => {
+  const mock = await startMockOllama(writing(describe));
   try {
-    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host });
+    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
     for (const name of FUNCTIONS) assert.ok(hasBlockAbove(result.text, name), `${name}:\n${result.text}`);
     assert.deepStrictEqual(result.undocumented, []);
     assert.deepStrictEqual(result.errors, []);
 
-    assert.deepStrictEqual([...new Set(mock.requests.map(kindOf))], ['comments', 'blocks', 'accuracy']);
-    const followUp = mock.requests[1];
-    assert.deepStrictEqual(followUp.format.required, ['comments']);
-    const prompt = followUp.messages[1].content;
-    assert.deepStrictEqual([...prompt.matchAll(/^- line (\d+): (\w+)$/gm)].map((m) => `${m[1]} ${m[2]}`), [
-      `${lineOf('function incomeTax')} incomeTax`,
-      `${lineOf('function netPay')} netPay`,
-      `${lineOf('const formatCurrency')} formatCurrency`,
-      `${lineOf('function payslip')} payslip`,
-    ]);
-    assert.match(prompt, new RegExp(`\\n${lineOf('function payslip')}\\| function payslip\\(employee\\) \\{\\n`));
-    // The code before the first listed function is not sent again.
-    assert.doesNotMatch(prompt, /\| const OVERTIME_MULTIPLIER/);
-    // 5 blocks plus the line comments that fit the level.
-    assert.strictEqual(result.stats.proposed, 9);
-    assert.strictEqual(result.added, 8);
+    // No follow-up request: the requests ask for every function at once, by name and line.
+    assert.deepStrictEqual([...new Set(mock.requests.map(kindOf))], ['comments', 'accuracy']);
+    const asked = mock.requests.filter((r) => kindOf(r) === 'comments').flatMap(targetsOf);
+    // In order of importance: the exported functions, longest first, before the constants.
+    assert.deepStrictEqual(asked.slice(0, 5).map((t) => t.kind), Array(5).fill('function'));
+    const targets = [...asked].sort((a, b) => a.line - b.line);
+    assert.deepStrictEqual(targets.filter((t) => t.kind === 'function').map((t) => `${t.line} ${t.name}`), FUNCTIONS.map((name) => `${lineOf(name === 'formatCurrency' ? 'const formatCurrency' : `function ${name}`)} ${name}`));
+    assert.deepStrictEqual(targets.filter((t) => t.kind === 'constant').map((t) => t.name), ['OVERTIME_THRESHOLD_HOURS', 'OVERTIME_MULTIPLIER', 'TAX_BRACKETS']);
+    // The magic number 100 in incomeTax is a block of its own.
+    assert.deepStrictEqual(targets.filter((t) => t.kind === 'block').map((t) => `${t.line} ${t.fn}: ${t.what}`), [`${lineOf('  return Math.round')} incomeTax: a block in \`incomeTax\` with the number 100`]);
+    // Every function asks for its block comment's length, and the rest for a line's.
+    for (const t of targets) assert.strictEqual(t.words, t.kind === 'function' ? 50 : 30, t.what);
+    // Every comment the model wrote is inserted: nothing is dropped for its place or the level.
+    assert.strictEqual(result.stats.proposed, targets.length);
+    assert.strictEqual(result.added, targets.length);
+    assert.deepStrictEqual(result.rejections, []);
     // The output is valid JavaScript with the original code untouched.
-    const withoutComments = result.text.split('\n').filter((l) => !/^\s*(\/\*\*| \*|\/\/)/.test(l)).join('\n');
-    assert.strictEqual(withoutComments, PAYROLL);
+    assert.strictEqual(without(result.text), PAYROLL);
   } finally {
     await mock.close();
   }
 });
 
-test('heavy: the heavy prompt asks for line comments on non-obvious logic', async () => {
-  const mock = await startMockOllama(firstPassHandler);
+test('heavy: each request shows only its targets\' code, never the whole file', async () => {
+  const mock = await startMockOllama(writing(describe));
   try {
-    await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host });
+    await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
     const system = mock.requests[0].messages[0].content;
-    assert.match(system, /Give every function, class, and component a comment of kind "block"/);
-    assert.match(system, /non-obvious logic: calculations, loops, edge cases, and magic numbers/);
+    assert.match(system, /- A function, method, class, or component: what it is for, what it takes and returns, and its side effects./);
+    assert.match(system, /- A block: what it achieves, and why when the code shows it./);
+    for (const request of mock.requests.filter((r) => kindOf(r) === 'comments')) {
+      const prompt = request.messages[1].content;
+      const shown = [...prompt.matchAll(/^(\d+)\| /gm)].map((m) => Number(m[1]));
+      assert.ok(shown.length < PAYROLL.split('\n').length, `${shown.length} lines shown`);
+      // Each target's own lines are shown, starting with its line.
+      for (const t of targetsOf(request)) assert.ok(shown.includes(t.line), `line ${t.line}`);
+    }
   } finally {
     await mock.close();
   }
 });
 
-test('heavy: no follow-up when every function already has a comment, or the model never answered', async () => {
-  const documented = await startMockOllama(firstPassHandler);
+test('heavy: a second run asks for nothing that already has a comment', async () => {
+  const mock = await startMockOllama(writing(describe));
   try {
-    const first = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: documented.host });
-    const again = await commentFile({ path: 'src/payroll.js', text: first.text, level: 'heavy', model: 'm', host: documented.host });
-    assert.strictEqual(documented.requests.filter((r) => kindOf(r) === 'blocks').length, 1);
+    const first = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
+    const before = mock.requests.length;
+    const again = await commentFile({ path: 'src/payroll.js', text: first.text, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
+    assert.strictEqual(mock.requests.length, before, 'no request on the second run');
+    assert.strictEqual(again.text, first.text);
     assert.deepStrictEqual(again.undocumented, []);
   } finally {
-    await documented.close();
+    await mock.close();
   }
   const down = await startMockOllama(() => 'not json');
   try {
-    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: down.host });
-    assert.strictEqual(down.requests.length, 1);
+    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: down.host, ...EXPORTS });
+    assert.ok(down.requests.length >= 1);
     assert.strictEqual(result.text, PAYROLL);
+    assert.strictEqual(result.failedRequests, down.requests.length);
   } finally {
     await down.close();
   }
 });
 
-test('heavy: a failed follow-up keeps the first pass', async () => {
-  const mock = await startMockOllama((body) => (kindOf(body) === 'blocks' ? 'not json' : firstPassHandler(body)));
+test('heavy: a failed request leaves its own targets for the next run and keeps the others', async () => {
+  const handler = writing(describe);
+  // The request that holds payslip fails, with every target in it.
+  let lost = [];
+  const mock = await startMockOllama((body) => {
+    if (kindOf(body) !== 'comments' || !targetsOf(body).some((t) => t.name === 'payslip')) return handler(body);
+    lost = targetsOf(body).filter((t) => t.kind === 'function').map((t) => t.name);
+    return 'not json';
+  });
   try {
-    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host });
-    assert.strictEqual(result.added, 4);
-    assert.ok(hasBlockAbove(result.text, 'grossPay'));
-    assert.match(result.errors[0], /^block comments: /);
-    assert.strictEqual(result.failedWindows, 0);
+    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host, ...EXPORTS });
+    assert.ok(lost.includes('payslip') && lost.length < FUNCTIONS.length);
+    for (const name of FUNCTIONS) assert.strictEqual(hasBlockAbove(result.text, name), !lost.includes(name), name);
+    assert.strictEqual(result.failedRequests, 1);
+    assert.match(result.errors[0], /^lines [\d, ]+: the reply is not valid JSON$/);
+    assert.deepStrictEqual(result.undocumented.map((d) => d.name).sort(), [...lost].sort());
   } finally {
     await mock.close();
   }
 });
 
-for (const [level, added, density] of [
-  ['medium', 3, { 'within 5 lines of another comment': 2 }],
-  ['low', 1, { 'level limit reached': 4 }],
+for (const [level, names] of [
+  // Medium: the exported functions, apart by the level's gap; formatCurrency is 3 lines above payslip.
+  ['medium', ['grossPay', 'incomeTax', 'netPay', 'payslip']],
+  // Low: the room for one comment, given to the longest exported function.
+  ['low', ['incomeTax']],
 ]) {
-  test(`${level}: the same proposals keep the existing limits and get no follow-up`, async () => {
-    const mock = await startMockOllama(firstPassHandler);
+  test(`${level}: only the declarations the level has room for, as line comments, and none dropped`, async () => {
+    const mock = await startMockOllama(writing(describe));
     try {
-      const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level, model: 'm', host: mock.host });
-      assert.deepStrictEqual(mock.requests.map(kindOf), ['comments', 'accuracy']);
-      assert.strictEqual(result.added, added);
-      assert.deepStrictEqual(result.stats.dropped.density, density);
+      const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level, model: 'm', host: mock.host, ...EXPORTS });
+      const targets = mock.requests.filter((r) => kindOf(r) === 'comments').flatMap(targetsOf).sort((a, b) => a.line - b.line);
+      assert.deepStrictEqual(targets.map((t) => t.name), names);
+      assert.strictEqual(result.added, names.length);
+      assert.deepStrictEqual(result.rejections, []);
       assert.doesNotMatch(result.text, /\/\*\*/);
-      assert.match(result.text, /\/\/ Pays hours past[^\n]*\nfunction grossPay/);
+      for (const name of names) assert.match(result.text, new RegExp(`// Works out ${name}[^\\n]*\\nfunction ${name}`));
     } finally {
       await mock.close();
     }

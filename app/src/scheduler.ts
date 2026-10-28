@@ -2,7 +2,7 @@
 // run of docturnal.yml for each of their repositories.
 
 import type { QueueMessage } from './handlers';
-import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, SettingsStore } from './settings';
+import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, type PrivateMinutes, SettingsStore } from './settings';
 
 const HOUR_MS = 60 * 60 * 1000;
 const QUEUE_BATCH_LIMIT = 100;
@@ -65,9 +65,9 @@ export async function runSchedule(env: ScheduleEnv, now: Date, log: (line: strin
   // settings key saved before the choices were in its metadata is read.
   for await (const { installationId, schedule, repos, hasSettings } of store.schedules()) {
     if (!isDue(schedule.time, schedule.timeZone, now)) continue;
-    let choices: { commentLevel: CommentLevel; existingCode: ExistingCode } = DEFAULT_SETTINGS;
+    let choices: { commentLevel: CommentLevel; existingCode: ExistingCode; privateMinutes: PrivateMinutes } = DEFAULT_SETTINGS;
     if (schedule.commentLevel && schedule.existingCode) {
-      choices = { commentLevel: schedule.commentLevel, existingCode: schedule.existingCode };
+      choices = { commentLevel: schedule.commentLevel, existingCode: schedule.existingCode, privateMinutes: schedule.privateMinutes ?? DEFAULT_SETTINGS.privateMinutes };
     } else if (hasSettings) {
       try {
         choices = (await store.getChoices(installationId)) ?? DEFAULT_SETTINGS;
@@ -79,7 +79,7 @@ export async function runSchedule(env: ScheduleEnv, now: Date, log: (line: strin
     }
     due++;
     for (const repo of repos) {
-      pending.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel: choices.commentLevel, existingCode: choices.existingCode } });
+      pending.push({ body: { kind: 'dispatch', installationId, repo, reason: 'nightly', commentLevel: choices.commentLevel, existingCode: choices.existingCode, privateMinutes: choices.privateMinutes } });
       if (pending.length >= QUEUE_BATCH_LIMIT) await flush();
     }
   }

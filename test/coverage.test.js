@@ -163,6 +163,31 @@ test('the progress section says how far the docs and comments are, what the pull
   assert.strictEqual(pullRequestTitle({ docs: true, changed: ['a.js'], batch: null }), 'Docturnal: comments and documentation');
 });
 
+test('the progress section gives the night\'s time limit, and for a private repository where to change it', () => {
+  const base = { docsComplete: true, summarized: 40, documentable: 40, layers: 4, level: 'medium', commented: 12, commentable: 40, existingCode: 'gradual', backlogLeft: 13, nextBatch: 3, batchSize: 15, pending: emptyPending() };
+  assert.strictEqual(progressLines({ ...base, timeLimit: { minutes: 30, private: true } })[6], '- **Time limit:** 30 minutes a night, the limit for private repositories. You can change it in the settings.');
+  assert.strictEqual(progressLines({ ...base, timeLimit: { minutes: 90, private: false } })[6], '- **Time limit:** 90 minutes a night.');
+  assert.strictEqual(progressLines(base).length, 6);
+});
+
+test('the run reads whether the repository is private from the event GitHub sends', () => {
+  const { isPrivateRepository } = require('../src/git');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docturnal-event-'));
+  try {
+    const event = (repository) => {
+      const file = path.join(dir, `${Math.random()}.json`);
+      fs.writeFileSync(file, JSON.stringify({ repository }));
+      return { GITHUB_EVENT_PATH: file };
+    };
+    assert.strictEqual(isPrivateRepository(event({ private: true, default_branch: 'main' })), true);
+    assert.strictEqual(isPrivateRepository(event({ private: false })), false);
+    assert.strictEqual(isPrivateRepository(event({ private: 'true' })), false);
+    assert.strictEqual(isPrivateRepository({}), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- Whole runs against a local git remote ---
 
 function gitRepo() {

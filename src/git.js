@@ -47,16 +47,28 @@ function remoteBranchExists(cwd, branch) {
   return tryGit(cwd, ['ls-remote', '--exit-code', '--heads', 'origin', branch]).ok;
 }
 
-// The repository's default branch, from the event GitHub sends the workflow, or null outside
-// GitHub Actions.
-function defaultBranch(env = process.env) {
+// The repository from the event GitHub sends the workflow, or null outside GitHub Actions.
+function eventRepository(env) {
   try {
     const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
-    const name = event && event.repository && event.repository.default_branch;
-    return typeof name === 'string' && name ? name : null;
+    return event && event.repository && typeof event.repository === 'object' ? event.repository : null;
   } catch {
     return null;
   }
+}
+
+// The repository's default branch, from the event, or null outside GitHub Actions.
+function defaultBranch(env = process.env) {
+  const repository = eventRepository(env);
+  const name = repository && repository.default_branch;
+  return typeof name === 'string' && name ? name : null;
+}
+
+// Whether the repository is private, from the event: its runs count toward the owner's
+// Actions minutes, so the workflow gives them a shorter time budget.
+function isPrivateRepository(env = process.env) {
+  const repository = eventRepository(env);
+  return Boolean(repository && repository.private === true);
 }
 
 // Whether every commit the update branch has beyond the base was made by Docturnal. A commit
@@ -189,4 +201,4 @@ function recentActivity(cwd, days = 90) {
 
 class BaseBranchError extends Error {}
 
-module.exports = { BaseBranchError, BOT_EMAIL, BOT_NAME, defaultBranch, IGNORE_FILE, UPDATE_BRANCH, commitAndPush, listFiles, mergedSince, prepareBranch, recentActivity };
+module.exports = { BaseBranchError, BOT_EMAIL, BOT_NAME, defaultBranch, IGNORE_FILE, UPDATE_BRANCH, commitAndPush, isPrivateRepository, listFiles, mergedSince, prepareBranch, recentActivity };

@@ -59,4 +59,4 @@ function verifyPython(original, candidates) {
   return runHelper({ mode: 'verify', original, candidates }).results;
 }
 
-module.exports = { analyzePython, findPython, pythonEnvNames, verifyPython };
+module.exports = { analyzePython, findPython, pythonEnvNames, runHelper, verifyPython };

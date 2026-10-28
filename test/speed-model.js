@@ -8,7 +8,9 @@
 //
 // Answers are counted the way a real model writes them, not the mock's short ones: a folder
 // summary is about 60 tokens plus 25 for each file it describes, a layer plan 60 plus 40 for
-// each group, and a document fills its num_predict.
+// each group, and a document fills its num_predict. A comment request fills its num_predict
+// too, as the real comment replies often did, so comment time is never underestimated, and an
+// accuracy check answers about 20 tokens for each comment it judges.
 
 const SPEEDS = {
   'comment-model': { prompt: 26, answer: 14, load: 25 },
@@ -26,6 +28,8 @@ function answerTokens(request, content) {
   if (props.summary && props.files) return 60 + 25 * (prompt.match(/^\* /gm) || []).length;
   if (props.layers) return 60 + 40 * (prompt.match(/^- g\d+:/gm) || []).length;
   if (/documentation page/.test(prompt) && request.options && request.options.num_predict) return request.options.num_predict;
+  if (props.comments && request.options && request.options.num_predict) return request.options.num_predict;
+  if (props.verdicts) return 10 + 20 * (prompt.match(/^Item \d+$/gm) || []).length;
   return Math.ceil(String(content).length / CHARS_PER_TOKEN);
 }
 
@@ -46,7 +50,7 @@ function simulatedChat(mock, start = Date.parse('2026-10-24T00:00:00Z')) {
       seconds += speed.load;
     }
     clock += seconds * 1000;
-    calls.push({ model: request.model, label: request.label, promptChars: prompt.length, seconds, system: request.messages[0].content });
+    calls.push({ model: request.model, label: request.label, promptChars: prompt.length, seconds, system: (request.messages[0] || {}).content });
     return content;
   };
   return { chat, now: () => clock, calls, minutes: () => (clock - start) / 60000 };
