@@ -1,7 +1,7 @@
 # Docturnal adds comments to your code and updates your docs, then opens a pull request
 # for you to review. The Docturnal app starts this workflow every night at the time you
 # choose in Docturnal's settings. The settings link is in each Docturnal pull request.
-# Docturnal workflow version 5.
+# Docturnal workflow version 6.
 name: Docturnal
 
 on:
@@ -17,6 +17,11 @@ on:
         type: choice
         options: ["gradual", "none"]
         default: "gradual"
+      private-minutes:
+        description: "The most minutes a night Docturnal works in a private repository. Public repositories get 90."
+        type: choice
+        options: ["15", "30", "60", "90"]
+        default: "30"
 
 permissions:
   contents: write
@@ -41,5 +46,6 @@ jobs:
         with:
           comment-level: ${{ inputs['comment-level'] || 'medium' }}
           existing-code: ${{ inputs['existing-code'] || 'gradual' }}
-          time-budget-minutes: "90"
+          # Private repositories use the time limit from the settings; public ones 90 minutes.
+          time-budget-minutes: ${{ github.event.repository.private && (inputs['private-minutes'] || '30') || '90' }}
           job-timeout-minutes: "120"
