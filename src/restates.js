@@ -106,8 +106,9 @@ function restates(result) {
   return result.narrates === true || (result.coverage !== null && result.coverage >= RESTATES_AT);
 }
 
-// The verbs a name implies, so "Returns the value." says no more than getValue.
-const NAME_VERBS = {
+// The verbs a name implies, so "Returns the value." says no more than getValue. A Map, since
+// its keys are words of names from code, such as "constructor".
+const NAME_VERBS = new Map(Object.entries({
   get: ['return', 'retrieve', 'fetch', 'obtain', 'read', 'give'],
   set: ['update', 'assign', 'store', 'change', 'write'],
   is: ['check', 'whether', 'return', 'true', 'false'],
@@ -126,7 +127,7 @@ const NAME_VERBS = {
   init: ['initialize', 'set'],
   calc: ['calculate', 'compute', 'return'],
   compute: ['calculate', 'return'],
-};
+}));
 // Words that say only what kind of declaration it is.
 const KIND_WORDS = new Set(['function', 'method', 'class', 'component', 'helper', 'hook', 'type', 'interface', 'object', 'instance', 'specified', 'provided', 'new', 'data', 'thing', 'something', 'one', 'some', 'here', 'exported', 'export']
   .map((w) => stem(w)));
@@ -137,7 +138,7 @@ function onlyItsName(comment, names) {
   const own = new Set();
   for (const w of names.filter(Boolean).flatMap((n) => words(String(n)))) {
     own.add(stem(w));
-    for (const v of NAME_VERBS[w] || []) own.add(stem(v));
+    for (const v of NAME_VERBS.get(w) || []) own.add(stem(v));
   }
   if (!own.size) return false;
   const content = words(comment).filter((w) => !STOPWORDS.has(w)).map(stem);

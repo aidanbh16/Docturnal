@@ -21,6 +21,7 @@ const { findOwned, recordFor } = require('./owned');
 const { onlyItsName, restatement, restates } = require('./restates');
 const { LOW_LINES, MEDIUM_BLOCK_SCORE, MEDIUM_LINES, parsedTargets } = require('./targets');
 const { verifyCandidates } = require('./verify');
+const { own } = require('./own');
 
 const LEVELS = {
   low: { maxWords: 10, minGap: 15, linesPerComment: 30, blocks: false },
@@ -689,9 +690,9 @@ function finishFile(ctx, built, verdicts = new Map()) {
 
   for (const r of rejections) {
     const bucket = stats.dropped[r.category];
-    bucket[r.reason] = (bucket[r.reason] || 0) + 1;
+    bucket[r.reason] = (own(bucket, r.reason) || 0) + 1;
   }
-  for (const reason of earlierRemoved) stats.earlier.removed[reason] = (stats.earlier.removed[reason] || 0) + 1;
+  for (const reason of earlierRemoved) stats.earlier.removed[reason] = (own(stats.earlier.removed, reason) || 0) + 1;
   const keptEarlier = kept.filter((c) => c.source === 'earlier');
   stats.earlier.kept = keptEarlier.length;
   stats.earlier.restyled = keptEarlier.filter((c) =>

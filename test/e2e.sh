@@ -353,4 +353,43 @@ expect_count "run 10" '"kind"' 0
 [ -z "$(git -C "$WORK/run10" status --porcelain)" ] || fail "run 10 left changes in the working tree"
 pass "run 10 with nothing to do leaves README.md unchanged"
 
+# Run 11: a class with a constructor and methods named toString and valueOf, like
+# excalidraw's LassoTrail, at heavy, where every method gets a comment. Names from code are
+# never keys of a plain object, so the run comments the file instead of crashing.
+cat > "$WORK/seed/src/api/trail.js" <<'EOF'
+export class LassoTrail {
+  constructor(app, options = {}) {
+    this.app = app;
+    this.points = [];
+    this.limit = options.limit || 200;
+  }
+
+  toString() {
+    return this.points.map(([x, y]) => `${x},${y}`).join(' ');
+  }
+
+  valueOf() {
+    return this.points.length;
+  }
+
+  addPoint(x, y) {
+    this.points.push([x, y]);
+    if (this.points.length > this.limit) {
+      this.points.shift();
+    }
+    return this.points.length;
+  }
+}
+EOF
+seed_commit "Add the lasso trail"
+run_docturnal run11 INPUT_COMMENT_LEVEL=heavy
+lacks "$(cat "$RUN_LOG")" 'internal error' "run 11 log"
+[ "$(new_requests '"kind":"comments","file":"src/api/trail.js"')" -ge 1 ] || fail "run 11 asked for no comments on src/api/trail.js"
+TRAIL="$(remote_file src/api/trail.js)"
+for name in LassoTrail constructor toString valueOf; do
+  contains "$TRAIL" " * Keeps the $name logic in one place for callers." "run 11 src/api/trail.js"
+done
+contains "$(remote_file .docturnal/last-run.md)" '`src/api/trail.js`' "run 11 last-run.md"
+pass "run 11 comments a class with a constructor and methods named toString and valueOf"
+
 echo "All end-to-end scenarios passed."

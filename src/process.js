@@ -17,6 +17,8 @@ const { hashContent } = require('./state');
 const { callLabel, fallbackPurpose, planFolderCalls, splitCall, summarizeFolder } = require('./folders');
 const { fileStructure, symbolsOf } = require('./structure');
 const { languageForPath } = require('./languages');
+const { own } = require('./own');
+const { INTERNAL_ERROR, describeInternal, internalErrorLine } = require('./internal-error');
 
 // The time the README keeps for itself at the end of the budget.
 const README_RESERVE_MINUTES = 8;
@@ -88,6 +90,23 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     return { item, originalHash, path: item.path, text, language: languageForPath(item.path), why };
   };
   const skip = (r) => results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'skipped', originalHash: r.originalHash, entry: { hash: r.originalHash, skipped: r.why }, why: r.why });
+  // An unexpected error while working on one file skips that file for this run, and the run
+  // goes on with the others. The results it gave so far (from mark on) are taken back, and it
+  // keeps its old state, so the next run works on it again. The log names the error only.
+  const internal = (item, originalHash, err, mark = results.length) => {
+    results.splice(mark);
+    results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'left', originalHash: originalHash || null, why: INTERNAL_ERROR });
+    log(internalErrorLine(item.path, err));
+  };
+  // readable, or null after onError(err) when the file cannot be read.
+  const tryReadable = (item, onError) => {
+    try {
+      return readable(item);
+    } catch (err) {
+      onError(err);
+      return null;
+    }
+  };
 
   // One call per folder gives each file's purpose and the folder's summary. Each call's answer
   // is checked. One that cannot be used is split in half and tried again, down to single
@@ -100,9 +119,21 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   const summarizedDirs = new Set();
   let summaryCalls = 0;
   let fromStructure = 0;
-  const describe = async (files, deadline, record, left, { newFoldersOnly = false } = {}) => {
+  // failed(r, err): a file an unexpected error left undescribed.
+  const describe = async (files, deadline, givenRecord, left, { newFoldersOnly = false, failed } = {}) => {
     const byPath = new Map(files.map((r) => [r.path, r]));
-    const calls = planFolderCalls(files, config.contextTokens);
+    const done = new Set();
+    const record = (file, summary, symbols) => {
+      done.add(file);
+      givenRecord(file, summary, symbols);
+    };
+    let calls;
+    try {
+      calls = planFolderCalls(files, config.contextTokens);
+    } catch (err) {
+      for (const r of files) failed(r, err);
+      return [];
+    }
     const queue = [...calls];
     while (queue.length) {
       const call = queue.shift();
@@ -118,10 +149,19 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
         for (const f of call.files) left(byPath.get(f.path), 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
         continue;
       }
+      try {
+        useAnswer(call, answer);
+      } catch (err) {
+        for (const f of call.files) if (!done.has(f.path)) failed(byPath.get(f.path), err);
+      }
+    }
+    return calls;
+
+    function useAnswer(call, answer) {
       if (!answer.failed) {
         // A call with only a folder's changed files sees part of it: it describes only a folder
         // that has no summary yet.
-        if (!summarizedDirs.has(call.dir) && !(newFoldersOnly && typeof (previous.folders || {})[call.dir] === 'string')) {
+        if (!summarizedDirs.has(call.dir) && !(newFoldersOnly && typeof own(previous.folders, call.dir) === 'string')) {
           summarizedDirs.add(call.dir);
           folders.push({ dir: call.dir, summary: answer.summary });
         }
@@ -132,7 +172,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       const rest = answer.failed ? call.files.filter((f) => !f.purpose) : call.files.filter((f) => answer.missing.includes(f.path));
       if (!rest.length) {
         if (answer.failed) log(`${callLabel(call)}: no folder summary, the answer could not be used (${answer.failed})`);
-        continue;
+        return;
       }
       const why = answer.failed || `${rest.length} of ${call.files.length} files missing from the answer`;
       if (rest.length === 1 && call.files.length === 1) {
@@ -153,7 +193,6 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
         queue.unshift(...again);
       }
     }
-    return calls;
   };
 
   // Summaries first, one call per folder: the documentation needs every one. In the
@@ -165,20 +204,22 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     ? started + Math.max(config.timeBudgetMinutes - DOCS_PASS_RESERVE_MINUTES, config.timeBudgetMinutes / 3) * 60000
     : commentDeadline;
   const toSummarize = [];
-  for (const r of summaryItems.map(readable)) {
+  for (const item of summaryItems) {
+    const r = tryReadable(item, (err) => internal(item, null, err));
+    if (!r) continue;
     if (r.why) skip(r);
     else toSummarize.push(r);
   }
   const summaryByPath = new Map(toSummarize.map((r) => [r.path, r]));
   const summaryCallsPlanned = await describe(toSummarize, summaryDeadline, (file, summary, symbols) => {
     const r = summaryByPath.get(file);
-    const before = previous.files[r.path] || {};
+    const before = own(previous.files, r.path) || {};
     // A file whose content is unchanged keeps its comment level and Docturnal's records.
     const same = before.hash === r.originalHash;
     const entry = { hash: r.originalHash, summary, symbols, level: same ? before.level ?? null : null };
     if (same && before.comments) entry.comments = before.comments;
     results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'summarized', originalHash: r.originalHash, entry });
-  }, (r, why, detail) => leave(r.item, r.originalHash, why, detail));
+  }, (r, why, detail) => leave(r.item, r.originalHash, why, detail), { failed: (r, err) => internal(r.item, r.originalHash, err) });
   const summaryStats = {
     files: summaryItems.length,
     folders: new Set(summaryCallsPlanned.map((c) => c.dir)).size,
@@ -193,9 +234,14 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   // in a batch keeps the one its docs were written from. A file the calls do not reach gets
   // one from its structure.
   const described = new Map();
-  const changed = toComment.filter((i) => i.reason !== 'backlog').map(readable).filter((r) => !r.why);
+  // A file the calls cannot describe for an unexpected error gets its purpose from its
+  // structure; one that cannot be read is skipped when it is commented.
+  const changed = toComment.filter((i) => i.reason !== 'backlog').map((i) => tryReadable(i, () => {})).filter((r) => r && !r.why);
   if (changed.length) {
-    await describe(changed, commentDeadline, (file, summary, symbols) => described.set(file, { summary, symbols }), () => {}, { newFoldersOnly: true });
+    await describe(changed, commentDeadline, (file, summary, symbols) => described.set(file, { summary, symbols }), () => {}, {
+      newFoldersOnly: true,
+      failed: (r, err) => log(`${r.path}: described from its structure, internal error (${describeInternal(err)})`),
+    });
   }
 
   // Which other files use each file's exports, to rank its targets.
@@ -214,7 +260,12 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   const usageOf = (file, names) => {
     if (!importers) {
       const codeFiles = [...new Set([...Object.keys(previous.files), ...items.map((i) => i.path)])].filter((f) => languageForPath(f));
-      importers = importersOf(codeFiles, textOf);
+      try {
+        importers = importersOf(codeFiles, textOf);
+      } catch (err) {
+        importers = new Map();
+        log(internalErrorLine('Docturnal: ranking targets by use in other files', err));
+      }
     }
     return nameUsage(file, names, importers, textOf);
   };
@@ -234,27 +285,35 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   const planAll = () => {
     const planned = [];
     for (const item of toComment.splice(0)) {
-      const r = readable(item);
-      if (r.why) {
-        skip(r);
-        log(`${item.path}: skipped, ${r.why}`);
-        continue;
+      const mark = results.length;
+      try {
+        planOne(item, planned);
+      } catch (err) {
+        internal(item, null, err, mark);
       }
-      const before = previous.files[item.path] || {};
-      const structure = fileStructure(item.path, r.text, r.language);
-      const plan = planTargets({
-        path: item.path,
-        text: r.text,
-        level: config.commentLevel,
-        contextTokens: config.contextTokens,
-        records: before.comments || [],
-        knownUrls: knownUrls(cwd),
-        exportNames: structure.exports,
-        usage: usageOf(item.path, symbolsOf(structure)),
-      });
-      planned.push({ item, originalHash: r.originalHash, plan, structure });
     }
     return planned;
+  };
+  const planOne = (item, planned) => {
+    const r = readable(item);
+    if (r.why) {
+      skip(r);
+      log(`${item.path}: skipped, ${r.why}`);
+      return;
+    }
+    const before = own(previous.files, item.path) || {};
+    const structure = fileStructure(item.path, r.text, r.language);
+    const plan = planTargets({
+      path: item.path,
+      text: r.text,
+      level: config.commentLevel,
+      contextTokens: config.contextTokens,
+      records: before.comments || [],
+      knownUrls: knownUrls(cwd),
+      exportNames: structure.exports,
+      usage: usageOf(item.path, symbolsOf(structure)),
+    });
+    planned.push({ item, originalHash: r.originalHash, plan, structure });
   };
 
   // The requests, in turns. A file counts toward the checks once it is started, or from the
@@ -262,7 +321,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   // while it, at the pace of the ones before, and the checks of everything written so far,
   // its own included, still fit before the checks must end.
   const proposeAll = async (all) => {
-    const counted = (p) => p.plan.ctx && (p.plan.next > 0 || !p.plan.planned.length);
+    const counted = (p) => !p.failed && p.plan.ctx && (p.plan.next > 0 || !p.plan.planned.length);
     // The checks' time for every file counted, with `next` more comments for file `extra`.
     const checksMs = (extra, next) => {
       let requests = 0;
@@ -282,14 +341,18 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       while (made && !outOfTime) {
         made = false;
         for (const p of group) {
-          const request = p.plan.planned[p.plan.next];
+          const request = p.failed ? null : p.plan.planned[p.plan.next];
           if (!request) continue;
           if (!fits(p, request.targets.length)) {
             outOfTime = true;
             break;
           }
           const before = p.plan.proposeMs;
-          await proposeNext(p.plan, { model: models.comment, contextTokens: config.contextTokens, chat, now });
+          try {
+            await proposeNext(p.plan, { model: models.comment, contextTokens: config.contextTokens, chat, now });
+          } catch (err) {
+            p.failed = err;
+          }
           pace.proposeMs += p.plan.proposeMs - before;
           pace.proposeRequests++;
           made = true;
@@ -299,23 +362,33 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     const plans = [];
     for (const p of all) {
       const { item, originalHash, plan } = p;
-      settleProposals(plan);
-      // A file the time gave no request waits for the next run as it is.
-      if (plan.planned.length && !plan.requests) {
-        leave(item, originalHash, 'time budget');
-        continue;
+      const mark = results.length;
+      try {
+        if (p.failed) throw p.failed;
+        if (settleOne(p)) plans.push(p);
+      } catch (err) {
+        internal(item, originalHash, err, mark);
       }
-      const replies = replySummary(plan);
-      if (replies) log(`${item.path}: ${replies}`);
-      const missing = missingSummary(plan);
-      if (missing) log(`${item.path}: ${missing}`);
-      if (plan.requests && plan.failedRequests === plan.requests && !(plan.built && plan.built.candidates.length)) {
-        leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
-        continue;
-      }
-      plans.push(p);
     }
     return { plans };
+  };
+  // Settles one file's proposals; false when it is left for the next run.
+  const settleOne = ({ item, originalHash, plan }) => {
+    settleProposals(plan);
+    // A file the time gave no request waits for the next run as it is.
+    if (plan.planned.length && !plan.requests) {
+      leave(item, originalHash, 'time budget');
+      return false;
+    }
+    const replies = replySummary(plan);
+    if (replies) log(`${item.path}: ${replies}`);
+    const missing = missingSummary(plan);
+    if (missing) log(`${item.path}: ${missing}`);
+    if (plan.requests && plan.failedRequests === plan.requests && !(plan.built && plan.built.candidates.length)) {
+      leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
+      return false;
+    }
+    return true;
   };
 
   const finish = ({ item, originalHash, plan, structure }) => {
@@ -329,7 +402,7 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       return;
     }
     // A file in a batch keeps the summary its docs were written from: only its comments changed.
-    const before = previous.files[item.path] || {};
+    const before = own(previous.files, item.path) || {};
     const kept = item.reason === 'backlog' && typeof before.summary === 'string';
     const fresh = described.get(item.path) || { summary: fallbackPurpose(item.path, structure), symbols: symbolsOf(structure) };
     // A file the time left before all its targets were asked for, or with more targets than
@@ -373,36 +446,44 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       : { chat: (request) => caller.call('accuracy check', request), contextTokens: config.contextTokens, now });
     if (toCheck.length) log(`Docturnal: checking comments in ${toCheck.length} ${toCheck.length === 1 ? 'file' : 'files'} with ${checkWithDocs ? caller.activeModel : models.comment}`);
     for (const planned of plans) {
-      const { item, originalHash, plan } = planned;
-      if (needsCheck(plan)) {
-        if (now() > checkDeadline) {
-          leave(item, originalHash, 'time budget');
-          continue;
-        }
-        // A check that fails with the docs model is tried once more with the comment model.
-        const checkers = checkWithDocs && caller.activeModel !== models.comment ? [models.docs, models.comment] : [models.comment];
-        let passed = null;
-        for (const model of checkers) {
-          try {
-            await checkComments(plan, checkWith(model));
-            passed = model;
-            break;
-          } catch (err) {
-            log(`${item.path}: the accuracy check with ${model} failed (${ollama.describeError(err)})`);
-          }
-        }
-        pace.checkMs += plan.checkMs;
-        pace.checkRequests += plan.checkRequests;
-        if (!passed) {
-          leave(item, originalHash, 'the accuracy check failed', 'accuracy check failed');
-          continue;
-        }
-        // An earlier Docturnal comment found inaccurate gets a new one in its place, checked by
-        // the same model.
-        if (now() < checkDeadline) await replaceInaccurate(plan, { write: { chat, model: models.comment }, check: checkWith(passed), now });
+      const mark = results.length;
+      try {
+        await checkOne(planned, checkWith, checkWithDocs);
+      } catch (err) {
+        internal(planned.item, planned.originalHash, err, mark);
       }
-      finish(planned);
     }
+  };
+  const checkOne = async (planned, checkWith, checkWithDocs) => {
+    const { item, originalHash, plan } = planned;
+    if (needsCheck(plan)) {
+      if (now() > checkDeadline) {
+        leave(item, originalHash, 'time budget');
+        return;
+      }
+      // A check that fails with the docs model is tried once more with the comment model.
+      const checkers = checkWithDocs && caller.activeModel !== models.comment ? [models.docs, models.comment] : [models.comment];
+      let passed = null;
+      for (const model of checkers) {
+        try {
+          await checkComments(plan, checkWith(model));
+          passed = model;
+          break;
+        } catch (err) {
+          log(`${item.path}: the accuracy check with ${model} failed (${ollama.describeError(err)})`);
+        }
+      }
+      pace.checkMs += plan.checkMs;
+      pace.checkRequests += plan.checkRequests;
+      if (!passed) {
+        leave(item, originalHash, 'the accuracy check failed', 'accuracy check failed');
+        return;
+      }
+      // An earlier Docturnal comment found inaccurate gets a new one in its place, checked by
+      // the same model.
+      if (now() < checkDeadline) await replaceInaccurate(plan, { write: { chat, model: models.comment }, check: checkWith(passed), now });
+    }
+    finish(planned);
   };
 
   if (toComment.length) await checkRound(await proposeAll(planAll()));

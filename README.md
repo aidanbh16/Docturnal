@@ -159,6 +159,7 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 - **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
 - **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.
 - **Only Docturnal's own work.** Docturnal runs only on your default branch. If someone adds a commit to the open Docturnal pull request, Docturnal stops adding to it until you merge or close it, so the pull request never mixes its changes with someone else's.
+- **One file never stops the night.** If something goes wrong with one file or one document, Docturnal skips it for that night, lists it in the pull request, and tries it again the next night. Everything else is committed as usual.
 - **Work is never lost to a timeout.** Each run stops starting new work when its time budget is close to running out, and commits what is finished. The budget is 90 minutes in a public repository, and the time limit from the settings, 30 minutes by default, in a private one. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night; a file cut short keeps the comments it got, and a later batch adds the rest.
 
 ## Supported languages
