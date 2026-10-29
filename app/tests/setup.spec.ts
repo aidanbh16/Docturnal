@@ -643,6 +643,7 @@ describe('sign-in codes from GitHub', () => {
   });
 
   it('checks again when GitHub does not list a new installation at first, and shows the form when it appears', async () => {
+    // The hiddenChecks option skips some checks to speed up the test.
     const t = setup({ hiddenChecks: 1 });
     const response = await t.get(INSTALL);
     expect(response.status).toBe(303);
@@ -659,6 +660,7 @@ describe('sign-in codes from GitHub', () => {
   });
 
   it('checks again after an update redirect too, including on the fresh sign-in after a failed code', async () => {
+    // The failExchanges option simulates a failure during the GitHub check.
     const t = setup({ failExchanges: 1, hiddenChecks: 2 });
     const state = authorizeState(await t.get(UPDATE));
     const back = await t.get(`/setup?code=fresh-code&state=${encodeURIComponent(state)}`);
@@ -668,6 +670,7 @@ describe('sign-in codes from GitHub', () => {
   });
 
   it('checks a pull request link only once, without waiting', async () => {
+    // The hiddenChecks option skips some checks to speed up the test.
     const t = setup({ hiddenChecks: 1 });
     const state = authorizeState(await t.get('/setup?installation_id=1'));
     const back = await t.get(`/setup?code=owner-code&state=${encodeURIComponent(state)}`);

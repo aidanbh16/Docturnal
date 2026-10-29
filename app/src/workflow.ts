@@ -23,6 +23,7 @@ const PRIVATE_MINUTES = 30;
 const JOB_TIMEOUT_MINUTES = 120;
 const VERSION_LINE = /^# Docturnal workflow version (\d+)\.?\s*$/m;
 
+// Returns a YAML string for the Docturnal workflow, including settings and permissions.
 export function workflowYaml(actionRepository: string): string {
   return `# Docturnal adds comments to your code and updates your docs, then opens a pull request
 # for you to review. The Docturnal app starts this workflow every night at the time you

@@ -2,40 +2,42 @@
 
 # Model Verification
 
-The Model Verification layer ensures that models and their configurations are accurate and reliable before they are used in the project.
+Verifies models and their configurations.
 
 ## Overview
 
-The Model Verification layer checks the accuracy of comments and verifies the integrity of models and their configurations.
+These files include `accuracy.js`, `comments.js`, `install-ollama.js`, `models.js`, `ollama.js`, `precheck.js`, `restates.js`, `targets.js`, `verify-models.js`, and `verify.js`.
 
 ## Responsibilities
 
-- Installs and manages Ollama releases and models.
+- **Comment Engine**: Manages the comment engine and its categories and levels.
+- **Model Selection**: Chooses the appropriate Ollama models for the current run.
+- **Restatement Check**: Ensures that comments do not simply restate the code they are attached to.
+- **Target Selection**: Determines where comments should be placed based on code analysis.
+- **Model Verification**: Verifies each pulled model against predefined pins before use.
 
 ## Key components
 
 | File | Purpose | Main definitions |
 | --- | --- | --- |
 | [`src/accuracy.js`](../src/accuracy.js) | Checks the accuracy of comments and provides messages. | `ACCURACY_SCHEMA`, `attachedCode`, `buildAccuracyMessages`, `codeUnder`, `parseVerdicts` |
-| [`src/comments.js`](../src/comments.js) | The comment engine. | `ANCHOR_FIXES`, `ANCHOR_MISSES`, `CATEGORY`, `LEVELS`, `MAX_PROPOSALS`, `REPLY_CAUSES` |
-| [`src/install-ollama.js`](../src/install-ollama.js) | Installs the Ollama release for the project. | `InstallError`, `checkInstall`, `installOllama`, `pinnedArchive`, `readPins`, `download` |
+| [`src/comments.js`](../src/comments.js) | The comment engine. | `CATEGORY`, `LEVELS`, `MAX_EXCERPT_LINES`, `MAX_TARGETS_PER_REQUEST`, `PER_RUN`, `REPLY_CAUSES` |
+| [`src/install-ollama.js`](../src/install-ollama.js) | Installs the Ollama release. | `InstallError`, `checkInstall`, `installOllama`, `pinnedArchive`, `readPins`, `download` |
 | [`src/models.js`](../src/models.js) | Picks the Ollama models for this run. | `COMMENT_MODEL`, `DOCS_MODEL`, `FALLBACK_DOCS_MODEL`, `DOCS_MODEL_MIN_GIB`, `parseMemTotal`, `readTotalMemory` |
 | [`src/ollama.js`](../src/ollama.js) | Minimal client for the Ollama server on the runner. | `DEFAULT_HOST`, `baseUrl`, `chat`, `describeError`, `loggedChat`, `request` |
 | [`src/precheck.js`](../src/precheck.js) | The pre-check, run before models are selected or Ollama is installed. | `precheck`, `plural`, `writeOutputs` |
-| [`src/restates.js`](../src/restates.js) | A deterministic check for comments that only restate the code under them. | `RESTATES_AT`, `restatement`, `restates`, `stem`, `words` |
+| [`src/restates.js`](../src/restates.js) | A deterministic check for comments that only restate the code under them. | `RESTATES_AT`, `onlyItsName`, `restatement`, `restates`, `stem`, `words` |
+| [`src/targets.js`](../src/targets.js) | Where comments go, chosen by code before any model is asked. | `FEATURE_SCORES`, `LOW_LINES`, `MEDIUM_BLOCK_SCORE`, `MEDIUM_LINES`, `describeFeatures`, `parsedTargets` |
 | [`src/verify-models.js`](../src/verify-models.js) | Checks each pulled model against pins/models.json before any code reaches it. | `ModelDigestError`, `compareBlobs`, `readPins`, `referencedDigests`, `verifyFiles`, `verifyModels` |
 | [`src/verify.js`](../src/verify.js) | Proves that inserting comments did not change the program. | `rebuildsOriginal`, `verifyCandidates`, `stripBom`, `rawLines`, `transpile`, `shape` |
 
 ## How it works
 
-- **accuracy.js**: Checks the accuracy of comments and provides messages.
-- **comments.js**: Manages the comment engine.
-- **install-ollama.js**: Installs the Ollama release for the project.
-- **models.js**: Selects the appropriate Ollama models for the project.
-- **ollama.js**: Provides a minimal client for the Ollama server.
-- **precheck.js**: Runs a pre-check before models are selected or Ollama is installed.
-- **restates.js**: Checks comments that only restate the code.
-- **verify.js**: Proves that inserting comments did not change the program.
+The files in the Model Verification layer work together to ensure that models and their configurations are accurate and reliable.
+
+- `accuracy.js` checks the accuracy of comments and provides messages.
+- `ollama.js` provides a minimal client for interacting with the Ollama server.
+- `precheck.js` runs a pre-check before models are selected or Ollama is installed.
 
 ## Configuration
 
@@ -46,9 +48,9 @@ The Model Verification layer checks the accuracy of comments and verifies the in
 ## Related layers
 
 - [Project README](../README.md): the overview of the whole project and every layer.
-- [GitHub Integration](github-integration.md): Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations.
-- [Ollama Management](ollama-management.md): Manages Ollama releases and models, including hashing, updating model pinning, and computing checksums.
-- [Python Helper](python-helper.md): Provides utilities and scripts for Python-related tasks.
-- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state, including links, reports, and safe paths.
-- [Documentation and Grounding](documentation-and-grounding.md): Handles documentation and grounding related tasks.
+- [App Registration](app-registration.md): Handles app registration and GitHub API interactions.
+- [Ollama Management](ollama-management.md): Manages Ollama releases and models.
+- [Python Integration](python-integration.md): Handles Python-related tasks and structures.
+- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state.
+- [Documentation and Grounding](documentation-and-grounding.md): The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says.
 - [Tests](tests.md): This folder contains test files that define and verify various aspects of the project, including action steps, anchors, big layers, check runs, comments, configuration, coverage, documentation, end-to-end tests, edges, excalidraw-like project, first run, Git repository, heavy level, and test helpers.

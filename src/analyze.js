@@ -28,6 +28,7 @@ function splitLines(text) {
   return lines;
 }
 
+// Calculates the starting positions of each line in a list of lines.
 function lineStarts(lines) {
   const starts = [];
   let offset = 0;
@@ -50,6 +51,7 @@ function lineIndexAt(starts, pos) {
   return lo;
 }
 
+// Returns an array of objects with information about each line in the input array.
 function baseInfo(lines) {
   return lines.map((line) => ({
     blank: line.text.trim() === '',
@@ -88,6 +90,7 @@ function genericSymbol(trimmed) {
 }
 
 function unwrapExpression(node) {
+  // Unwraps nested parentheses, as expressions, and type assertions from a given node.
   while (
     ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) ||
     ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)
@@ -122,6 +125,7 @@ function isFunctionLike(node) {
 function isRequireCall(node) {
   node = unwrapExpression(node);
   while (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) node = node.expression;
+  // Determines if a node is a call to the 'require' function after unwrapping expressions.
   return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'require';
 }
 
@@ -208,6 +212,7 @@ function analyzeTypeScript(text, lines, language) {
       if (declarations.some((d) => d.initializer && isRequireCall(d.initializer))) markLines(node, 'isImport');
       else {
         const fn = declarations.find((d) => d.initializer && isFunctionLike(d.initializer));
+        // Analyzes TypeScript code to identify import statements and function declarations.
         if (fn) markDeclaration(node, nameOf(fn));
         else if (node.parent === sf && node.declarationList.flags & ts.NodeFlags.Const) info[lineOf(node.getStart(sf))].isConstant = true;
       }
@@ -268,6 +273,8 @@ function analyzeTypeScript(text, lines, language) {
   return { ok: true, info, decoratorTarget, syntaxErrors: sf.parseDiagnostics.length };
 }
 
+// Analyzes Python code lines, checks for bare CR line
+// endings, and processes syntax and structure information.
 function analyzePythonLines(text, lines) {
   if (/\r(?!\n)/.test(text)) {
     return { ok: false, error: 'Python files with bare CR line endings are not supported' };
@@ -302,6 +309,7 @@ function analyzePythonLines(text, lines) {
   return { ok: true, info, decoratorTarget };
 }
 
+// Matches a token at the current position in the text, considering spaces before tokens.
 function matchToken(tokens, text, pos) {
   for (const token of tokens) {
     if (token.needsSpaceBefore && pos > 0 && !/\s/.test(text[pos - 1])) continue;

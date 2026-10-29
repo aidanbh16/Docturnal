@@ -61,6 +61,7 @@ def analyze(source):
     }
 
 
+# Dumps the AST of the given Python source code.
 def dump(source):
     try:
         return ast.dump(ast.parse(source))
@@ -193,11 +194,13 @@ def targets(source):
     return {"ok": True, "blocks": blocks, "public": names}
 
 
+# Verifies if the candidates match the expected AST of the original source code.
 def verify(original, candidates):
     expected = dump(original)
     return [expected is not None and dump(candidate) == expected for candidate in candidates]
 
 
+# Processes JSON input from stdin, determines mode, and returns response.
 def main():
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     mode = request.get("mode")

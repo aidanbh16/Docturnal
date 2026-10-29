@@ -123,6 +123,7 @@ const current = { 'comment-level': 'medium', 'existing-code': 'gradual', 'privat
 beforeEach(() => resetRealApiChecks());
 
 describe('webhook signature', () => {
+  // Tests the webhook handler's ability to reject a bad signature with a 401 status code.
   it('rejects a bad signature with 401 before doing anything', async () => {
     const t = setup();
     expect(await t.deliver('installation', installation(), { signature: sign('something else') })).toBe(401);
@@ -201,6 +202,8 @@ describe('installation', () => {
     expect(t.logs).toContain('cron 2026-01-15T05:07:00.000Z: skipped installation 1 this hour, could not read its settings (KV unavailable)');
   });
 
+  // Tests the webhook handler's ability to handle a batch that
+  // cannot be queued without stopping the batches after it.
   it('a batch that cannot be queued does not stop the batches after it', async () => {
     const repos = Array.from({ length: 150 }, (_, i) => `octo/r${String(i).padStart(3, '0')}`);
     const t = setup({ repos });
@@ -524,6 +527,7 @@ describe('branch cleanup when a Docturnal pull request closes', () => {
   const ALL = ['docturnal/update', 'docturnal/setup', 'docturnal/workflow-update'];
 
   for (const ref of ALL) {
+    // Describes the test case for deleting a branch when its pull request is merged.
     it(`deletes ${ref} when its pull request is merged`, async () => {
       const t = setup({ branches: ALL });
       expect(await t.deliver('pull_request', closed({ ref }))).toBe(200);
@@ -541,6 +545,8 @@ describe('branch cleanup when a Docturnal pull request closes', () => {
   });
 
   for (const status of ['in_progress', 'queued', 'pending']) {
+    // Describes the test case for keeping docturnal/update
+    // while a Docturnal run is in progress or queued.
     it(`keeps docturnal/update while a Docturnal run is ${status}`, async () => {
       const t = setup({ branches: ['docturnal/update'], runs: [{ repo: 'octo/hello', status }] });
       expect(await t.deliver('pull_request', closed())).toBe(200);
@@ -657,11 +663,13 @@ describe('push to docturnal/update', () => {
     expect(body.endsWith(SETTINGS_LINK)).toBe(true);
   });
 
+  // Ensures only GitHub Actions bot pushes and pushes to the main branch are processed.
   it('ignores pushes by anyone but github-actions[bot] and pushes to other branches', async () => {
     const t = setup();
     await t.deliver('push', pushToUpdate('octo'));
     await t.deliver('push', { ...pushToUpdate(), ref: 'refs/heads/main' });
     await t.deliver('push', { ...pushToUpdate(), installation: undefined });
+    // Verifies no GitHub API calls were made for ignored pushes.
     expect(t.gh.state.calls).toEqual([]);
     expect(t.logs).toEqual(['push octo/hello: ignored a push to docturnal/update by octo']);
   });
@@ -675,6 +683,7 @@ describe('push to docturnal/update', () => {
 
 describe('workflow template', () => {
   it('has no schedule, and takes comment-level and existing-code as dispatch inputs', () => {
+    // Ensures the workflow does not have a schedule or cron trigger.
     expect(WORKFLOW).not.toMatch(/schedule:|cron:/);
     expect(WORKFLOW).toContain(`on:
   workflow_dispatch:
@@ -690,6 +699,7 @@ describe('workflow template', () => {
         options: ["gradual", "none"]
         default: "gradual"`);
     expect(WORKFLOW).toContain('permissions:\n  contents: write\n\n');
+    // Ensures the workflow does not have write permissions for actions.
     expect(WORKFLOW).not.toContain('actions: write');
   });
 
@@ -749,6 +759,7 @@ const WORKFLOW_V1 = WORKFLOW_V2
   .replace('# Docturnal workflow version 2.\n', '')
   .replace(/\n# One run at a time[\s\S]*?cancel-in-progress: false\n/, '');
 
+// Tests the workflow versioning logic and updates.
 describe('workflow versions', () => {
   it('lets one run at a time per repository, and carries its version', () => {
     expect(WORKFLOW).toContain('\nconcurrency:\n  group: docturnal\n  cancel-in-progress: false\n');
@@ -884,6 +895,7 @@ describe('workflow versions', () => {
     t.gh.state.nextPull = 4;
     t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
 
+    // Runs the cron job at the specified time to check for updates.
     await t.cron('2026-01-15T05:07:00Z');
     await t.drain();
     expect(t.gh.state.pulls).toHaveLength(1);
@@ -912,6 +924,7 @@ describe('nightly run while another run is going', () => {
   for (const status of ['in_progress', 'queued', 'pending']) {
     it(`skips the nightly run when a run is ${status}`, async () => {
       const t = setup({ files: { [`main:${WORKFLOW_PATH}`]: WORKFLOW }, runs: [{ repo: 'octo/hello', status }] });
+      // Seeds the KV store with necessary data for the test.
       t.kv.seed(1, { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', repos: ['octo/hello'] });
       await t.cron('2026-01-15T05:07:00Z');
       await t.drain();
@@ -1000,6 +1013,8 @@ describe('declined workflow updates', () => {
     return { t, night, decline };
   }
 
+  // Ensures that a declined update is offered once more
+  // after 14 days and never after a second decline.
   it('offers a declined update once more after 14 days, with why it matters, and never after a second decline', async () => {
     const { t, night, decline } = world();
     await night('2026-01-15T05:07:00Z');

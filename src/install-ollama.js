@@ -76,6 +76,7 @@ function checkInstall(dir, archive) {
       if (name === MARKER) continue;
       const full = path.join(dir, name);
       if (entry.isSymbolicLink()) {
+        // Checks if the symbolic link points to the correct file in the archive.
         if (own(archive.links, name) !== fs.readlinkSync(full)) return `${name} is not the pinned link`;
         seen.add(name);
       } else if (entry.isDirectory()) {

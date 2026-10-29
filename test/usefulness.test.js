@@ -73,6 +73,7 @@ async function run(text, byCode, { level = 'heavy', records = [], verdict = judg
 
 test('a new comment that only restates the code is dropped, and one that explains why is kept', async () => {
   const { result } = await run(WITHHOLDING, { [CODE.remaining]: RESTATES, [CODE.taxed]: WHY });
+  // Checks that the initial comment is dropped and the why comment is kept.
   assert.doesNotMatch(result.text, /Initializes the remaining amount/);
   assert.match(result.text, /\n {4}\/\/ Each bracket's upTo is a monthly width[^\n]*\n {4}const taxed/);
   assert.deepStrictEqual(result.stats.dropped.restates, { 'restates the code': 1 });
@@ -206,6 +207,7 @@ test('last-run.md lists skipped files with the reason, and counts restating comm
     skipped: [{ path: 'src/payroll.js', reason: 'the file has syntax errors' }],
     models: { comment: 'c', docs: 'd', level: 'heavy' },
   });
+  // Asserts that the report includes the correct file path, dropped count, and restates count.
   assert.match(report, /\| `src\/tax\.js` \| 1 \| Yes \(TypeScript\) \| proposed 3, 2 restates the code, 1 added \|/);
   assert.match(report, /## Files skipped\n\n- `src\/payroll\.js`: skipped, the file has syntax errors\n/);
   assert.match(proposalSummary(stats, { reasons: true }), /2 restates the code \(restates the code: 1, repeats the function comment: 1\)/);

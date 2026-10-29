@@ -42,6 +42,7 @@ function folderReply(body) {
   return { summary: `Holds the code in ${where}.`, files };
 }
 
+// Returns the kind of Ollama model based on its properties and prompt.
 function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
   const prompt = promptOf(body);

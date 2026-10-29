@@ -6,7 +6,11 @@ This layer contains test files that define and verify various aspects of the pro
 
 ## Overview
 
-This folder contains test files for various components of the app, including in-memory data structures, mock services, and unit tests for specific features.
+It includes both unit tests and end-to-end tests to cover different aspects of the application.
+
+## Responsibilities
+
+- **End-to-End Tests**: Tests that simulate real-world user interactions with the application.
 
 ## Key components
 
@@ -17,58 +21,64 @@ This folder contains test files for various components of the app, including in-
 | [`app/tests/mock-github.mjs`](../app/tests/mock-github.mjs) | An in-memory stand-in for the GitHub REST API calls the app makes. | `createMockGitHub`, `argValue` |
 | [`app/tests/pkcs8.spec.ts`](../app/tests/pkcs8.spec.ts) | Tests PKCS#1 to PKCS#8 conversion. |  |
 | [`app/tests/scheduler.spec.ts`](../app/tests/scheduler.spec.ts) | Tests local time and date functions. | `localTime`, `localDate`, `runs` |
-| [`app/tests/setup.spec.ts`](../app/tests/setup.spec.ts) | Tests setup and page script. | `setup`, `runPageScript` |
-| [`app/tests/webhook.spec.ts`](../app/tests/webhook.spec.ts) | Tests webhook functionality. | `sign`, `setup`, `installation`, `pushToUpdate` |
+| [`app/tests/setup.spec.ts`](../app/tests/setup.spec.ts) | Defines setup and runPageScript. | `setup`, `runPageScript` |
+| [`app/tests/webhook.spec.ts`](../app/tests/webhook.spec.ts) | Defines sign, setup, installation, pushToUpdate. | `sign`, `setup`, `installation`, `pushToUpdate` |
 | [`test/action-steps.test.js`](../test/action-steps.test.js) | Which steps of action.yml run, from each step's if:, evaluated the way GitHub Actions does. | `steps`, `evaluate`, `running`, `names` |
-| [`test/anchors.test.js`](../test/anchors.test.js) | Anchors as a small model. | `lineOf` |
 | [`test/big-layers.test.js`](../test/big-layers.test.js) | Imports, purpose of, reads repository, layer named, section, items, reply. | `importsOf`, `purposeOf`, `readRepo`, `layerNamed`, `section`, `items` |
-| [`test/check-run.test.js`](../test/check-run.test.js) | Defines onCheck, adds comments, git, drop connection, run main, edit payroll. | `onCheck`, `addComments`, `git`, `dropConnection`, `runMain`, `editPayroll` |
-| [`test/comments.test.js`](../test/comments.test.js) | Const test = require('node:test');. | `lang`, `source`, `reasons`, `forcedInsertion` |
+| [`test/check-run.test.js`](../test/check-run.test.js) | Defines functions for checking, rewriting, and running code. | `onCheck`, `rewrite`, `git`, `dropConnection`, `runMain`, `editPayroll` |
+| [`test/comment-cost.test.js`](../test/comment-cost.test.js) | Tests the cost of comments in the codebase. | `night`, `batchNight`, `added` |
+| [`test/comments.test.js`](../test/comments.test.js) | Defines and tests comment-related functions. | `lang`, `source`, `reasons`, `forcedInsertion` |
 | [`test/config.test.js`](../test/config.test.js) | Const test = require('node:test');. |  |
-| [`test/coverage.test.js`](../test/coverage.test.js) | How Does Docturna handle changes for a specific rank name. | `changesFor`, `rankByName`, `documented`, `gitRepo`, `runMain`, `fn` |
+| [`test/coverage.test.js`](../test/coverage.test.js) | Tests the code coverage of the project. | `changesFor`, `rankByName`, `documented`, `gitRepo`, `runMain`, `fn` |
+| [`test/declarations.test.js`](../test/declarations.test.js) | Tests the declaration-related functions. | `useless`, `run` |
 | [`test/docs.test.js`](../test/docs.test.js) | Const test = require('node:test');. | `h2s`, `repoRead`, `mockHandler` |
 | [`test/e2e.sh`](../test/e2e.sh) | End-to-end test for the Action. | `getUser`, `listUsers`, `listOrders`, `connect`, `disconnect`, `deleteUser` |
 | [`test/edges.test.js`](../test/edges.test.js) | Edge cases of how Docturnal covers a project, against real git with the mock Ollama server. | `runDuring`, `summaries`, `commentRequests` |
+| [`test/excalidraw-files.js`](../test/excalidraw-files.js) | Exports files related to the excalidraw fork. | `FILES`, `excalidrawFiles`, `pascal`, `COMPONENT`, `fileText` |
 | [`test/excalidraw-like.js`](../test/excalidraw-like.js) | A project shaped like excalidraw/excalidraw. | `PACKAGES`, `SOURCE_FILES`, `excalidrawLike` |
 | [`test/first-run.test.js`](../test/first-run.test.js) | The documentation pass on real-looking projects. | `plain` |
 | [`test/git-repo.js`](../test/git-repo.js) | A scratch git remote with a seed clone, for tests that run the Action against real git. | `fn`, `gitRepo`, `runAction` |
-| [`test/heavy.test.js`](../test/heavy.test.js) | Heavy level: a block comment above. | `lineOf`, `hasBlockAbove`, `firstPassHandler` |
-| [`test/helpers.js`](../test/helpers.js) | Shared test helpers. | `applyAnchored`, `withAccuracy`, `withAnchor` |
+| [`test/heavy.test.js`](../test/heavy.test.js) | Tests heavy-level functions. | `lineOf`, `hasBlockAbove`, `describe`, `without` |
+| [`test/helpers.js`](../test/helpers.js) | Shared test helpers. | `withAccuracy`, `writing`, `writingByCode` |
 | [`test/ignore.test.js`](../test/ignore.test.js) | Defines repo and ignores .gitignore patterns. | `repo` |
-| [`test/mock-ollama.js`](../test/mock-ollama.js) | A stand-in for the Ollama HTTP API. | `OOM_MESSAGE`, `accuracyReply`, `blocksReply`, `cutOff`, `defaultHandler`, `kindOf` |
-| [`test/model-split.test.js`](../test/model-split.test.js) | Tests splitting models and reading repositories. | `readRepo`, `leadingPurpose`, `stemOf`, `setOf`, `filesOf`, `goodParts` |
+| [`test/internal-errors.test.js`](../test/internal-errors.test.js) | Tests internal error handling. | `moduleText`, `project`, `night`, `throwingFor` |
+| [`test/mock-ollama.js`](../test/mock-ollama.js) | A stand-in for the Ollama HTTP API. | `OOM_MESSAGE`, `accuracyReply`, `commentsReply`, `cutOff`, `defaultHandler`, `kindOf` |
+| [`test/model-split.test.js`](../test/model-split.test.js) | Tests the model splitting process. | `readRepo`, `leadingPurpose`, `stemOf`, `setOf`, `filesOf`, `goodParts` |
 | [`test/models.test.js`](../test/models.test.js) | Tests reading fake files. | `fakeReadFile` |
 | [`test/nightly.test.js`](../test/nightly.test.js) | Nightly runs after the documentation pass, with model time simulated at the speeds calibrated from a real runner (see speed-model.js). | `moduleText`, `project`, `night` |
 | [`test/ollama.test.js`](../test/ollama.test.js) | Tests the Ollama client. | `slowMock` |
-| [`test/ownership.test.js`](../test/ownership.test.js) | Tests the ownership of comments. | `firstPass`, `handler`, `run`, `codeOnly`, `above` |
+| [`test/ownership.test.js`](../test/ownership.test.js) | Tests the ownership-related functions. | `handler`, `run`, `codeOnly`, `above` |
 | [`test/parts.test.js`](../test/parts.test.js) | Tests parts of the software. | `ownerOf`, `runOnce` |
 | [`test/precheck.test.js`](../test/precheck.test.js) | Tests the pre-check against seed files. | `git`, `clone`, `pushSeed`, `precheck`, `runMain` |
-| [`test/proposals.test.js`](../test/proposals.test.js) | Tests handling proposed comments. | `line`, `at` |
+| [`test/proposals.test.js`](../test/proposals.test.js) | Tests the parsing of invoice files into records. | `line` |
+| [`test/prototype-keys.test.js`](../test/prototype-keys.test.js) | Tests the generation of words from code, file, and folder names. | `tmp` |
 | [`test/quality.test.js`](../test/quality.test.js) | Tests quality bugs from comments. | `readRepo`, `tables`, `section`, `commentEngine` |
 | [`test/readme.test.js`](../test/readme.test.js) | Tests README.md ownership. | `world`, `h2s`, `section`, `removeSection` |
-| [`test/replies.test.js`](../test/replies.test.js) | Tests functions and recorder for request-reply pairs. | `functions`, `recorder`, `proposalsFor` |
-| [`test/restates.test.js`](../test/restates.test.js) | Tests word-match filter for restate comments. | `codeUnder`, `proposal` |
+| [`test/replies.test.js`](../test/replies.test.js) | Tests the handling of comment requests and their replies. | `functions`, `names`, `recorder`, `answer` |
+| [`test/restates.test.js`](../test/restates.test.js) | Tests the word-match filter for new line comments. | `codeUnder`, `proposal` |
+| [`test/round-robin.test.js`](../test/round-robin.test.js) | Tests the round-robin comment distribution. | `moduleText`, `run` |
 | [`test/scale.test.js`](../test/scale.test.js) | Tests source, project-like models, and prompt sizes. | `source`, `projectLike72`, `project1000`, `firstRun`, `checkPromptSizes` |
-| [`test/speed-model.js`](../test/speed-model.js) | Exports simulated model time and chat. | `SPEEDS`, `simulatedChat`, `promptOf`, `answerTokens` |
+| [`test/speed-model.js`](../test/speed-model.js) | Tests the simulated model time. | `SPEEDS`, `simulatedChat`, `promptOf`, `answerTokens` |
 | [`test/supply-chain.test.js`](../test/supply-chain.test.js) | Tests SHA256 hashing and archive fetching. | `sha256`, `archiveFetch` |
-| [`test/usefulness.test.js`](../test/usefulness.test.js) | Tests proposal, judge, and usefulness check. | `proposal`, `judge`, `run`, `greedy` |
+| [`test/targets.test.js`](../test/targets.test.js) | Tests the comment targeting logic. | `plan`, `linesOf`, `commentAbove` |
+| [`test/usefulness.test.js`](../test/usefulness.test.js) | Tests the usefulness check for new line comments. | `judge`, `run`, `greedy` |
 
 ## How it works
 
-Each folder contains specific test files that cover different aspects of the project.
+The `app/tests` folder contains test files for various components of the app, including in-memory data structures, mock services, and unit tests for specific features.
 
 ## Configuration
 
 - Environment variables: `DOCTURNAL_SLOW_TESTS`, `GIT_CONFIG_GLOBAL`, `OLLAMA_HOST`, `OLLAMA_VERSION`, `SETTINGS`.
 - Action inputs: `backlog-batch-size`, `comment-level`, `context-tokens`, `docs-dir`, `docs-model`, `exclude`, `existing-code`, `extensions`, `job-timeout-minutes`, `model`, `path`, `time-budget-minutes`.
-- Configuration files: `.github/workflows/docturnal.yml`, `action.yml`, `app/tsconfig.json`, `app/wrangler.toml`, `pins/models.json`, `pins/ollama.json`.
+- Configuration files: `.docturnal/state.json`, `.github/workflows/docturnal.yml`, `action.yml`, `app/tsconfig.json`, `app/wrangler.toml`, `pins/models.json`, `pins/ollama.json`.
 
 ## Related layers
 
 - [Project README](../README.md): the overview of the whole project and every layer.
-- [GitHub Integration](github-integration.md): Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations.
-- [Ollama Management](ollama-management.md): Manages Ollama releases and models, including hashing, updating model pinning, and computing checksums.
+- [App Registration](app-registration.md): Handles app registration and GitHub API interactions.
+- [Ollama Management](ollama-management.md): Manages Ollama releases and models.
 - [Model Verification](model-verification.md): Verifies models and their configurations.
-- [Python Helper](python-helper.md): Provides utilities and scripts for Python-related tasks.
-- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state, including links, reports, and safe paths.
-- [Documentation and Grounding](documentation-and-grounding.md): Handles documentation and grounding related tasks.
+- [Python Integration](python-integration.md): Handles Python-related tasks and structures.
+- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state.
+- [Documentation and Grounding](documentation-and-grounding.md): The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says.

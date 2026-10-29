@@ -359,6 +359,7 @@ function existingCommentPositions(info, exemptDeclarations) {
   return exemptDeclarations ? positions.filter((pos) => !(info[pos - 1] && info[pos - 1].isDeclaration)) : positions;
 }
 
+// Returns an object containing the rendered text and an array of inserted line numbers.
 function render(lines, insertions, eol, bom) {
   const byTarget = new Map(insertions.map((ins) => [ins.target, ins]));
   const out = [];
