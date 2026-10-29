@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
+const { own } = require('./own');
 
 const PINS_PATH = path.join(__dirname, '..', 'pins', 'ollama.json');
 const RELEASES = 'https://github.com/ollama/ollama/releases/download';
@@ -75,13 +76,13 @@ function checkInstall(dir, archive) {
       if (name === MARKER) continue;
       const full = path.join(dir, name);
       if (entry.isSymbolicLink()) {
-        if (archive.links[name] !== fs.readlinkSync(full)) return `${name} is not the pinned link`;
+        if (own(archive.links, name) !== fs.readlinkSync(full)) return `${name} is not the pinned link`;
         seen.add(name);
       } else if (entry.isDirectory()) {
         const problem = walk(name);
         if (problem) return problem;
       } else if (entry.isFile()) {
-        if (archive.files[name] !== sha256File(full)) return `${name} does not match its pinned hash`;
+        if (own(archive.files, name) !== sha256File(full)) return `${name} does not match its pinned hash`;
         seen.add(name);
       } else {
         return `${name} is not a file`;

@@ -12,11 +12,14 @@ export const WORKFLOW_FILE = 'docturnal.yml';
 // - 3: actions/checkout v7, which runs on Node.js 24 instead of the deprecated Node.js 20.
 // - 4: the existing-code input, for the "Existing code" setting.
 // - 5: actions/checkout pinned to a full commit SHA instead of a version tag.
-export const WORKFLOW_VERSION = 5;
+// - 6: the private-minutes input: a private repository's time budget, from the settings.
+export const WORKFLOW_VERSION = 6;
 
 // The job's timeout leaves at least 20 minutes after the Action's time budget, for setup and
-// the commit, so a run never loses its work to the timeout.
+// the commit, so a run never loses its work to the timeout. A private repository's runs count
+// toward its owner's Actions minutes, so they get the settings' shorter budget.
 const TIME_BUDGET_MINUTES = 90;
+const PRIVATE_MINUTES = 30;
 const JOB_TIMEOUT_MINUTES = 120;
 const VERSION_LINE = /^# Docturnal workflow version (\d+)\.?\s*$/m;
 
@@ -40,6 +43,11 @@ on:
         type: choice
         options: ["gradual", "none"]
         default: "gradual"
+      private-minutes:
+        description: "The most minutes a night Docturnal works in a private repository. Public repositories get ${TIME_BUDGET_MINUTES}."
+        type: choice
+        options: ["15", "30", "60", "90"]
+        default: "${PRIVATE_MINUTES}"
 
 permissions:
   contents: write
@@ -64,7 +72,8 @@ jobs:
         with:
           comment-level: \${{ inputs['comment-level'] || 'medium' }}
           existing-code: \${{ inputs['existing-code'] || 'gradual' }}
-          time-budget-minutes: "${TIME_BUDGET_MINUTES}"
+          # Private repositories use the time limit from the settings; public ones ${TIME_BUDGET_MINUTES} minutes.
+          time-budget-minutes: \${{ github.event.repository.private && (inputs['private-minutes'] || '${PRIVATE_MINUTES}') || '${TIME_BUDGET_MINUTES}' }}
           job-timeout-minutes: "${JOB_TIMEOUT_MINUTES}"
 `;
 }

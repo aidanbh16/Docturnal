@@ -4,7 +4,7 @@
 // message, so an install with many repositories never depends on one Worker invocation.
 
 import type { Octokit } from '@octokit/core';
-import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, SettingsStore } from './settings';
+import { type CommentLevel, DEFAULT_SETTINGS, type ExistingCode, type PrivateMinutes, SettingsStore } from './settings';
 import { WORKFLOW_FILE, WORKFLOW_PATH, WORKFLOW_VERSION, templateVersion, workflowYaml } from './workflow';
 
 export const UPDATE_BRANCH = 'docturnal/update';
@@ -42,6 +42,7 @@ const VERSION_CHANGES: Record<number, string> = {
   3: 'Uses version 7 of `actions/checkout`, which runs on Node.js 24. GitHub is retiring Node.js 20 for actions, and the older version adds a deprecation warning to every run.',
   4: 'Passes your "Existing code" setting to each run, so you can choose to have existing code commented gradually, in small batches, or only new and changed code. It also tells each run how long its job may take, so a run always commits its work before the job times out.',
   5: 'Pins `actions/checkout` to a full commit SHA instead of a version tag. A tag can be moved to different code, and a commit SHA cannot, so the code that checks out your repository changes only with a new version of this workflow.',
+  6: 'Limits how long Docturnal works each night in a private repository, where each run counts toward your free GitHub Actions minutes. The default is 30 minutes, and you can choose 15, 30, 60, or 90 minutes in the settings. Work that does not fit waits for the next night. Public repositories keep 90 minutes.',
 };
 
 // The changes between version `from` and the current one: one paragraph, or a list.
@@ -80,7 +81,7 @@ const FALLBACK_UPDATE_BODY = 'Docturnal added comments to your code and updated 
 
 export type QueueMessage =
   | { kind: 'setup'; installationId: number; repo: string; origin?: string }
-  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel; existingCode?: ExistingCode }
+  | { kind: 'dispatch'; installationId: number; repo: string; reason: 'first' | 'nightly'; ref?: string; commentLevel?: CommentLevel; existingCode?: ExistingCode; privateMinutes?: PrivateMinutes }
   | { kind: 'workflow-update'; installationId: number; repo: string; origin?: string };
 
 export type Outcome = { retry: false } | { retry: true; delaySeconds: number };
@@ -423,6 +424,7 @@ const VERSION_REASONS: Record<number, string> = {
   3: 'removes the Node.js 20 deprecation warning from every run',
   4: 'makes each run commit its work before the job times out',
   5: 'pins the code that checks out your repository to one exact commit',
+  6: 'keeps each night in a private repository within the time limit you choose',
 };
 
 // The line at the top of an update offered again after a decline.
@@ -659,8 +661,10 @@ async function beforeNightlyRun(octokit: Octokit, target: RepoRef, ref: string, 
   return { skip: null, version };
 }
 
-// The template version that brought the existing-code input. Older templates refuse it.
+// The template versions that brought the existing-code and private-minutes inputs. Older
+// templates refuse them.
 const EXISTING_CODE_FROM_VERSION = 4;
+const PRIVATE_MINUTES_FROM_VERSION = 6;
 
 // Starts docturnal.yml with the installation's comment level.
 export async function dispatchRun(octokit: Octokit, message: DispatchMessage, attempts: number, deps: Deps): Promise<Outcome> {
@@ -689,9 +693,11 @@ export async function dispatchRun(octokit: Octokit, message: DispatchMessage, at
     const choices = (await deps.settings.getChoices(message.installationId)) ?? DEFAULT_SETTINGS;
     const commentLevel = message.commentLevel ?? choices.commentLevel;
     const existingCode = message.existingCode ?? choices.existingCode;
-    // Only templates that have the existing-code input get it; GitHub refuses an unknown input.
+    const privateMinutes = message.privateMinutes ?? choices.privateMinutes;
+    // Only templates that have an input get it; GitHub refuses an unknown input.
     const inputs: Record<string, string> = { 'comment-level': commentLevel };
     if (version !== null && version >= EXISTING_CODE_FROM_VERSION) inputs['existing-code'] = existingCode;
+    if (version !== null && version >= PRIVATE_MINUTES_FROM_VERSION) inputs['private-minutes'] = String(privateMinutes);
     try {
       await octokit.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
         owner,

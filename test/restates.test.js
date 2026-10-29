@@ -6,12 +6,11 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { commentFile } = require('../src/comments');
+const { applyProposals } = require('../src/comments');
+const { languageById } = require('../src/languages');
 const { recordFor } = require('../src/owned');
 const { proposalSummary } = require('../src/report');
 const { RESTATES_AT, restatement, restates } = require('../src/restates');
-const { withAccuracy } = require('./helpers');
-const { blocksReply, kindOf, startMockOllama } = require('./mock-ollama');
 
 const PAYROLL = `'use strict';
 
@@ -76,7 +75,8 @@ function codeUnder(code) {
   return out;
 }
 
-const proposal = (text, code, kind = 'line') => ({ line: LINES.indexOf(code) + 1, anchor: code.trim(), text, kind });
+const proposal = (text, code, kind = 'line') => ({ line: LINES.indexOf(code) + 1, text, kind });
+const js = languageById('javascript');
 
 test('the five restating comments from the real run score at or above the threshold', () => {
   assert.strictEqual(RESTATES_AT, 0.6);
@@ -119,14 +119,11 @@ test('a reason word, an edge case, or a unit the code does not name keeps a comm
   assert.strictEqual(restatement('Caps regular time, in minutes, at the overtime threshold.', ['  const regular = Math.min(time, OVERTIME_THRESHOLD);']).reason, 'names a unit');
 });
 
-test('in a run, the restating comments are dropped and counted, and the epsilon comment is kept', async () => {
-  // A model as lenient as the real one: every comment is accurate and useful.
+test('in a file, the restating comments are dropped and counted, and the epsilon comment is kept', () => {
+  // As after a check as lenient as the real one: every comment is accurate and useful.
   const proposals = [...DROP, KEEP].map(([text, code]) => proposal(text, code));
-  const mock = await startMockOllama(withAccuracy((body) => (kindOf(body) === 'blocks'
-    ? blocksReply(body)
-    : { summary: 'Payroll math.', symbols: [], comments: proposals })));
-  try {
-    const result = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'heavy', model: 'm', host: mock.host });
+  {
+    const result = applyProposals({ text: PAYROLL, language: js, level: 'heavy', proposals });
     for (const [text] of DROP) assert.ok(!result.text.includes(text), text);
     assert.match(result.text, /\n {2}\/\/ Rounds the amount by adding a small epsilon to avoid floating-point precision issues\.\n {2}return Math\.round/);
     assert.deepStrictEqual(result.stats.dropped.restates, { 'restates the code (word match)': 5 });
@@ -138,12 +135,10 @@ test('in a run, the restating comments are dropped and counted, and the epsilon 
       assert.deepStrictEqual(Object.keys(r).sort(), ['category', 'coverage', 'line', 'narrates', 'reason']);
       assert.ok(r.coverage >= RESTATES_AT);
     }
-  } finally {
-    await mock.close();
   }
 });
 
-test('never applied to block comments, comments on constants or declarations, or comments already in the file', async () => {
+test('never applied to block comments, comments on constants or declarations, or comments already in the file', () => {
   const withComments = PAYROLL
     // A person's comment and an earlier Docturnal comment, both pure restatements.
     .replace('  let remaining = gross;', '  // Sets remaining to gross.\n  let remaining = gross;')
@@ -151,14 +146,11 @@ test('never applied to block comments, comments on constants or declarations, or
   const records = [recordFor(['  // Returns the tax rounded to cents.'], '  return roundCents(tax);')];
   const at = (code) => withComments.split('\n').indexOf(code) + 1;
   const proposals = [
-    { line: at('function grossPay(hours, rate) {'), anchor: 'function grossPay(hours, rate) {', text: 'Gross pay from hours and rate, with overtime.', kind: 'block' },
-    { line: at('const OVERTIME_RATE = 1.5;'), anchor: 'const OVERTIME_RATE = 1.5;', text: 'The overtime rate.', kind: 'line' },
+    { line: at('function grossPay(hours, rate) {'), text: 'Gross pay from hours and rate, with overtime.', kind: 'block' },
+    { line: at('const OVERTIME_RATE = 1.5;'), text: 'The overtime rate.', kind: 'line' },
   ];
-  const mock = await startMockOllama(withAccuracy((body) => (kindOf(body) === 'blocks'
-    ? { comments: [] }
-    : { summary: 's', symbols: [], comments: proposals })));
-  try {
-    const heavy = await commentFile({ path: 'src/payroll.js', text: withComments, level: 'heavy', model: 'm', host: mock.host, records });
+  {
+    const heavy = applyProposals({ text: withComments, language: js, level: 'heavy', proposals, records });
     assert.match(heavy.text, /\/\*\*\n \* Gross pay from hours and rate, with overtime\.\n \*\/\nfunction grossPay/);
     assert.match(heavy.text, /\/\/ The overtime rate\.\nconst OVERTIME_RATE/);
     assert.match(heavy.text, /\/\/ Sets remaining to gross\.\n {2}let remaining/);
@@ -167,10 +159,9 @@ test('never applied to block comments, comments on constants or declarations, or
     assert.deepStrictEqual(heavy.stats.earlier, { kept: 1, restyled: 0, removed: {} });
 
     // At medium, the function's summary is a line comment on its declaration, and stays.
-    const medium = await commentFile({ path: 'src/payroll.js', text: PAYROLL, level: 'medium', model: 'm', host: mock.host });
+    const plain = (code) => PAYROLL.split('\n').indexOf(code) + 1;
+    const medium = applyProposals({ text: PAYROLL, language: js, level: 'medium', proposals: [{ ...proposals[0], line: plain('function grossPay(hours, rate) {') }] });
     assert.match(medium.text, /\/\/ Gross pay from hours and rate, with overtime\.\nfunction grossPay/);
-  } finally {
-    await mock.close();
   }
 });
 
@@ -183,13 +174,13 @@ test('"It initializes a pending variable to track any pending operations." above
   assert.strictEqual(restates(result), true);
 
   // In a file: dropped as restating the code, and counted.
-  const { applyProposals } = require('../src/comments');
-  const { languageById } = require('../src/languages');
   const text = 'async function planReadme({ current, saved }) {\n  const report = { updated: [] };\n  const errors = [];\n  let pending = null;\n  return { report, errors, pending, current, saved };\n}\n';
-  const applied = applyProposals({ text, language: languageById('javascript'), level: 'medium', proposals: [{ line: 4, anchor: 'let pending = null;', text: comment, kind: 'line' }] });
+  const applied = applyProposals({ text, language: languageById('javascript'), level: 'medium', proposals: [{ line: 4, text: comment, kind: 'line' }] });
   assert.strictEqual(applied.added, 0);
   assert.deepStrictEqual(applied.stats.dropped.restates, { 'restates the code (word match)': 1 });
   assert.strictEqual(applied.rejections[0].narrates, true);
+  // Its opener is taken off before the word match, and it still narrates.
+  assert.strictEqual(restatement('Initializes a pending variable to track any pending operations.', ['  let pending = null;']).narrates, true);
 });
 
 test('a comment that narrates a declaration is kept when it gives a reason, an edge case, or words of its own', () => {

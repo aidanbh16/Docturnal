@@ -15,6 +15,7 @@
 const path = require('path');
 
 const { SKIP_DIRS } = require('./languages');
+const { own } = require('./own');
 
 const LARGE_PROJECT_FILES = 100;
 // A part with more code files than this gets sub-documents.
@@ -41,13 +42,13 @@ const dirOf = (file) => path.posix.dirname(file);
 const segments = (dir) => (dir === '.' ? [] : dir.split('/'));
 const within = (file, dir) => dir === '.' || file.startsWith(`${dir}/`);
 
-const titleWord = (w) => FOLDER_WORDS[w.toLowerCase()] || w.charAt(0).toUpperCase() + w.slice(1);
+const titleWord = (w) => own(FOLDER_WORDS, w.toLowerCase()) || w.charAt(0).toUpperCase() + w.slice(1);
 
 // The name a folder gives, such as "App Tests" for app/tests.
 function folderName(folder) {
   const parts = segments(folder);
   if (!parts.length) return 'Top Level';
-  return parts.map((p) => FOLDER_WORDS[p.toLowerCase()] || p.replace(/[-_.]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())).join(' ');
+  return parts.map((p) => own(FOLDER_WORDS, p.toLowerCase()) || p.replace(/[-_.]+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase())).join(' ');
 }
 
 // The name a package gives, from its manifest's name: "@excalidraw/element" is "Excalidraw

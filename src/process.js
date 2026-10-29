@@ -7,15 +7,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const { anchorSummary, checkComments, checkRequests, finishComments, needsCheck, planComments, replySummary } = require('./comments');
+const { PER_RUN, checkComments, finishComments, missingSummary, needsCheck, planTargets, proposeNext, replaceInaccurate, replySummary, settleProposals } = require('./comments');
 const { createCaller } = require('./docs');
 const ollama = require('./ollama');
+const { importersOf, nameUsage } = require('./importance');
 const { knownUrls } = require('./links');
 const { proposalSummary } = require('./report');
 const { hashContent } = require('./state');
 const { callLabel, fallbackPurpose, planFolderCalls, splitCall, summarizeFolder } = require('./folders');
-const { symbolsOf } = require('./structure');
+const { fileStructure, symbolsOf } = require('./structure');
 const { languageForPath } = require('./languages');
+const { own } = require('./own');
+const { INTERNAL_ERROR, describeInternal, internalErrorLine } = require('./internal-error');
 
 // The time the README keeps for itself at the end of the budget.
 const README_RESERVE_MINUTES = 8;
@@ -29,10 +32,14 @@ const DOCS_RESERVE_MINUTES = 15;
 const DOCS_PASS_RESERVE_MINUTES = 40;
 // Proposals stop at least this long before the checks must end.
 const CHECK_MINUTES = 2;
-// A generous estimate for one accuracy-check request, before any has run, and for loading
-// the docs model ahead of the checks.
-const CHECK_REQUEST_MS = 50000;
+// The accuracy check's time, estimated before it runs, since every request is made first:
+// a request, and each comment in it, with the docs model on a hosted runner (about 15 s and
+// 6.5 s), a quarter more for safety; and loading the docs model ahead of the checks.
+const CHECK_REQUEST_MS = 20000;
+const CHECK_COMMENT_MS = 8000;
 const LOAD_MS = 60000;
+// The accuracy check sends this many comments per request (see comments.js).
+const CHECK_BATCH = 8;
 // How long Ollama keeps the docs model loaded after it is loaded ahead of the accuracy check.
 const DOCS_MODEL_KEEP_ALIVE = '30m';
 
@@ -60,11 +67,6 @@ function docsToRewrite(previous, items) {
   return touched + (previous.staleDocs || []).filter((s) => s !== 'README').length;
 }
 
-// A file's prompt tokens, roughly: its text and its line-number prefixes.
-function fileTokens(text) {
-  return Math.ceil(text.length / 3) + (text.match(/\n/g) || []).length * 4;
-}
-
 // items: [{ path, kind: 'summary' | 'comment', reason }], in the order to work on them.
 // Returns { results, docsCaller }, where each result is
 //   { path, kind, reason, outcome: 'commented' | 'summarized' | 'skipped' | 'left',
@@ -79,6 +81,119 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     log(`${item.path}: deferred to the next run, ${detail}`);
   };
   const read = (file) => fs.readFileSync(path.join(cwd, file));
+  // A file the run can read: UTF-8, in a known language. Anything else is skipped.
+  const readable = (item) => {
+    const buffer = read(item.path);
+    const originalHash = hashContent(buffer);
+    const text = buffer.toString('utf8');
+    const why = !Buffer.from(text, 'utf8').equals(buffer) ? 'not UTF-8' : !languageForPath(item.path) ? 'unsupported language' : null;
+    return { item, originalHash, path: item.path, text, language: languageForPath(item.path), why };
+  };
+  const skip = (r) => results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'skipped', originalHash: r.originalHash, entry: { hash: r.originalHash, skipped: r.why }, why: r.why });
+  // An unexpected error while working on one file skips that file for this run, and the run
+  // goes on with the others. The results it gave so far (from mark on) are taken back, and it
+  // keeps its old state, so the next run works on it again. The log names the error only.
+  const internal = (item, originalHash, err, mark = results.length) => {
+    results.splice(mark);
+    results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'left', originalHash: originalHash || null, why: INTERNAL_ERROR });
+    log(internalErrorLine(item.path, err));
+  };
+  // readable, or null after onError(err) when the file cannot be read.
+  const tryReadable = (item, onError) => {
+    try {
+      return readable(item);
+    } catch (err) {
+      onError(err);
+      return null;
+    }
+  };
+
+  // One call per folder gives each file's purpose and the folder's summary. Each call's answer
+  // is checked. One that cannot be used is split in half and tried again, down to single
+  // files, and the files a usable answer leaves out are tried again on their own. Every retry
+  // is smaller than the call before it, so this ends. A file that a call of its own cannot
+  // describe gets a purpose built from its structure: no file is left out.
+  // record(path, summary, symbols) takes each file's description; left(r, why, detail) a file
+  // the deadline or a model that did not answer left out.
+  const folders = [];
+  const summarizedDirs = new Set();
+  let summaryCalls = 0;
+  let fromStructure = 0;
+  // failed(r, err): a file an unexpected error left undescribed.
+  const describe = async (files, deadline, givenRecord, left, { newFoldersOnly = false, failed } = {}) => {
+    const byPath = new Map(files.map((r) => [r.path, r]));
+    const done = new Set();
+    const record = (file, summary, symbols) => {
+      done.add(file);
+      givenRecord(file, summary, symbols);
+    };
+    let calls;
+    try {
+      calls = planFolderCalls(files, config.contextTokens);
+    } catch (err) {
+      for (const r of files) failed(r, err);
+      return [];
+    }
+    const queue = [...calls];
+    while (queue.length) {
+      const call = queue.shift();
+      if (now() > deadline) {
+        for (const f of call.files) left(byPath.get(f.path), 'time budget');
+        continue;
+      }
+      let answer;
+      try {
+        summaryCalls++;
+        answer = await summarizeFolder({ call, model: models.comment, contextTokens: config.contextTokens, chat });
+      } catch (err) {
+        for (const f of call.files) left(byPath.get(f.path), 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
+        continue;
+      }
+      try {
+        useAnswer(call, answer);
+      } catch (err) {
+        for (const f of call.files) if (!done.has(f.path)) failed(byPath.get(f.path), err);
+      }
+    }
+    return calls;
+
+    function useAnswer(call, answer) {
+      if (!answer.failed) {
+        // A call with only a folder's changed files sees part of it: it describes only a folder
+        // that has no summary yet.
+        if (!summarizedDirs.has(call.dir) && !(newFoldersOnly && typeof own(previous.folders, call.dir) === 'string')) {
+          summarizedDirs.add(call.dir);
+          folders.push({ dir: call.dir, summary: answer.summary });
+        }
+        for (const described of answer.files) record(described.path, described.summary, described.symbols);
+      }
+      // Files whose leading comment gives their purpose need nothing from a failed answer.
+      if (answer.failed) for (const f of call.files.filter((x) => x.purpose)) record(f.path, f.purpose, symbolsOf(f.structure));
+      const rest = answer.failed ? call.files.filter((f) => !f.purpose) : call.files.filter((f) => answer.missing.includes(f.path));
+      if (!rest.length) {
+        if (answer.failed) log(`${callLabel(call)}: no folder summary, the answer could not be used (${answer.failed})`);
+        return;
+      }
+      const why = answer.failed || `${rest.length} of ${call.files.length} files missing from the answer`;
+      if (rest.length === 1 && call.files.length === 1) {
+        const only = rest[0];
+        record(only.path, fallbackPurpose(only.path, only.structure), symbolsOf(only.structure));
+        fromStructure++;
+        log(`${only.path}: described from its structure, the answer could not be used (${why})`);
+      } else if (rest.length === 1) {
+        log(`${callLabel(call)}: ${why}, trying again with 1 file`);
+        queue.unshift({ ...call, files: rest, retry: true });
+      } else if (answer.failed) {
+        const halves = splitCall({ ...call, files: rest });
+        log(`${callLabel(call)}: the answer could not be used (${why}), trying again with ${halves[0].files.length} and ${halves[1].files.length} files`);
+        queue.unshift(...halves);
+      } else {
+        const again = rest.length === 1 ? [{ ...call, files: rest, retry: true }] : splitCall({ ...call, files: rest });
+        log(`${callLabel(call)}: ${why}, trying them again`);
+        queue.unshift(...again);
+      }
+    }
+  };
 
   // Summaries first, one call per folder: the documentation needs every one. In the
   // documentation pass they stop early enough that the layer docs and the README are always
@@ -88,178 +203,212 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
   const summaryDeadline = summaryItems.length && !items.some((i) => i.kind === 'comment')
     ? started + Math.max(config.timeBudgetMinutes - DOCS_PASS_RESERVE_MINUTES, config.timeBudgetMinutes / 3) * 60000
     : commentDeadline;
-  const readable = [];
+  const toSummarize = [];
   for (const item of summaryItems) {
-    const buffer = read(item.path);
-    const originalHash = hashContent(buffer);
-    const text = buffer.toString('utf8');
-    if (!Buffer.from(text, 'utf8').equals(buffer)) {
-      results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: 'not UTF-8' }, why: 'not UTF-8' });
-      continue;
-    }
-    const language = languageForPath(item.path);
-    if (!language) {
-      results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: 'unsupported language' }, why: 'unsupported language' });
-      continue;
-    }
-    readable.push({ item, originalHash, path: item.path, text, language });
+    const r = tryReadable(item, (err) => internal(item, null, err));
+    if (!r) continue;
+    if (r.why) skip(r);
+    else toSummarize.push(r);
   }
-  const byPath = new Map(readable.map((r) => [r.path, r]));
-  const folderCalls = planFolderCalls(readable, config.contextTokens);
-  const folders = [];
-  const summarizedDirs = new Set();
-  let summaryCalls = 0;
-  let fromStructure = 0;
-  const record = (path, summary, symbols) => {
-    const r = byPath.get(path);
-    const before = previous.files[r.path] || {};
+  const summaryByPath = new Map(toSummarize.map((r) => [r.path, r]));
+  const summaryCallsPlanned = await describe(toSummarize, summaryDeadline, (file, summary, symbols) => {
+    const r = summaryByPath.get(file);
+    const before = own(previous.files, r.path) || {};
     // A file whose content is unchanged keeps its comment level and Docturnal's records.
     const same = before.hash === r.originalHash;
     const entry = { hash: r.originalHash, summary, symbols, level: same ? before.level ?? null : null };
     if (same && before.comments) entry.comments = before.comments;
     results.push({ path: r.path, kind: r.item.kind, reason: r.item.reason, outcome: 'summarized', originalHash: r.originalHash, entry });
-  };
-  // Each call's answer is checked. One that cannot be used is split in half and tried again,
-  // down to single files, and the files a usable answer leaves out are tried again on their
-  // own. Every retry is smaller than the call before it, so this ends. A file that a call of
-  // its own cannot describe gets a purpose built from its structure: no file is left out.
-  const queue = [...folderCalls];
-  while (queue.length) {
-    const call = queue.shift();
-    if (now() > summaryDeadline) {
-      for (const f of call.files) leave(byPath.get(f.path).item, byPath.get(f.path).originalHash, 'time budget');
-      continue;
-    }
-    let answer;
-    try {
-      summaryCalls++;
-      answer = await summarizeFolder({ call, model: models.comment, contextTokens: config.contextTokens, chat });
-    } catch (err) {
-      for (const f of call.files) {
-        const r = byPath.get(f.path);
-        leave(r.item, r.originalHash, 'the model did not respond', `the model did not respond (${ollama.describeError(err)})`);
-      }
-      continue;
-    }
-    if (!answer.failed) {
-      if (!summarizedDirs.has(call.dir)) {
-        summarizedDirs.add(call.dir);
-        folders.push({ dir: call.dir, summary: answer.summary });
-      }
-      for (const described of answer.files) record(described.path, described.summary, described.symbols);
-    }
-    // Files whose leading comment gives their purpose need nothing from a failed answer.
-    if (answer.failed) for (const f of call.files.filter((x) => x.purpose)) record(f.path, f.purpose, symbolsOf(f.structure));
-    const rest = answer.failed ? call.files.filter((f) => !f.purpose) : call.files.filter((f) => answer.missing.includes(f.path));
-    if (!rest.length) {
-      if (answer.failed) log(`${callLabel(call)}: no folder summary, the answer could not be used (${answer.failed})`);
-      continue;
-    }
-    const why = answer.failed || `${rest.length} of ${call.files.length} files missing from the answer`;
-    if (rest.length === 1 && call.files.length === 1) {
-      const only = rest[0];
-      record(only.path, fallbackPurpose(only.path, only.structure), symbolsOf(only.structure));
-      fromStructure++;
-      log(`${only.path}: described from its structure, the answer could not be used (${why})`);
-    } else if (rest.length === 1) {
-      log(`${callLabel(call)}: ${why}, trying again with 1 file`);
-      queue.unshift({ ...call, files: rest, retry: true });
-    } else if (answer.failed) {
-      const halves = splitCall({ ...call, files: rest });
-      log(`${callLabel(call)}: the answer could not be used (${why}), trying again with ${halves[0].files.length} and ${halves[1].files.length} files`);
-      queue.unshift(...halves);
-    } else {
-      const again = rest.length === 1 ? [{ ...call, files: rest, retry: true }] : splitCall({ ...call, files: rest });
-      log(`${callLabel(call)}: ${why}, trying them again`);
-      queue.unshift(...again);
-    }
-  }
+  }, (r, why, detail) => leave(r.item, r.originalHash, why, detail), { failed: (r, err) => internal(r.item, r.originalHash, err) });
   const summaryStats = {
     files: summaryItems.length,
-    folders: new Set(folderCalls.map((c) => c.dir)).size,
+    folders: new Set(summaryCallsPlanned.map((c) => c.dir)).size,
     calls: summaryCalls,
     fromStructure,
     ms: now() - summaryStarted,
   };
 
-  // Comments, in rounds: 1a proposes with the comment model, new and changed files before the
-  // backlog, while the proposals and their checks fit before the checks must end. 1b checks
-  // every selected comment for accuracy, with the docs model when the time budget allows (it
-  // is loaded next for the docs anyway), otherwise with the comment model. 1c inserts and
-  // verifies, without a model. When time is left, the next round starts with the files not
-  // reached, now with the checks' measured pace.
   const commentItems = items.filter((i) => i.kind === 'comment');
   const toComment = [...commentItems.filter((i) => i.reason !== 'backlog'), ...commentItems.filter((i) => i.reason === 'backlog')];
-  const caller = docsCaller || createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
-  const pace = { proposeMs: 0, proposeTokens: 0, checkMs: 0, checkRequests: 0 };
-  const checkRequestMs = () => (pace.checkRequests ? pace.checkMs / pace.checkRequests : CHECK_REQUEST_MS);
-  let docsLoaded = false;
+  // New and changed files get a new purpose for the docs, from the same folder calls; a file
+  // in a batch keeps the one its docs were written from. A file the calls do not reach gets
+  // one from its structure.
+  const described = new Map();
+  // A file the calls cannot describe for an unexpected error gets its purpose from its
+  // structure; one that cannot be read is skipped when it is commented.
+  const changed = toComment.filter((i) => i.reason !== 'backlog').map((i) => tryReadable(i, () => {})).filter((r) => r && !r.why);
+  if (changed.length) {
+    await describe(changed, commentDeadline, (file, summary, symbols) => described.set(file, { summary, symbols }), () => {}, {
+      newFoldersOnly: true,
+      failed: (r, err) => log(`${r.path}: described from its structure, internal error (${describeInternal(err)})`),
+    });
+  }
 
-  // Proposals for the files at the front of the toComment, each started only when its proposals,
-  // at the pace of the files before it, and the checks of the round so far still fit.
-  const proposeRound = async () => {
-    const plans = [];
-    const roundStarted = now();
-    const checksMs = () => {
-      const requests = plans.reduce((sum, { plan }) => sum + checkRequests(plan), 0);
-      return requests ? (docsLoaded || pace.checkRequests ? 0 : LOAD_MS) + requests * checkRequestMs() : 0;
-    };
-    while (toComment.length) {
-      const item = toComment[0];
-      const buffer = read(item.path);
-      const originalHash = hashContent(buffer);
-      const text = buffer.toString('utf8');
-      const expected = pace.proposeTokens ? (fileTokens(text) * pace.proposeMs) / pace.proposeTokens : 0;
-      if (now() > commentDeadline || now() + expected + checksMs() > checkDeadline) break;
-      toComment.shift();
-      if (!Buffer.from(text, 'utf8').equals(buffer)) {
-        results.push({ path: item.path, kind: item.kind, reason: item.reason, outcome: 'skipped', originalHash, entry: { hash: originalHash, skipped: 'not UTF-8' }, why: 'not UTF-8' });
-        log(`${item.path}: skipped, not UTF-8`);
-        continue;
+  // Which other files use each file's exports, to rank its targets.
+  let importers = null;
+  const texts = new Map();
+  const textOf = (file) => {
+    if (!texts.has(file)) {
+      try {
+        texts.set(file, read(file).toString('utf8'));
+      } catch {
+        texts.set(file, '');
       }
-      const before = previous.files[item.path] || {};
-      const plan = await planComments({
-        path: item.path,
-        text,
-        level: config.commentLevel,
-        model: models.comment,
-        contextTokens: config.contextTokens,
-        chat,
-        records: before.comments || [],
-        knownUrls: knownUrls(cwd),
-        // A file in a batch is unchanged since its summary was written.
-        known: item.reason === 'backlog' && before.hash === originalHash && typeof before.summary === 'string' ? before : null,
-        now,
-      });
-      if (plan.requests) {
-        pace.proposeMs += plan.proposeMs;
-        pace.proposeTokens += fileTokens(text);
-      }
-      const replies = replySummary(plan);
-      if (replies) log(`${item.path}: ${replies}`);
-      if (plan.failedWindows && !plan.summary && !(plan.built && plan.built.candidates.length)) {
-        leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
-        continue;
-      }
-      plans.push({ item, originalHash, plan });
     }
-    return { plans, proposeMs: now() - roundStarted };
+    return texts.get(file);
+  };
+  const usageOf = (file, names) => {
+    if (!importers) {
+      const codeFiles = [...new Set([...Object.keys(previous.files), ...items.map((i) => i.path)])].filter((f) => languageForPath(f));
+      try {
+        importers = importersOf(codeFiles, textOf);
+      } catch (err) {
+        importers = new Map();
+        log(internalErrorLine('Docturnal: ranking targets by use in other files', err));
+      }
+    }
+    return nameUsage(file, names, importers, textOf);
   };
 
-  const finish = (item, originalHash, plan) => {
+  // Comments: 1a chooses every file's targets in code, then asks the comment model to write
+  // them in turns, one request per file at a time, each file's highest-ranked targets first,
+  // new and changed files before the backlog, while the requests and their checks fit before
+  // the checks must end. So the time spreads over the files instead of going to the first big
+  // one. 1b checks every selected comment for accuracy with the docs model (it is loaded next
+  // for the docs anyway). 1c inserts and verifies, without a model.
+  const caller = docsCaller || createCaller({ chat, model: models.docs, fallbackModel: models.comment !== models.docs ? models.comment : null });
+  const pace = { proposeMs: 0, proposeRequests: 0, checkMs: 0, checkRequests: 0 };
+  const perRequestMs = () => (pace.proposeRequests ? pace.proposeMs / pace.proposeRequests : 0);
+  let docsLoaded = false;
+
+  // Every file's plan, without a model.
+  const planAll = () => {
+    const planned = [];
+    for (const item of toComment.splice(0)) {
+      const mark = results.length;
+      try {
+        planOne(item, planned);
+      } catch (err) {
+        internal(item, null, err, mark);
+      }
+    }
+    return planned;
+  };
+  const planOne = (item, planned) => {
+    const r = readable(item);
+    if (r.why) {
+      skip(r);
+      log(`${item.path}: skipped, ${r.why}`);
+      return;
+    }
+    const before = own(previous.files, item.path) || {};
+    const structure = fileStructure(item.path, r.text, r.language);
+    const plan = planTargets({
+      path: item.path,
+      text: r.text,
+      level: config.commentLevel,
+      contextTokens: config.contextTokens,
+      records: before.comments || [],
+      knownUrls: knownUrls(cwd),
+      exportNames: structure.exports,
+      usage: usageOf(item.path, symbolsOf(structure)),
+    });
+    planned.push({ item, originalHash: r.originalHash, plan, structure });
+  };
+
+  // The requests, in turns. A file counts toward the checks once it is started, or from the
+  // start when it needs no request (its earlier comments are checked). A request is made only
+  // while it, at the pace of the ones before, and the checks of everything written so far,
+  // its own included, still fit before the checks must end.
+  const proposeAll = async (all) => {
+    const counted = (p) => !p.failed && p.plan.ctx && (p.plan.next > 0 || !p.plan.planned.length);
+    // The checks' time for every file counted, with `next` more comments for file `extra`.
+    const checksMs = (extra, next) => {
+      let requests = 0;
+      let comments = 0;
+      for (const p of all) {
+        if (!counted(p) && p !== extra) continue;
+        const n = p.plan.groups.flat().length + p.plan.ctx.owned.length + (p === extra ? next : 0);
+        requests += Math.ceil(n / CHECK_BATCH);
+        comments += n;
+      }
+      return requests ? (docsLoaded ? 0 : LOAD_MS) + requests * CHECK_REQUEST_MS + comments * CHECK_COMMENT_MS : 0;
+    };
+    const fits = (p, next) => now() <= commentDeadline && now() + perRequestMs() + checksMs(p, next) <= checkDeadline;
+    let outOfTime = false;
+    for (const group of [all.filter((p) => p.item.reason !== 'backlog'), all.filter((p) => p.item.reason === 'backlog')]) {
+      let made = true;
+      while (made && !outOfTime) {
+        made = false;
+        for (const p of group) {
+          const request = p.failed ? null : p.plan.planned[p.plan.next];
+          if (!request) continue;
+          if (!fits(p, request.targets.length)) {
+            outOfTime = true;
+            break;
+          }
+          const before = p.plan.proposeMs;
+          try {
+            await proposeNext(p.plan, { model: models.comment, contextTokens: config.contextTokens, chat, now });
+          } catch (err) {
+            p.failed = err;
+          }
+          pace.proposeMs += p.plan.proposeMs - before;
+          pace.proposeRequests++;
+          made = true;
+        }
+      }
+    }
+    const plans = [];
+    for (const p of all) {
+      const { item, originalHash, plan } = p;
+      const mark = results.length;
+      try {
+        if (p.failed) throw p.failed;
+        if (settleOne(p)) plans.push(p);
+      } catch (err) {
+        internal(item, originalHash, err, mark);
+      }
+    }
+    return { plans };
+  };
+  // Settles one file's proposals; false when it is left for the next run.
+  const settleOne = ({ item, originalHash, plan }) => {
+    settleProposals(plan);
+    // A file the time gave no request waits for the next run as it is.
+    if (plan.planned.length && !plan.requests) {
+      leave(item, originalHash, 'time budget');
+      return false;
+    }
+    const replies = replySummary(plan);
+    if (replies) log(`${item.path}: ${replies}`);
+    const missing = missingSummary(plan);
+    if (missing) log(`${item.path}: ${missing}`);
+    if (plan.requests && plan.failedRequests === plan.requests && !(plan.built && plan.built.candidates.length)) {
+      leave(item, originalHash, 'the model did not respond', `the model did not respond (${plan.errors.join('; ')})`);
+      return false;
+    }
+    return true;
+  };
+
+  const finish = ({ item, originalHash, plan, structure }) => {
     const result = finishComments(plan);
-    const changed = result.text !== plan.text;
-    const finalHash = changed ? hashContent(Buffer.from(result.text, 'utf8')) : originalHash;
-    const base = { path: item.path, kind: item.kind, reason: item.reason, originalHash, ...(changed ? { text: result.text } : {}) };
+    const changedText = result.text !== plan.text;
+    const finalHash = changedText ? hashContent(Buffer.from(result.text, 'utf8')) : originalHash;
+    const base = { path: item.path, kind: item.kind, reason: item.reason, originalHash, ...(changedText ? { text: result.text } : {}) };
     if (result.skipped) {
       results.push({ ...base, outcome: 'skipped', entry: { hash: finalHash, skipped: result.skipped }, why: result.skipped });
       log(`${item.path}: skipped, ${result.skipped}`);
       return;
     }
     // A file in a batch keeps the summary its docs were written from: only its comments changed.
-    const before = previous.files[item.path] || {};
+    const before = own(previous.files, item.path) || {};
     const kept = item.reason === 'backlog' && typeof before.summary === 'string';
-    const entry = { hash: finalHash, summary: kept ? before.summary : result.summary, symbols: kept ? before.symbols || [] : result.symbols, level: config.commentLevel };
+    const fresh = described.get(item.path) || { summary: fallbackPurpose(item.path, structure), symbols: symbolsOf(structure) };
+    // A file the time left before all its targets were asked for, or with more targets than
+    // one run takes, keeps what it got, and is not yet commented at the level: a later batch
+    // asks for the rest.
+    const entry = { hash: finalHash, summary: kept ? before.summary : fresh.summary, symbols: kept ? before.symbols || [] : fresh.symbols, level: plan.unfinished || plan.more ? null : config.commentLevel };
     if (result.records.length) entry.comments = result.records;
     results.push({
       ...base,
@@ -270,20 +419,20 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
     for (const r of result.rejections) {
       if (r.coverage !== undefined) log(`${item.path}: line ${r.line} dropped as restating the code (${r.narrates ? 'narrates the declaration, ' : ''}coverage ${r.coverage === null ? 'none' : r.coverage.toFixed(2)})`);
     }
-    log(`${item.path}: ${proposalSummary(result.stats, { reasons: true })}`);
-    const anchors = anchorSummary(result.stats.anchors);
-    if (anchors) log(`${item.path}: ${anchors}`);
+    log(`${item.path}: ${plan.targets.length} ${plan.targets.length === 1 ? 'target' : 'targets'}, ${proposalSummary(result.stats, { reasons: true })}`);
     log(`${item.path}: ${timing(plan)}`);
+    if (plan.unfinished) log(`${item.path}: ${plan.requests} of ${plan.planned.length} requests made before the time budget, the other targets wait for a later batch`);
+    if (plan.more) log(`${item.path}: ${plan.more} more ${plan.more === 1 ? 'target waits' : 'targets wait'} for a later batch, at most ${PER_RUN[config.commentLevel]} new comments a file each run at the ${config.commentLevel} level`);
   };
 
-  // The docs model checks when the time left before the check deadline is at least the time
-  // the round's proposals took, since it is slower but gets short requests. It is loaded
-  // first, with the same context size as every later call, so the check does not start
-  // against a cold model and the docs do not reload it. If it cannot load, the caller
-  // switches to the comment model for the rest of the run.
-  const checkRound = async ({ plans, proposeMs }) => {
+  // The docs model checks every round: it answers short requests, and is loaded next for the
+  // docs anyway, and the rounds keep time for it. It is loaded first, with the same context
+  // size as every later call, so the check does not start against a cold model and the docs
+  // do not reload it. If it cannot load, the caller switches to the comment model for the
+  // rest of the run.
+  const checkRound = async ({ plans }) => {
     const toCheck = plans.filter(({ plan }) => needsCheck(plan));
-    let checkWithDocs = toCheck.length > 0 && models.docs !== models.comment && now() + proposeMs <= checkDeadline;
+    let checkWithDocs = toCheck.length > 0 && models.docs !== models.comment;
     if (checkWithDocs && !docsLoaded) {
       try {
         await caller.call(`loading ${models.docs}`, { messages: [], options: { num_ctx: config.contextTokens }, keepAlive: DOCS_MODEL_KEEP_ALIVE });
@@ -296,46 +445,53 @@ async function processItems({ cwd, items, previous, config, models, chat, now = 
       ? { chat, model: models.comment, contextTokens: config.contextTokens, now }
       : { chat: (request) => caller.call('accuracy check', request), contextTokens: config.contextTokens, now });
     if (toCheck.length) log(`Docturnal: checking comments in ${toCheck.length} ${toCheck.length === 1 ? 'file' : 'files'} with ${checkWithDocs ? caller.activeModel : models.comment}`);
-    for (const { item, originalHash, plan } of plans) {
-      if (needsCheck(plan)) {
-        if (now() > checkDeadline) {
-          leave(item, originalHash, 'time budget');
-          continue;
-        }
-        // A check that fails with the docs model is tried once more with the comment model.
-        const checkers = checkWithDocs && caller.activeModel !== models.comment ? [models.docs, models.comment] : [models.comment];
-        let passed = false;
-        for (const model of checkers) {
-          try {
-            await checkComments(plan, checkWith(model));
-            passed = true;
-            break;
-          } catch (err) {
-            log(`${item.path}: the accuracy check with ${model} failed (${ollama.describeError(err)})`);
-          }
-        }
-        pace.checkMs += plan.checkMs;
-        pace.checkRequests += plan.checkRequests;
-        if (!passed) {
-          leave(item, originalHash, 'the accuracy check failed', 'accuracy check failed');
-          continue;
-        }
+    for (const planned of plans) {
+      const mark = results.length;
+      try {
+        await checkOne(planned, checkWith, checkWithDocs);
+      } catch (err) {
+        internal(planned.item, planned.originalHash, err, mark);
       }
-      finish(item, originalHash, plan);
     }
   };
+  const checkOne = async (planned, checkWith, checkWithDocs) => {
+    const { item, originalHash, plan } = planned;
+    if (needsCheck(plan)) {
+      if (now() > checkDeadline) {
+        leave(item, originalHash, 'time budget');
+        return;
+      }
+      // A check that fails with the docs model is tried once more with the comment model.
+      const checkers = checkWithDocs && caller.activeModel !== models.comment ? [models.docs, models.comment] : [models.comment];
+      let passed = null;
+      for (const model of checkers) {
+        try {
+          await checkComments(plan, checkWith(model));
+          passed = model;
+          break;
+        } catch (err) {
+          log(`${item.path}: the accuracy check with ${model} failed (${ollama.describeError(err)})`);
+        }
+      }
+      pace.checkMs += plan.checkMs;
+      pace.checkRequests += plan.checkRequests;
+      if (!passed) {
+        leave(item, originalHash, 'the accuracy check failed', 'accuracy check failed');
+        return;
+      }
+      // An earlier Docturnal comment found inaccurate gets a new one in its place, checked by
+      // the same model.
+      if (now() < checkDeadline) await replaceInaccurate(plan, { write: { chat, model: models.comment }, check: checkWith(passed), now });
+    }
+    finish(planned);
+  };
 
-  while (toComment.length) {
-    const round = await proposeRound();
-    if (!round.plans.length) break;
-    await checkRound(round);
-  }
-  for (const item of toComment) leave(item, hashContent(read(item.path)), 'time budget');
+  if (toComment.length) await checkRound(await proposeAll(planAll()));
 
   return { results, docsCaller: caller, folders, summaryStats };
 }
 
-// How long a file's comments took, for the log: the proposals and the accuracy check.
+// How long a file's comments took, for the log: the requests and the accuracy check.
 function timing(plan) {
   const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
   const requests = (n) => `${n} ${n === 1 ? 'request' : 'requests'}`;

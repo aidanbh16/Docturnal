@@ -46,7 +46,6 @@ function kindOf(body) {
   const props = (body.format && body.format.properties) || {};
   const prompt = promptOf(body);
   if (!(body.messages || []).length) return 'load';
-  if (prompt.includes('Write a block comment for each of these declarations')) return 'blocks';
   if (props.verdicts) return 'accuracy';
   if (props.comments) return 'comments';
   if (props.summary && props.files) return 'folder';
@@ -59,42 +58,32 @@ function kindOf(body) {
   return 'unknown';
 }
 
-const DECLARATION = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|def\s+(\w+)|class\s+(\w+)|const\s+(\w+)\s*=\s*(?:async\s*)?\()/;
-
-function commentsReply(body) {
-  const prompt = promptOf(body);
-  const file = (prompt.match(/^File: (.+)$/m) || [])[1] || 'unknown';
-  const names = [];
-  const comments = [];
-  for (const [, number, code] of prompt.matchAll(/^(\d+)\| (.*)$/gm)) {
-    const match = code.match(DECLARATION);
-    if (!match) continue;
-    const name = match.slice(1).find(Boolean);
-    names.push(name);
-    comments.push({ line: Number(number), anchor: code.trim(), text: `Keeps the ${name} logic in one place for callers.`, kind: 'line' });
-  }
-  // A model that keeps to the number of comments the prompt asks for.
-  const most = prompt.match(/^Propose at most (\d+) comments?\.$/m);
-  if (most) comments.splice(Number(most[1]));
-  if (/so return an empty comments list\.$/m.test(prompt)) comments.splice(0);
-  return {
-    summary: names.length ? `Defines ${names.join(', ')} for ${file}.` : `Supports ${file}.`,
-    symbols: names,
-    comments,
-  };
+// The targets a comment request lists: [{ id, line, what, kind, name, fn, facts, words }],
+// where kind is "function", "method", "class", "component", "type", "constant", or "block",
+// and fn is the function a block is in.
+function targetsOf(body) {
+  return [...promptOf(body).matchAll(/^Target (\d+), line (\d+): (.+?)(?: \(([^)]*)\))?\. At most (\d+) words\.$/gm)].map(([, id, line, what, facts, words]) => ({
+    id: Number(id),
+    line: Number(line),
+    what,
+    kind: what.startsWith('a block') ? 'block' : (what.match(/^the (\w+)/) || [])[1],
+    name: (what.match(/^the \w+ `([^`]+)`/) || [])[1] || null,
+    fn: (what.match(/^a block in `([^`]+)`/) || [])[1] || null,
+    facts: facts || '',
+    words: Number(words),
+  }));
 }
 
-// The heavy-level follow-up: one block comment per listed declaration.
-function blocksReply(body) {
-  const prompt = promptOf(body);
-  const code = new Map([...prompt.matchAll(/^(\d+)\| (.*)$/gm)].map(([, number, text]) => [Number(number), text.trim()]));
-  const comments = [...prompt.matchAll(/^- line (\d+): (.+)$/gm)].map(([, number, name]) => ({
-    line: Number(number),
-    anchor: code.get(Number(number)) || '',
-    text: `Explains what ${name} is for and what it returns.`,
-    kind: 'block',
-  }));
-  return { comments };
+function defaultText(target) {
+  if (target.name) return `Keeps the ${target.name} logic in one place for callers.`;
+  if (target.fn) return `Guards ${target.fn} against the edge cases its callers rely on.`;
+  return 'Holds a value the callers rely on.';
+}
+
+// One comment per target, as the request asks. textFor(target) gives each one's text, or
+// nothing to leave it out of the reply.
+function commentsReply(body, textFor = defaultText) {
+  return { comments: targetsOf(body).map((t) => ({ id: t.id, text: textFor(t) })).filter((c) => c.text) };
 }
 
 // The accuracy check: every comment is accurate and useful and repeats nothing, unless judge
@@ -172,7 +161,6 @@ function defaultHandler({ oomModels = [] } = {}) {
     switch (kindOf(body)) {
       case 'comments': return commentsReply(body);
       case 'folder': return folderReply(body);
-      case 'blocks': return blocksReply(body);
       case 'accuracy': return accuracyReply(body);
       case 'load': return '';
       case 'layers': return layersReply(body);
@@ -280,4 +268,4 @@ if (require.main === module && process.argv.includes('--serve')) {
   });
 }
 
-module.exports = { OOM_MESSAGE, accuracyReply, blocksReply, cutOff, defaultHandler, kindOf, startMockOllama };
+module.exports = { OOM_MESSAGE, accuracyReply, commentsReply, cutOff, defaultHandler, kindOf, startMockOllama, targetsOf };

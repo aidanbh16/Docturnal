@@ -2,8 +2,9 @@
 // writers can never overwrite each other:
 // - install:<id>:repo:<owner>/<name>  one empty key per repository, created and deleted by
 //                                     webhooks.
-// - install:<id>:settings             the run time, time zone, comment level, and what to do
-//                                     with existing code, written only by the settings page.
+// - install:<id>:settings             the run time, time zone, comment level, what to do with
+//                                     existing code, and the time limit for private
+//                                     repositories, written only by the settings page.
 //                                     Without it, the defaults apply.
 // Nothing else is stored, and never code.
 
@@ -15,27 +16,35 @@ export type CommentLevel = (typeof COMMENT_LEVELS)[number];
 export const EXISTING_CODE = ['gradual', 'none'] as const;
 export type ExistingCode = (typeof EXISTING_CODE)[number];
 
+// The most minutes a night Docturnal may work in a private repository, whose runs count toward
+// its owner's Actions minutes. Public repositories always get 90.
+export const PRIVATE_MINUTES = [15, 30, 60, 90] as const;
+export type PrivateMinutes = (typeof PRIVATE_MINUTES)[number];
+
 export interface Settings {
   time: number;
   timeZone: string;
   commentLevel: CommentLevel;
   existingCode: ExistingCode;
+  privateMinutes: PrivateMinutes;
   repos: string[];
 }
 
 export type Choices = Omit<Settings, 'repos'>;
 
-export const DEFAULT_SETTINGS: Choices = { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', existingCode: 'gradual' };
+export const DEFAULT_SETTINGS: Choices = { time: 0, timeZone: 'America/New_York', commentLevel: 'medium', existingCode: 'gradual', privateMinutes: 30 };
 
 // The schedule, and the choices a run needs, are copied into the settings key's metadata, so
 // the hourly cron finds due installations and what to send them from the key list alone,
 // without one read per installation. Keys saved before the choices were copied have only the
-// schedule; the cron reads those.
+// schedule; the cron reads those. Keys saved before the time limit existed have none, and get
+// the default, since their value has none either.
 export interface ScheduleMetadata {
   time: number;
   timeZone: string;
   commentLevel?: CommentLevel;
   existingCode?: ExistingCode;
+  privateMinutes?: PrivateMinutes;
 }
 
 const PREFIX = 'install:';
@@ -63,6 +72,10 @@ export function isExistingCode(value: unknown): value is ExistingCode {
   return EXISTING_CODE.includes(value as ExistingCode);
 }
 
+export function isPrivateMinutes(value: unknown): value is PrivateMinutes {
+  return PRIVATE_MINUTES.includes(value as PrivateMinutes);
+}
+
 function parseChoices(raw: unknown): Choices | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Partial<Choices>;
@@ -71,12 +84,14 @@ function parseChoices(raw: unknown): Choices | null {
     timeZone: isValidTimeZone(data.timeZone) ? data.timeZone : DEFAULT_SETTINGS.timeZone,
     commentLevel: isCommentLevel(data.commentLevel) ? data.commentLevel : DEFAULT_SETTINGS.commentLevel,
     existingCode: isExistingCode(data.existingCode) ? data.existingCode : DEFAULT_SETTINGS.existingCode,
+    privateMinutes: isPrivateMinutes(data.privateMinutes) ? data.privateMinutes : DEFAULT_SETTINGS.privateMinutes,
   };
 }
 
 export function isDefault(settings: Choices): boolean {
   return settings.time === DEFAULT_SETTINGS.time && settings.timeZone === DEFAULT_SETTINGS.timeZone &&
-    settings.commentLevel === DEFAULT_SETTINGS.commentLevel && settings.existingCode === DEFAULT_SETTINGS.existingCode;
+    settings.commentLevel === DEFAULT_SETTINGS.commentLevel && settings.existingCode === DEFAULT_SETTINGS.existingCode &&
+    settings.privateMinutes === DEFAULT_SETTINGS.privateMinutes;
 }
 
 export class SettingsStore {
@@ -129,8 +144,8 @@ export class SettingsStore {
 
   // Saves the settings page's choices. It never touches the repository keys.
   async putChoices(installationId: number, choices: Choices): Promise<void> {
-    const metadata: ScheduleMetadata = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode };
-    const value: Choices = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode };
+    const metadata: ScheduleMetadata = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode, privateMinutes: choices.privateMinutes };
+    const value: Choices = { time: choices.time, timeZone: choices.timeZone, commentLevel: choices.commentLevel, existingCode: choices.existingCode, privateMinutes: choices.privateMinutes };
     await this.kv.put(this.settingsKey(installationId), JSON.stringify(value), { metadata });
   }
 
@@ -168,6 +183,7 @@ export class SettingsStore {
           time: meta && isValidHour(meta.time) ? meta.time : DEFAULT_SETTINGS.time,
           timeZone: meta && isValidTimeZone(meta.timeZone) ? meta.timeZone : DEFAULT_SETTINGS.timeZone,
           ...(meta && isCommentLevel(meta.commentLevel) && isExistingCode(meta.existingCode) ? { commentLevel: meta.commentLevel, existingCode: meta.existingCode } : {}),
+          ...(meta && isPrivateMinutes(meta.privateMinutes) ? { privateMinutes: meta.privateMinutes } : {}),
         };
       }
       installations.set(installationId, entry);

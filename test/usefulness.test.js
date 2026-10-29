@@ -6,29 +6,28 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 
-const { commentFile } = require('../src/comments');
+const { applyProposals, commentFile } = require('../src/comments');
 const { recordFor } = require('../src/owned');
 const { buildReport, proposalSummary } = require('../src/report');
 const { findPython } = require('../src/python');
 const { languageById } = require('../src/languages');
-const { applyAnchored: applyProposals, withAccuracy } = require('./helpers');
+const { writingByCode } = require('./helpers');
 const { kindOf, startMockOllama } = require('./mock-ollama');
 
 const js = languageById('javascript');
 
+// Its magic numbers make three of its lines complex blocks, which heavy level comments.
 const WITHHOLDING = [
   'function withholding(gross) {',
-  '  let remaining = gross;',
+  '  let remaining = gross - 250;',
   '  let tax = 0;',
   '  for (const bracket of TAX_BRACKETS) {',
-  '    const taxed = Math.min(remaining, bracket.upTo);',
+  '    const taxed = Math.min(remaining, bracket.upTo * 12);',
   '    tax += taxed * bracket.rate;',
   '    remaining -= taxed;',
   '  }',
-  '  return tax;',
+  '  return Math.max(0, tax - 25);',
   '}',
   '',
   '/**',
@@ -41,13 +40,16 @@ const WITHHOLDING = [
 ].join('\n');
 
 const RESTATES = 'Initializes the remaining amount to be taxed to the gross pay.';
-const WHY = "Each bracket's upTo is that bracket's width, not a running total.";
+const WHY = "Each bracket's upTo is a monthly width; the brackets are for a year, hence the 12.";
 const REPEATS = 'Rounds the amount by adding a small epsilon, multiplying by 100, rounding, and then dividing by 100.';
+const BLOCK = 'Tax owed on gross pay under progressive brackets.';
 
-const proposal = (code, text, kind = 'line') => {
-  const line = WITHHOLDING.split('\n').indexOf(code) + 1;
-  assert.ok(line > 0, code);
-  return { line, anchor: code.trim(), text, kind };
+const CODE = {
+  remaining: 'let remaining = gross - 250;',
+  taxed: 'const taxed = Math.min(remaining, bracket.upTo * 12);',
+  result: 'return Math.max(0, tax - 25);',
+  round: 'return Math.round((amount + Number.EPSILON) * 100) / 100;',
+  withholding: 'function withholding(gross) {',
 };
 
 // A model that judges like a careful reader: narration adds nothing, and the roundCents line
@@ -58,11 +60,9 @@ function judge(comment, code, functionComment) {
   return true;
 }
 
-async function run(text, proposals, { level = 'heavy', records = [], verdict = judge } = {}) {
-  // The heavy-level follow-up gets no comments, so each proposal is made once.
-  const mock = await startMockOllama(withAccuracy((body) => (kindOf(body) === 'blocks'
-    ? { comments: [] }
-    : { summary: 'Payroll math.', symbols: [], comments: proposals }), verdict));
+// byCode: the comment the model writes for each target, by the code on its line.
+async function run(text, byCode, { level = 'heavy', records = [], verdict = judge } = {}) {
+  const mock = await startMockOllama(writingByCode(byCode, verdict));
   try {
     const result = await commentFile({ path: 'src/payroll.js', text, level, model: 'm', host: mock.host, records });
     return { result, requests: mock.requests };
@@ -72,31 +72,29 @@ async function run(text, proposals, { level = 'heavy', records = [], verdict = j
 }
 
 test('a new comment that only restates the code is dropped, and one that explains why is kept', async () => {
-  const { result } = await run(WITHHOLDING, [
-    proposal('  let remaining = gross;', RESTATES),
-    proposal('    const taxed = Math.min(remaining, bracket.upTo);', WHY),
-  ]);
+  const { result } = await run(WITHHOLDING, { [CODE.remaining]: RESTATES, [CODE.taxed]: WHY });
   assert.doesNotMatch(result.text, /Initializes the remaining amount/);
-  assert.match(result.text, /\n {4}\/\/ Each bracket's upTo is that bracket's width, not a running total\.\n {4}const taxed/);
+  assert.match(result.text, /\n {4}\/\/ Each bracket's upTo is a monthly width[^\n]*\n {4}const taxed/);
   assert.deepStrictEqual(result.stats.dropped.restates, { 'restates the code': 1 });
   assert.match(proposalSummary(result.stats), /^proposed 2, 1 restates the code, 1 added$/);
 });
 
 test('a line comment that repeats the function\'s comment is dropped; the check sees that comment', async () => {
-  const { result, requests } = await run(WITHHOLDING, [proposal('  return Math.round((amount + Number.EPSILON) * 100) / 100;', REPEATS)]);
+  // roundCents alone: in the whole file, the level has no room left for its line.
+  const { result, requests } = await run(WITHHOLDING.slice(WITHHOLDING.indexOf('/**')), { [CODE.round]: REPEATS });
   assert.doesNotMatch(result.text, /Rounds the amount by adding/);
   assert.deepStrictEqual(result.stats.dropped.restates, { 'repeats the function comment': 1 });
   const check = requests.find((r) => kindOf(r) === 'accuracy').messages[1].content;
-  assert.match(check, /Comment: Rounds the amount by adding[^\n]*\nFunction comment: Rounds to cents\. Adding Number\.EPSILON first makes values like 1\.005 round up to 1\.01\.\nCode:\n16\| {3}return Math\.round/);
+  assert.match(check, /Comment: Rounds the amount by adding[^\n]*\nFunction comment: Rounds to cents\. Adding Number\.EPSILON first makes values like 1\.005 round up to 1\.01\.\nCode:\n5\| {3}return Math\.round/);
   assert.deepStrictEqual(check.match(/^Function comment:/gm).length, 1);
   assert.match(proposalSummary(result.stats), /1 restates the code/);
 });
 
 test('the function comment comes from a new block comment when the function has none yet', async () => {
-  const { requests } = await run(WITHHOLDING, [
-    proposal('function withholding(gross) {', 'Tax owed on gross pay under progressive brackets.', 'block'),
-    proposal('  let remaining = gross;', 'Starts at gross pay and shrinks as each bracket takes its share.'),
-  ]);
+  const { requests } = await run(WITHHOLDING, {
+    [CODE.withholding]: BLOCK,
+    [CODE.remaining]: 'Starts at gross pay less the allowance, and shrinks as each bracket takes its share.',
+  });
   const check = requests.find((r) => kindOf(r) === 'accuracy').messages[1].content;
   assert.match(check, /Comment: Starts at gross pay[^\n]*\nFunction comment: Tax owed on gross pay under progressive brackets\.\nCode:/);
   // The block comment itself is not given a function comment.
@@ -105,30 +103,27 @@ test('the function comment comes from a new block comment when the function has 
 
 test('the check never removes a comment already in the file, Docturnal\'s or a person\'s, and never a block comment', async () => {
   const text = WITHHOLDING
-    .replace('  let remaining = gross;', '  // Starts with all of the gross pay.\n  let remaining = gross;')
+    .replace('  let remaining = gross - 250;', '  // Starts with all of the gross pay.\n  let remaining = gross - 250;')
     .replace('  for (const bracket', '  // Loops over the brackets.\n  for (const bracket');
   const records = [recordFor(['  // Loops over the brackets.'], '  for (const bracket of TAX_BRACKETS) {')];
   // A model that calls everything useless and repetitive.
-  const { result } = await run(text, [
-    proposal('function withholding(gross) {', 'Tax owed on gross pay under progressive brackets.', 'block'),
-    proposal('    tax += taxed * bracket.rate;', 'Adds the tax for this bracket to the total.'),
-  ], { records, verdict: () => ({ useful: false, repeats: true }) });
+  const { result } = await run(text, {
+    [CODE.withholding]: BLOCK,
+    [CODE.result]: 'Subtracts 25 from the tax and keeps it at zero or more.',
+  }, { records, verdict: () => ({ useful: false, repeats: true }) });
   // Docturnal's earlier comment and the person's comment stay.
   assert.match(result.text, /\/\/ Loops over the brackets\.\n {2}for \(const bracket/);
   assert.match(result.text, /\/\/ Starts with all of the gross pay\.\n {2}let remaining/);
   assert.deepStrictEqual(result.stats.earlier, { kept: 1, restyled: 0, removed: {} });
   // The new block comment stays; the new line comment goes.
   assert.match(result.text, /\/\*\*\n \* Tax owed on gross pay under progressive brackets\.\n \*\/\nfunction withholding/);
-  assert.doesNotMatch(result.text, /Adds the tax for this bracket/);
+  assert.doesNotMatch(result.text, /Subtracts 25 from the tax/);
   assert.deepStrictEqual(result.stats.dropped.restates, { 'restates the code': 1 });
 });
 
 test('a verdict without the usefulness answers keeps the comment', async () => {
-  const mock = await startMockOllama((body) => {
-    if (kindOf(body) === 'accuracy') return { verdicts: [{ id: 1, accurate: true }] };
-    if (kindOf(body) === 'blocks') return { comments: [] };
-    return { summary: 's', symbols: [], comments: [proposal('    const taxed = Math.min(remaining, bracket.upTo);', WHY)] };
-  });
+  const write = writingByCode({ [CODE.taxed]: WHY });
+  const mock = await startMockOllama((body) => (kindOf(body) === 'accuracy' ? { verdicts: [{ id: 1, accurate: true }] } : write(body)));
   try {
     const result = await commentFile({ path: 'src/payroll.js', text: WITHHOLDING, level: 'heavy', model: 'm', host: mock.host });
     assert.strictEqual(result.added, 1);
@@ -203,7 +198,7 @@ test('last-run.md lists skipped files with the reason, and counts restating comm
   const stats = {
     proposed: 3,
     added: 1,
-    dropped: { placement: {}, anchor: {}, length: {}, density: {}, inaccurate: {}, restates: { 'restates the code': 1, 'repeats the function comment': 1 }, safety: {}, off: {} },
+    dropped: { placement: {}, length: {}, density: {}, inaccurate: {}, restates: { 'restates the code': 1, 'repeats the function comment': 1 }, safety: {}, off: {} },
     earlier: { kept: 0, restyled: 0, removed: {} },
   };
   const report = buildReport({

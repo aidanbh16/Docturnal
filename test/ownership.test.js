@@ -1,8 +1,8 @@
 'use strict';
 
-// The real heavy-level run on payroll.js: comments placed by anchor, an accuracy check that
-// drops wrong comments, Docturnal replacing or removing only comments it wrote itself, wrapped
-// line comments, and comments on constants.
+// The real heavy-level run on payroll.js, with the targets code chooses: an accuracy check
+// that drops wrong comments, Docturnal replacing or removing only comments it wrote itself,
+// wrapped line comments, and comments on constants.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -10,19 +10,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { commentFile } = require('../src/comments');
+const { applyProposals, commentFile } = require('../src/comments');
 const { languageById } = require('../src/languages');
 const { findOwned, recordFor } = require('../src/owned');
 const { buildReport, proposalSummary } = require('../src/report');
 const { readState, writeState, emptyState } = require('../src/state');
 const { splitLines } = require('../src/analyze');
-const { applyAnchored: applyProposals, withAccuracy } = require('./helpers');
-const { blocksReply, kindOf, startMockOllama } = require('./mock-ollama');
+const { withAccuracy } = require('./helpers');
+const { commentsReply, kindOf, startMockOllama, targetsOf } = require('./mock-ollama');
 
 const js = languageById('javascript');
 
 // payroll.js on main after the earlier heavy run.
 const PAYROLL = fs.readFileSync(path.join(__dirname, 'fixtures/payroll-after-run.js'), 'utf8');
+const EXPORTS = ['validateTimesheet', 'roundCents', 'grossPay', 'withholding', 'payStub'];
 
 // What Docturnal recorded on that run. A person since shortened the validateTimesheet comment.
 const RECORDS = [
@@ -36,43 +37,28 @@ const RECORDS = [
 
 const LONG = 'Entries above the weekly maximum are rejected rather than capped, because a capped value would silently underpay or overpay the employee for that week.';
 
-// The first pass, by the code each comment is meant for. The model sees the file without
-// Docturnal's own comments, so the line numbers come from the prompt.
-function firstPass(prompt) {
-  const numberOf = (code) => {
-    const match = [...prompt.matchAll(/^(\d+)\| (.*)$/gm)].find(([, , text]) => text.trim() === code);
-    assert.ok(match, `prompt has ${code}`);
-    return Number(match[1]);
-  };
-  const comment = (code, text, extra = {}) => ({ line: numberOf(code), anchor: code, text, kind: 'line', ...extra });
-  return [
-    comment('const OVERTIME_THRESHOLD = 40;', 'Weekly hours paid at the base rate; hours past this earn overtime.'),
-    comment('const OVERTIME_RATE = 1.5;', 'Overtime multiplier on the hourly rate: 1.5 is time and a half.'),
-    comment('const MAX_HOURS_PER_WEEK = 80;', 'Upper bound on hours in one week; anything above it is a data error.'),
-    comment('if (entry.hours > MAX_HOURS_PER_WEEK) {', LONG),
-    comment('return Math.round((amount + Number.EPSILON) * 100) / 100;', 'Adding Number.EPSILON first makes values like 1.005 round to 1.01 instead of 1.00.'),
-    comment('tax += taxed * bracket.rate;', "Each bracket's upTo is that bracket's width, not a running total."),
-    // Off by one: the line number is that of "const gross", but the anchor names the next line.
-    { ...comment('const tax = withholding(gross);', 'Tax is withheld from gross pay, before other deductions.'), line: numberOf('const gross = grossPay(entry.hours, entry.rate);') },
-    // An anchor that is nowhere near.
-    comment('const regular = Math.min(hours, OVERTIME_THRESHOLD);', 'Hours up to the threshold.', { anchor: 'const regularHours = hours;' }),
-    // Wrong, and the accuracy check says so.
-    comment('const overtime = Math.max(0, hours - OVERTIME_THRESHOLD);', 'Applies the overtime rate to every hour.'),
-  ];
-}
+// What the model writes for each target, by the code on its line.
+const BY_CODE = {
+  'const OVERTIME_THRESHOLD = 40;': 'Weekly hours paid at the base rate; hours past this earn overtime.',
+  'const OVERTIME_RATE = 1.5;': 'Overtime multiplier on the hourly rate: 1.5 is time and a half.',
+  'const MAX_HOURS_PER_WEEK = 80;': LONG,
+  // Wrong, and the accuracy check says so.
+  'const TAX_BRACKETS = [': 'Applies the overtime rate to every hour.',
+  'return Math.round((amount + Number.EPSILON) * 100) / 100;': 'Adding Number.EPSILON first makes values like 1.005 round to 1.01 instead of 1.00.',
+};
 
 const WRONG = /Validates the timesheet|Calculates the withholding|Applies the overtime rate to every hour/;
 
 function handler(body) {
-  if (kindOf(body) === 'blocks') return blocksReply(body);
   const prompt = body.messages.map((m) => m.content).join('\n');
-  return { summary: 'Computes pay stubs.', symbols: ['payStub'], comments: firstPass(prompt) };
+  const codeAt = (line) => (prompt.match(new RegExp(`^${line}\\| (.*)$`, 'm')) || [])[1].trim();
+  return commentsReply(body, (t) => BY_CODE[codeAt(t.line)] || (t.name ? `Explains what ${t.name} is for and what it returns.` : null));
 }
 
 async function run(text, { level = 'heavy', records = RECORDS } = {}) {
   const mock = await startMockOllama(withAccuracy(handler, (comment) => !WRONG.test(comment)));
   try {
-    const result = await commentFile({ path: 'src/payroll.js', text, level, model: 'comment-model', checkModel: 'docs-model', host: mock.host, records });
+    const result = await commentFile({ path: 'src/payroll.js', text, level, model: 'comment-model', checkModel: 'docs-model', host: mock.host, records, exportNames: EXPORTS });
     return { result, requests: mock.requests };
   } finally {
     await mock.close();
@@ -86,22 +72,32 @@ function codeOnly(text) {
 
 const above = (text, comment, code) => new RegExp(`${comment}\\n${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(text);
 
-test('the wrong payStub comment, recorded as Docturnal\'s, is replaced', async () => {
-  const { result } = await run(PAYROLL);
+test('the wrong payStub comment, recorded as Docturnal\'s, is replaced in the same run', async () => {
+  const { result, requests } = await run(PAYROLL);
   assert.doesNotMatch(result.text, /Validates the timesheet entry/);
   assert.ok(above(result.text, '/\\*\\*\\n \\* Explains what payStub is for and what it returns\\.\\n \\*/', 'function payStub(entry) {'), result.text);
   // The new comment is recorded as Docturnal's; the wrong one is not.
   assert.ok(result.records.some((r) => r.text === '/**\n* Explains what payStub is for and what it returns.\n*/'));
   assert.ok(!result.records.some((r) => /Validates the timesheet/.test(r.text)));
   assert.deepStrictEqual(result.stats.earlier.removed, { inaccurate: 2 });
+  // payStub is asked for only after the check, in a request of its own, and that is checked too.
+  const kinds = requests.map((r) => (kindOf(r) === 'comments' ? targetsOf(r).map((t) => t.name || t.line).join(',') : kindOf(r)));
+  assert.strictEqual(kinds[kinds.length - 2], 'payStub');
+  assert.strictEqual(kinds[kinds.length - 1], 'accuracy');
+  // The other wrong one is above a line code would not choose, so it is only removed.
+  assert.doesNotMatch(result.text, /Calculates the withholding taxes/);
+  assert.match(result.text, /validateTimesheet\(entry\);\n {2}const gross = grossPay/);
 });
 
-test('the off-by-one proposal is placed by its anchor, and a missing anchor is dropped', async () => {
-  const { result } = await run(PAYROLL);
-  assert.doesNotMatch(result.text, /Calculates the withholding taxes/);
-  assert.ok(above(result.text, '  // Tax is withheld from gross pay, before other deductions\\.', '  const tax = withholding(gross);'), result.text);
-  assert.doesNotMatch(result.text, /Hours up to the threshold/);
-  assert.deepStrictEqual(result.stats.dropped.anchor, { 'anchor not found, matches no line at all': 1 });
+test('code chooses every target: no line comes from the model, and nothing it wrote lands elsewhere', async () => {
+  const { result, requests } = await run(PAYROLL);
+  const targets = requests.filter((r) => kindOf(r) === 'comments').flatMap(targetsOf);
+  // The functions without a comment of their own, the constants, and the magic 100 in roundCents.
+  assert.deepStrictEqual(targets.filter((t) => t.kind === 'function').map((t) => t.name), ['withholding', 'payStub']);
+  assert.deepStrictEqual(targets.filter((t) => t.kind === 'constant').map((t) => t.name), ['OVERTIME_THRESHOLD', 'OVERTIME_RATE', 'MAX_HOURS_PER_WEEK', 'TAX_BRACKETS']);
+  assert.deepStrictEqual(targets.filter((t) => t.kind === 'block').map((t) => t.fn), ['roundCents']);
+  assert.deepStrictEqual(result.stats.dropped.placement, {});
+  assert.strictEqual(result.stats.dropped.anchor, undefined);
 });
 
 test('a "no" verdict from the accuracy check drops the comment', async () => {
@@ -135,11 +131,10 @@ test('a comment a person edited is never touched', async () => {
   const { result, requests } = await run(PAYROLL);
   assert.ok(above(result.text, '// Checks the timesheet entry\\.', 'function validateTimesheet(entry) {'));
   assert.ok(!result.records.some((r) => /Checks the timesheet/.test(r.text)));
-  // The follow-up does not ask for a block comment on validateTimesheet, since it has the person's.
-  const followUp = requests.find((r) => kindOf(r) === 'blocks').messages[1].content;
-  assert.doesNotMatch(followUp, /^- line \d+: validateTimesheet$/m);
-  assert.match(followUp, /^- line \d+: withholding$/m);
-  assert.match(followUp, /: payStub$/m);
+  // validateTimesheet is never a target, since it has the person's comment.
+  const names = requests.filter((r) => kindOf(r) === 'comments').flatMap(targetsOf).map((x) => x.name);
+  assert.ok(!names.includes('validateTimesheet'));
+  assert.ok(names.includes('withholding'));
 
   // Even at level off, a person's comment stays while every Docturnal comment goes.
   const off = applyProposals({ text: PAYROLL, language: js, level: 'off', proposals: [], records: RECORDS });
@@ -161,24 +156,25 @@ test('an earlier line comment above a function is restyled as a block at heavy',
 test('long line comments wrap at 100 characters with the same indentation', async () => {
   const { result } = await run(PAYROLL);
   const lines = result.text.split('\n');
-  const start = lines.findIndex((l) => l.startsWith('  // Entries above the weekly maximum'));
+  const start = lines.findIndex((l) => l.startsWith('// Entries above the weekly maximum'));
   assert.ok(start > 0);
-  const wrapped = lines.slice(start, lines.indexOf('  if (entry.hours > MAX_HOURS_PER_WEEK) {'));
+  const wrapped = lines.slice(start, lines.indexOf('const MAX_HOURS_PER_WEEK = 80;'));
   assert.strictEqual(wrapped.length, 2);
   for (const l of wrapped) {
     assert.ok(l.length <= 100, l);
-    assert.match(l, /^ {2}\/\/ \S/);
+    assert.match(l, /^\/\/ \S/);
   }
-  assert.strictEqual(wrapped.map((l) => l.slice(5)).join(' '), LONG);
+  assert.strictEqual(wrapped.map((l) => l.slice(3)).join(' '), LONG);
   // A wrapped comment is recorded as one comment, so it is recognized as a whole next time.
   assert.ok(result.records.some((r) => r.text.startsWith('// Entries above') && r.text.split('\n').length === 2));
 });
 
 test('constants get comments at heavy, though they sit on neighboring lines', async () => {
   const { result } = await run(PAYROLL);
-  assert.match(result.text, /\/\/ Weekly hours paid at the base rate[^\n]*\nconst OVERTIME_THRESHOLD = 40;\n\/\/ Overtime multiplier[^\n]*\nconst OVERTIME_RATE = 1\.5;\n\/\/ Upper bound[^\n]*\nconst MAX_HOURS_PER_WEEK = 80;/);
+  assert.match(result.text, /\/\/ Weekly hours paid at the base rate[^\n]*\nconst OVERTIME_THRESHOLD = 40;\n\/\/ Overtime multiplier[^\n]*\nconst OVERTIME_RATE = 1\.5;\n\/\/ Entries above[^\n]*\n\/\/ [^\n]*\nconst MAX_HOURS_PER_WEEK = 80;/);
   assert.match(result.text, /\/\/ Adding Number\.EPSILON first makes values like 1\.005 round to 1\.01 instead of 1\.00\.\n {2}return Math\.round/);
-  assert.match(result.text, /\/\/ Each bracket's upTo is that bracket's width, not a running total\.\n {4}tax \+= taxed/);
+  // The wrong one on TAX_BRACKETS is dropped by the check.
+  assert.match(result.text, /\n\nconst TAX_BRACKETS = \[/);
 });
 
 test('every function ends up with a block comment and the code is unchanged', async () => {
@@ -217,7 +213,7 @@ test('the same comment text twice: the record\'s anchor decides which one is Doc
   assert.deepStrictEqual(owned.map((o) => [o.start, o.anchor]), [[3, 4]]);
 });
 
-test('records survive the state file, and last-run.md counts anchors, inaccuracy, and earlier comments', async () => {
+test('records survive the state file, and last-run.md counts inaccuracy and earlier comments', async () => {
   const { result } = await run(PAYROLL);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docturnal-owned-'));
   try {
@@ -228,13 +224,13 @@ test('records survive the state file, and last-run.md counts anchors, inaccuracy
   }
 
   const summary = proposalSummary(result.stats);
-  assert.match(summary, /1 anchor not found/);
+  assert.doesNotMatch(summary, /anchor/);
   assert.match(summary, /1 inaccurate/);
   assert.match(summary, /; earlier Docturnal comments: 3 kept \(1 restyled for the level\), 2 removed \(inaccurate: 2\)$/);
   const report = buildReport({
     processed: [{ path: 'src/payroll.js', verifier: 'typescript', added: result.added, rejections: result.rejections, stats: result.stats }],
     models: { comment: 'c', docs: 'd', level: 'heavy' },
   });
-  assert.match(report, /1 anchor not found/);
-  assert.doesNotMatch(report, /Validates the timesheet|Explains what|Each bracket/);
+  assert.match(report, /1 inaccurate/);
+  assert.doesNotMatch(report, /Validates the timesheet|Explains what|Entries above/);
 });

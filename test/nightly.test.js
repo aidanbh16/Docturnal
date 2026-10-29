@@ -106,8 +106,9 @@ test('a night with 40 changed files: comments first, every reply fits the contex
     // The log gives each file's time, and why a file was left.
     const timings = logs.filter((l) => /: proposals in [\d.]+ s \(\d+ requests?\), (accuracy check in [\d.]+ s \(\d+ requests?\)|no accuracy check needed)$/.test(l));
     assert.strictEqual(timings.length, commented);
-    assert.ok(logs.some((l) => /: deferred to the next run, time budget$/.test(l)));
-    assert.match(second.lastRun, /## Left for the next run/);
+    // What a night does not reach waits: files the time left, and the targets past each file's
+    // cap for one run.
+    assert.ok(logs.some((l) => /: deferred to the next run, time budget$|: \d+ more targets wait for a later batch, at most 8 new comments a file each run at the medium level$/.test(l)));
     // Kept for the report: files a night comments at this size.
     console.log(`nightly: ${commented} of 40 changed files of about 200 lines commented in ${minutes.toFixed(1)} minutes`);
   } finally {
@@ -129,9 +130,14 @@ test('a night with only a batch of existing code rewrites no doc and asks for co
     const docs = second.requests.filter((r) => r.model === 'docs-model' && !/^(accuracy check|loading)/.test(r.label));
     assert.deepStrictEqual(docs.map((r) => r.label), []);
     assert.ok(second.minutes <= 90);
-    // Every proposal request names how many comments to give.
+    // Each file got at most 8 new comments; with more room left, it waits for a later batch
+    // rather than counting as commented at the level.
     const state = JSON.parse(repo.text('docturnal/update', '.docturnal/state.json'));
-    for (const file of state.pending.batch.files) assert.strictEqual(state.files[file].level, 'medium');
+    for (const f of second.result.processed) assert.ok(f.added <= 8, f.path);
+    for (const file of state.pending.batch.files) {
+      const f = second.result.processed.find((p) => p.path === file);
+      if (f) assert.strictEqual(state.files[file].level, f.added === 8 ? null : 'medium', file);
+    }
     console.log(`batch night: ${second.result.processed.length} files in ${second.minutes.toFixed(1)} minutes`);
   } finally {
     await mock.close();

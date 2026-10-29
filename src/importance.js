@@ -89,13 +89,25 @@ function complexity(text) {
 // readText(path) returns a file's text. activity: Map of path to recent commit count.
 // Returns the backlog ordered by importance, most important first: [{ path, score, ... }].
 function rankFiles({ files, allFiles, readText, packageJson, activity = new Map() }) {
-  const known = new Set(allFiles);
   const entries = new Set(packageEntries(packageJson));
   const texts = new Map();
   const textOf = (file) => {
     if (!texts.has(file)) texts.set(file, readText(file) || '');
     return texts.get(file);
   };
+  const importers = importersOf(allFiles, textOf);
+  return files.map((file) => {
+    const entry = isEntryPoint(file, entries);
+    const fanIn = importers.has(file) ? importers.get(file).size : 0;
+    const branches = Math.min(complexity(textOf(file)), 200);
+    const changes = activity.get(file) || 0;
+    return { path: file, entry, fanIn, complexity: branches, activity: changes, score: (entry ? 1000 : 0) + fanIn * 20 + branches + changes * 10 };
+  }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+}
+
+// Who imports each file: Map from a file to the Set of files that import it.
+function importersOf(allFiles, textOf) {
+  const known = new Set(allFiles);
   const importers = new Map();
   for (const file of allFiles) {
     for (const specifier of importSpecifiers(file, textOf(file))) {
@@ -105,13 +117,19 @@ function rankFiles({ files, allFiles, readText, packageJson, activity = new Map(
       importers.get(target).add(file);
     }
   }
-  return files.map((file) => {
-    const entry = isEntryPoint(file, entries);
-    const fanIn = importers.has(file) ? importers.get(file).size : 0;
-    const branches = Math.min(complexity(textOf(file)), 200);
-    const changes = activity.get(file) || 0;
-    return { path: file, entry, fanIn, complexity: branches, activity: changes, score: (entry ? 1000 : 0) + fanIn * 20 + branches + changes * 10 };
-  }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  return importers;
+}
+
+// How many of the files that import `file` use each of `names`: Map from a name to a count.
+function nameUsage(file, names, importers, textOf) {
+  const usage = new Map();
+  const from = [...(importers.get(file) || [])];
+  for (const name of new Set(names)) {
+    const word = new RegExp(`(?<![\\w$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`);
+    const count = from.filter((other) => word.test(textOf(other))).length;
+    if (count) usage.set(name, count);
+  }
+  return usage;
 }
 
 // One batch from the ranked backlog: the layer of the most important file first, then the
@@ -142,4 +160,4 @@ function selectBatch(ranked, layers, size) {
   return { files, layers: used };
 }
 
-module.exports = { complexity, importSpecifiers, isEntryPoint, packageEntries, rankFiles, resolveImport, selectBatch };
+module.exports = { complexity, importSpecifiers, importersOf, isEntryPoint, nameUsage, packageEntries, rankFiles, resolveImport, selectBatch };

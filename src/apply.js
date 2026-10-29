@@ -9,12 +9,26 @@ const path = require('path');
 
 const { docExists, needsComments } = require('./changes');
 const { createCaller, docName, generateDocs, writeDocs } = require('./docs');
-const { commitAndPush, listFiles, mergedSince } = require('./git');
+const { commitAndPush, isPrivateRepository, listFiles, mergedSince } = require('./git');
 const { requirePlainPath } = require('./safe-path');
 const { updateReadme, writeReadme } = require('./readme');
 const { README_RESERVE_MINUTES } = require('./process');
 const { buildReport, pullRequestTitle } = require('./report');
 const { LAST_RUN_PATH, STATE_PATH, emptyPending, hashContent, sameState, writeState } = require('./state');
+const { own } = require('./own');
+const { INTERNAL_ERROR, internalErrorLine } = require('./internal-error');
+
+// The docs result when the docs could not be built this run: the layers stay as they were,
+// and the docs this run's changes touch (every one when changedFiles is null), the ones an
+// earlier run left, and the README wait for the next run.
+function docsLeft(previous, docsDir, changedFiles) {
+  const stale = new Set(previous.staleDocs);
+  const pending = previous.layers
+    .filter((l) => changedFiles === null || stale.has(docName(l)) || l.files.some((f) => changedFiles.has(f)))
+    .map((l) => ({ path: `${docsDir}/${docName(l)}.md`, slug: docName(l), reason: INTERNAL_ERROR }));
+  pending.push({ path: 'README.md', slug: 'README', reason: INTERNAL_ERROR });
+  return { layers: previous.layers, docs: [], removed: [], pending, skipped: [], errors: [], internalErrors: [], splits: [], fallbackUsed: false, facts: null, timings: null };
+}
 
 
 async function applyRun({ cwd, config, env, previous, changes, plan, results, folders: newFolders = [], summaryStats, calls, models, chat, docsCaller, now = Date.now, started = now(), log = console.log, push = true }) {
@@ -51,8 +65,10 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
   const summarizedNow = applied.filter((r) => r.outcome === 'summarized').length;
   // Folder summaries: kept for folders that still have code, replaced by this run's.
   const codeDirs = new Set([...current.values()].filter((e) => e.action === 'comment').map((e) => path.posix.dirname(e.path)));
-  const folderSummaries = Object.fromEntries(Object.entries(previous.folders || {}).filter(([dir]) => codeDirs.has(dir)));
-  for (const { dir, summary } of newFolders) if (typeof dir === 'string' && typeof summary === 'string' && codeDirs.has(dir)) folderSummaries[dir] = summary;
+  // Keyed by folder names, so built as a Map: a folder may be named "__proto__".
+  const summaries = new Map(Object.entries(previous.folders || {}).filter(([dir]) => codeDirs.has(dir)));
+  for (const { dir, summary } of newFolders) if (typeof dir === 'string' && typeof summary === 'string' && codeDirs.has(dir)) summaries.set(dir, summary);
+  const folderSummaries = Object.fromEntries(summaries);
   // Folders whose files the documentation pass has not read yet: the README says so.
   const waiting = [...new Set(leftOver.filter((l) => plan.items.some((i) => i.path === l.path && i.kind === 'summary')).map((l) => path.posix.dirname(l.path)))].sort();
 
@@ -85,7 +101,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     .map(([file, entry]) => ({ path: file, summary: entry.summary, symbols: entry.symbols }));
   // A file in a batch of existing code changed only by its comments, and keeps its summary, so
   // its layer doc needs no rewrite: the run's time goes to comments.
-  const onlyCommented = (r) => r.reason === 'backlog' && previous.files[r.path] && previous.files[r.path].summary === r.entry.summary;
+  const onlyCommented = (r) => r.reason === 'backlog' && own(previous.files, r.path) && own(previous.files, r.path).summary === r.entry.summary;
   const changedFiles = new Set([...applied.filter((r) => r.outcome !== 'skipped' && !onlyCommented(r)).map((r) => r.path), ...deleted, ...changedDocsOnly.map((e) => e.path)]);
   const docsNeeded = (summarized.length > 0 || previous.layers.length > 0) &&
     (changedFiles.size > 0 || previous.staleDocs.length > 0 || docsMissing || previous.layers.length === 0 || readmeChanged || legacyReadme);
@@ -109,7 +125,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     // Web links the repository does not already have, and raw HTML, are dropped; only the
     // count is logged.
     const linkStats = {};
-    const result = await generateDocs({
+    const docsInput = {
       files: summarized,
       allFiles,
       root: cwd,
@@ -124,27 +140,48 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
       projectName: env.GITHUB_REPOSITORY ? env.GITHUB_REPOSITORY.split('/').pop() : undefined,
       linkStats,
       folders: new Map(Object.entries(folderSummaries)),
-    });
+    };
+    // An unexpected error before any one doc, such as in planning the layers, leaves the docs
+    // as they are: the ones this run's changes touch, and the README, wait for the next run.
+    let result;
+    try {
+      result = await generateDocs(docsInput);
+    } catch (err) {
+      log(internalErrorLine('Docturnal: the layer docs', err));
+      result = docsLeft(previous, docsDir, previous.layers.length ? changedFiles : null);
+    }
+    for (const line of result.internalErrors) log(line);
     const write = writeDocs({ root: cwd, docs: result.docs, removed: result.removed });
 
-    // The main document: README.md at the repository root, shared with people.
+    // The main document: README.md at the repository root, shared with people. An unexpected
+    // error in it leaves README.md as it is for the next run.
     const readmeStarted = now();
-    const readme = await updateReadme({
-      root: cwd,
-      caller,
-      layers: result.layers,
-      facts: result.facts,
-      projectName: result.projectName,
-      docsDir,
-      allFiles,
-      regenerate: result.readmeNeeded,
-      contextTokens: config.contextTokens,
-      deadline,
-      now,
-      linkStats,
-      waiting,
-      available: result.available,
-    });
+    let readme = null;
+    if (result.facts) {
+      try {
+        readme = await updateReadme({
+          root: cwd,
+          caller,
+          layers: result.layers,
+          facts: result.facts,
+          projectName: result.projectName,
+          docsDir,
+          allFiles,
+          regenerate: result.readmeNeeded,
+          contextTokens: config.contextTokens,
+          deadline,
+          now,
+          linkStats,
+          waiting,
+          available: result.available,
+        });
+        writtenDocs.written.push(...writeReadme(cwd, readme));
+      } catch (err) {
+        log(internalErrorLine('README.md', err));
+        readme = null;
+      }
+    }
+    if (!readme && !result.pending.some((p) => p.slug === 'README')) result.pending.push({ path: 'README.md', slug: 'README', reason: INTERNAL_ERROR });
     readmeMs = now() - readmeStarted;
     docTimings = result.timings || docTimings;
     for (const split of result.splits || []) log(`Docturnal: ${split}`);
@@ -155,11 +192,12 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
     if (linkStats.droppedTables) log(`Docturnal: dropped ${linkStats.droppedTables} ${linkStats.droppedTables === 1 ? 'table' : 'tables'} the model wrote into the docs`);
     if (linkStats.ungrounded) log(`Docturnal: dropped ${linkStats.ungrounded} ${linkStats.ungrounded === 1 ? 'sentence' : 'sentences'} from the layer docs that their files do not support`);
     if (linkStats.droppedLinks) log(`Docturnal: dropped ${linkStats.droppedLinks} ${linkStats.droppedLinks === 1 ? 'link or HTML tag' : 'links or HTML tags'} from the docs that the repository does not have`);
-    if (readme.linked) log('README.md is a symbolic link, so Docturnal leaves it alone.');
-    readme.errors.forEach((error) => result.errors.push(error));
-    writtenDocs.written.push(...writeReadme(cwd, readme));
-    if (readme.pending) result.pending.push({ path: 'README.md', slug: 'README', reason: readme.pending });
-    docsReport.readme = readme.report;
+    if (readme) {
+      if (readme.linked) log('README.md is a symbolic link, so Docturnal leaves it alone.');
+      readme.errors.forEach((error) => result.errors.push(error));
+      if (readme.pending) result.pending.push({ path: 'README.md', slug: 'README', reason: readme.pending });
+      docsReport.readme = readme.report;
+    }
     for (const error of result.errors) log(`Docs: ${error}`);
     writtenDocs.written.push(...write.written);
     writtenDocs.deleted = write.deleted;
@@ -211,7 +249,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
 
   // Progress, counted over the code files in scope.
   const codeFiles = [...current.values()].filter((e) => e.action === 'comment').map((e) => e.path);
-  const entryOf = (file) => next.files[file];
+  const entryOf = (file) => own(next.files, file);
   const usable = codeFiles.filter((file) => !(entryOf(file) && entryOf(file).skipped));
   const progress = {
     docsComplete,
@@ -228,6 +266,7 @@ async function applyRun({ cwd, config, env, previous, changes, plan, results, fo
       .filter((file) => !(pending.batch && pending.batch.files.includes(file))).length,
     nextBatch: batchesDone + 1,
     batchSize: config.backlogBatchSize,
+    timeLimit: { minutes: config.timeBudgetMinutes, private: isPrivateRepository(env) },
   };
   const title = pullRequestTitle(pending);
   const report = buildReport({

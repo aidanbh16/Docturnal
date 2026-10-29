@@ -23,6 +23,7 @@ const { clusterFiles } = require('./clusters');
 const { grounded, terms } = require('./grounding');
 const { FOLDER_WORDS, SUB_ABOVE, findPackages, folderName, isLargeProject, partDocuments, topParts } = require('./parts');
 const { splitWithModel, where } = require('./split');
+const { own } = require('./own');
 
 const MAX_LAYERS = 7;
 // A group with fewer files joins another, so a small project gets a few meaningful layers.
@@ -77,7 +78,7 @@ function partWord(files, importsOf) {
     for (const other of files) if (other !== file && words(file).some((w) => w.length > 2 && words(other).includes(w))) score.set(file, score.get(file) + 1);
   }
   const best = [...files].sort((a, b) => score.get(b) - score.get(a) || a.localeCompare(b))[0];
-  return words(best).map((w) => FOLDER_WORDS[w] || w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  return words(best).map((w) => own(FOLDER_WORDS, w) || w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
 const isTests = (g) => (g.folders || [g.folder]).every((f) => segments(f).some((s) => TEST_FOLDER.test(s)));

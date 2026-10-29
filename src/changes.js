@@ -18,6 +18,7 @@ const { classifyFile, MAX_FILE_BYTES } = require('./languages');
 const { readReadmeState, readmeIsPlain } = require('./readme');
 const { isPlainPath } = require('./safe-path');
 const { emptyPending, hashContent } = require('./state');
+const { own } = require('./own');
 
 function readCandidates(cwd, config) {
   const scope = config.path === '.' ? '' : `${config.path.replace(/\/$/, '')}/`;
@@ -79,12 +80,12 @@ function findChanges(cwd, config, previous) {
   const current = new Map(entries.map((e) => [e.path, e]));
   const levelChanged = previous.commentLevel !== null && previous.commentLevel !== config.commentLevel;
   const toComment = entries.filter((e) => e.action === 'comment' &&
-    (!previous.files[e.path] || previous.files[e.path].hash !== e.hash));
+    (!own(previous.files, e.path) || own(previous.files, e.path).hash !== e.hash));
   const backlog = entries.filter((e) => {
-    const entry = previous.files[e.path];
+    const entry = own(previous.files, e.path);
     return e.action === 'comment' && entry && entry.hash === e.hash && !entry.skipped && needsComments(entry.level, config.commentLevel);
   });
-  const changedDocsOnly = entries.filter((e) => e.action === 'docs' && (!previous.files[e.path] || previous.files[e.path].hash !== e.hash));
+  const changedDocsOnly = entries.filter((e) => e.action === 'docs' && (!own(previous.files, e.path) || own(previous.files, e.path).hash !== e.hash));
   const deleted = Object.keys(previous.files).filter((file) => !current.has(file));
   // A generated doc is missing when a recorded layer doc is gone, or when files were
   // summarized but no docs were ever written for them.
@@ -116,7 +117,7 @@ function openPending(branch, previous) {
 function docsDone(previous, entries) {
   if (previous.docsComplete === true) return true;
   if (previous.commentLevel === null) return false;
-  return !entries.some((e) => e.action === 'comment' && !previous.files[e.path]);
+  return !entries.some((e) => e.action === 'comment' && !own(previous.files, e.path));
 }
 
 // True for a repository with no source files that Docturnal never documented: there is
@@ -155,7 +156,7 @@ function planWork({ config, previous, changes, branch, rank }) {
     // comment level and Docturnal's records stay right.
     for (const e of changes.entries) {
       if (e.action !== 'comment') continue;
-      const entry = previous.files[e.path];
+      const entry = own(previous.files, e.path);
       if (entry && entry.hash !== e.hash && entry.level) {
         items.push({ path: e.path, kind: 'comment', reason: 'changed' });
       } else if (!entry || entry.hash !== e.hash || (typeof entry.summary !== 'string' && !entry.skipped && !entry.summaryFailed)) {
@@ -164,7 +165,7 @@ function planWork({ config, previous, changes, branch, rank }) {
     }
   } else {
     for (const e of changes.toComment) {
-      items.push({ path: e.path, kind: 'comment', reason: previous.files[e.path] ? 'changed' : 'new' });
+      items.push({ path: e.path, kind: 'comment', reason: own(previous.files, e.path) ? 'changed' : 'new' });
     }
     const backlog = changes.backlog.map((e) => e.path);
     backlogTotal = backlog.length;

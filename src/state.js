@@ -97,6 +97,7 @@ function readState(root) {
   state.batchesDone = Number.isInteger(data.batchesDone) && data.batchesDone >= 0 ? data.batchesDone : 0;
   state.pending = readPending(data.pending);
   if (data.files && typeof data.files === 'object') {
+    const files = [];
     for (const [file, entry] of Object.entries(data.files)) {
       if (!entry || typeof entry.hash !== 'string') continue;
       const clean = { hash: entry.hash };
@@ -114,13 +115,15 @@ function readState(root) {
       // The comments Docturnal inserted in this file: their exact text and a hash of the line under each.
       const comments = cleanRecords(entry.comments);
       if (comments.length) clean.comments = comments;
-      state.files[file] = clean;
+      files.push([file, clean]);
     }
+    // Object.fromEntries makes each path an own property, even one such as "__proto__".
+    state.files = Object.fromEntries(files);
   }
   if (Array.isArray(data.docs)) state.docs = data.docs.filter((s) => typeof s === 'string' && DOC_NAME.test(s));
   if (Array.isArray(data.staleDocs)) state.staleDocs = data.staleDocs.filter((s) => typeof s === 'string' && (s === 'README' || DOC_NAME.test(s)));
   if (data.folders && typeof data.folders === 'object' && !Array.isArray(data.folders)) {
-    for (const [dir, summary] of Object.entries(data.folders)) if (typeof summary === 'string') state.folders[dir] = summary;
+    state.folders = Object.fromEntries(Object.entries(data.folders).filter(([, summary]) => typeof summary === 'string'));
   }
   return state;
 }

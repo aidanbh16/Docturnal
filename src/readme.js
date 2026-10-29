@@ -21,6 +21,7 @@ const docs = require('./docs');
 const links = require('./links');
 const { isPlainPath, requirePlainPath } = require('./safe-path');
 const { hashContent } = require('./state');
+const { own } = require('./own');
 
 const README_PATH = 'README.md';
 const README_STATE_PATH = '.docturnal/readme.json';
@@ -125,7 +126,7 @@ function blocksIn(text) {
 }
 
 function refreshBlocks(text, blocks) {
-  return text.replace(BLOCK_RE, (match, name) => (name in blocks ? renderBlock(name, blocks[name]) : match));
+  return text.replace(BLOCK_RE, (match, name) => (Object.hasOwn(blocks, name) ? renderBlock(name, blocks[name]) : match));
 }
 
 // --- Generated sections ---
@@ -226,7 +227,7 @@ function sectionText(title, body) {
 
 // The text of a standard section that Docturnal writes, or null when there is nothing to say.
 function standardText(id, { prose, blocks, allowBlock, name, facts }) {
-  const block = (blockName) => (allowBlock(blockName) && blocks[blockName] ? renderBlock(blockName, blocks[blockName]) : '');
+  const block = (blockName) => (allowBlock(blockName) && own(blocks, blockName) ? renderBlock(blockName, blocks[blockName]) : '');
   switch (id) {
     case 'intro':
       return prose.intro ? `# ${name}\n\n${prose.intro.trim()}\n` : `# ${name}\n`;
@@ -295,7 +296,7 @@ async function planReadme({
   const present = (key) => parts.some((p) => !p.empty && p.key === key);
   if (saved) {
     for (const s of saved.sections) if (!present(s.key)) suppressed.set(s.key, s.heading || 'Introduction');
-    for (const name of blocksIn(saved.text)) if (!blocksIn(current).has(name)) suppressed.set(`block:${name}`, BLOCK_TITLES[name]);
+    for (const name of blocksIn(saved.text)) if (!blocksIn(current).has(name)) suppressed.set(`block:${name}`, own(BLOCK_TITLES, name) || name);
   }
   for (const name of blocksIn(current)) suppressed.delete(`block:${name}`);
   const allowBlock = (blockName) => !suppressed.has(`block:${blockName}`);
@@ -363,7 +364,7 @@ async function planReadme({
 
   // A block that is in no section, and that no person removed, goes into its standard section.
   for (const [blockName, hostId] of Object.entries(BLOCK_HOST)) {
-    if (blocksNow.has(blockName) || !allowBlock(blockName) || !blocks[blockName]) continue;
+    if (blocksNow.has(blockName) || !allowBlock(blockName) || !own(blocks, blockName)) continue;
     const host = parts.find((p) => !p.empty && standardOf(p.key) && standardOf(p.key).id === hostId);
     if (!host || blocksIn(host.text).has(blockName)) continue;
     const addition = blockName === 'scripts' ? `### Available scripts\n\n${renderBlock(blockName, blocks[blockName])}` : renderBlock(blockName, blocks[blockName]);

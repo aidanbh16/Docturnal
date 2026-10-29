@@ -50,14 +50,15 @@ You can choose:
 - **Time zone:** the time zone of that hour. Daylight saving time is handled for you.
 - **Comment level:** low, medium, heavy, or off. See [Comment levels](#comment-levels).
 - **Existing code:** **Comment gradually**, the default, comments the code you already have in small batches, the most important files first. **Only new and changed code** leaves existing code alone and comments only what you add or change.
+- **Time limit for private repositories:** 15, 30, 60, or 90 minutes a night. Each run in a private repository counts toward your free GitHub Actions minutes, so Docturnal stops after this long and continues the next night. Public repositories always get 90 minutes.
 
-The defaults are midnight, New York time, medium comments, and existing code commented gradually. While the settings are still the defaults, opening the page saves your browser's time zone, so midnight is in your time zone even if you close the page without saving. The settings apply to every repository in the installation.
+The defaults are midnight, New York time, medium comments, existing code commented gradually, and 30 minutes a night in private repositories. While the settings are still the defaults, opening the page saves your browser's time zone, so midnight is in your time zone even if you close the page without saving. The settings apply to every repository in the installation.
 
 ## What you get
 
 - **First, documentation for the whole project.** The first pull request, titled "Docturnal: documentation", contains your `README.md` and a document for each part of your code, and no code comments.
 - **Then comments, in pull requests you can review in minutes.** Each night, new and changed code is commented first. Then, if the setting allows, one batch of existing code, at most 15 files, the most important first and kept to one part of the project where it can be. A pull request holds at most one such batch: the next batch waits until you merge or close it.
-- **Progress in every pull request.** Each one opens with how far the documentation and the comments are, such as "Comments: 45 of 300 files", what the pull request holds, and what comes next.
+- **Progress in every pull request.** Each one opens with how far the documentation and the comments are, such as "Comments: 45 of 300 files", what the pull request holds, what comes next, and the night's time limit.
 
 There is never more than one open Docturnal pull request. It comes from the `docturnal/update` branch, and later nights add their changes to it until you merge or close it, so you review one pull request rather than one per night. Its title says what it holds: "Docturnal: documentation", or "Docturnal: comments and documentation" once it has comments. Its description lists the comments added to each file, the documents updated, the README sections changed, the files that were skipped or left for the next night, and the models used. It never includes the comment text or your code.
 
@@ -69,23 +70,24 @@ When Docturnal's workflow file changes, the app opens a pull request titled "Upd
 
 | Level | What Docturnal aims for |
 | --- | --- |
-| `low` | A few short, single-line comments on the most important or surprising code. |
-| `medium` | Single-line comments that can be longer, placed less sparsely. This is the default. |
-| `heavy` | A block comment above every function, class, and component, a short comment on each constant, and single-line comments on calculations, loops, edge cases, and magic numbers. |
+| `low` | A few short, single-line comments on the most important functions and classes: the ones exported or used by other files. |
+| `medium` | Single-line comments that can be longer, on exported and widely used functions, classes, components, and types, and on the most complex blocks of code. This is the default. |
+| `heavy` | A block comment above every function, method, class, and component, a short comment on each constant, and single-line comments on complex blocks of code. |
 | `off` | No comments. Docturnal only updates your documentation. |
 
-Each level limits how many single-line comments a file gets, and comments already in the file count toward the limit. Block comments above functions at `heavy` do not count toward it. After you change the level, files you change are commented at the new level, and existing files follow in the same small batches as existing code.
+Docturnal decides where comments go before it asks the model anything. It reads your code with a parser and lists the functions, classes, and exported declarations that have no comment yet, and the complex blocks: code nested three levels deep, regular expressions, bitwise math, numbers other than 0, 1, and -1, and long conditions. Exported and widely used code comes first. The model then writes one short comment for each spot, seeing only that code. Each night, a file gets at most 3 new comments at `low`, 8 at `medium`, and 20 at `heavy`, its most important spots first, and the rest follow in a later batch. Every file in the night's work gets its most important spots before any file gets more, so a large file never takes the whole night. Each level limits how many single-line comments a file gets, and comments already in the file count toward the limit. Block comments above functions at `heavy` do not count toward it. After you change the level, files you change are commented at the new level, and existing files follow in the same small batches as existing code.
 
 ## How comments are checked
 
-The model never edits your files. It only proposes comments, and Docturnal decides which ones to insert and checks every file before writing it:
+The model never edits your files. It only writes the text of comments for the spots Docturnal chose, and Docturnal decides which ones to insert and checks every file before writing it:
 
 - **New lines only.** A comment is inserted as a whole new line above the code it describes. Docturnal never changes, moves, or deletes a line of your code, and never adds a comment where one already exists.
-- **Placed by anchor.** With each comment, the model names the text of the line it belongs above. Docturnal places the comment above that line. It allows for a copied line number, different spacing or quotes, a line cut short, or a line number that is a little off. It drops the comment when no line matches, or when two lines match equally well.
-- **Checked for accuracy and usefulness.** A second request asks whether each comment is true of the code under it, and whether it tells you something the code does not already say. Comments that are wrong are dropped, and so are new single-line comments that only restate the code or repeat the comment of the function around them. A word-by-word comparison with the code catches restatements the model misses.
+- **Placed by Docturnal.** The model never says where a comment goes. Each comment goes directly above the line Docturnal chose for it, so no comment ends up above the wrong code.
+- **Checked for accuracy and usefulness.** A second request asks whether each comment is true of the code under it, and whether it tells you something the code does not already say. Comments that are wrong are dropped, and so are new single-line comments on a block of code that only restate the code or repeat the comment of the function around them. A word-by-word comparison with the code catches restatements the model misses. A summary of a function, class, or component is kept even though it shares words with the name, unless it says no more than the name, such as "Gets the value." above `getValue`.
+- **Functions are not skipped.** The model may leave out only a block of code. A function, class, or component the first answer leaves out is asked for again on its own. Comments start with what the code does, such as "Copies a Blob to the clipboard as a PNG image.", never with "This function" or "A function that".
 - **Verified by a parser.** For JavaScript, TypeScript, and Python, Docturnal parses the file after inserting comments and confirms that the program is unchanged apart from the comments. A comment that fails this check is dropped. For every language, removing the inserted lines must give back the original file byte for byte. Other languages are checked with placement rules, so a comment never lands inside a string or a block comment.
 - **Files with syntax errors are skipped.** A JavaScript, TypeScript, or Python file that does not parse is not commented, and the pull request says so.
-- **Only its own comments.** Docturnal records each comment it inserts. On a later run, it may replace or remove a comment it wrote, for example one that turns out to be wrong, or a single-line comment above a function that becomes a block comment at `heavy`. It removes all of its comments at `off`. It never changes or removes a comment you wrote. If you edit one of Docturnal's comments, it becomes yours.
+- **Only its own comments.** Docturnal records each comment it inserts. On a later run, it may replace or remove a comment it wrote, for example one that turns out to be wrong, which it replaces in the same run, or a single-line comment above a function that becomes a block comment at `heavy`. It removes all of its comments at `off`. It never changes or removes a comment you wrote. If you edit one of Docturnal's comments, it becomes yours.
 
 ## What Docturnal writes
 
@@ -146,18 +148,19 @@ Docturnal also skips files that are generated, vendored, binary, minified, or ve
 - **What runs is pinned.** Docturnal installs one fixed Ollama release from Ollama's official GitHub releases and checks every file against checksums stored in this repository, with no install script and no administrator rights. It checks every file of each model against fixed digests too, and the actions it uses are pinned to exact commits. If anything doesn't match, the run stops and changes nothing.
 - **Generated text adds no outside links.** Docs and comments link to a web address only when your repository already has it, and never add images from other sites or HTML.
 - **Nothing goes to an outside AI service.** Docturnal uses no AI APIs and no telemetry. The run's network traffic is the checkout of your repository, the downloads of Ollama from GitHub, the models, and the Action's one dependency, and the push of the `docturnal/update` branch back to your repository.
-- **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, and the names of the repositories it is installed on. It stores no code.
+- **The app stores only your settings.** It keeps the run time, time zone, comment level, the Existing code choice, the time limit for private repositories, and the names of the repositories it is installed on. It stores no code.
 - **Minimum permissions.** The app asks for write access to contents, workflows, pull requests, and actions, and read access to metadata.
 
 ## How nightly runs work
 
 - **Documentation first.** The first run reads every file and writes the documentation, with one short request for each folder. For a project of up to about 1,000 source files, the documentation arrives in the first pull request. It adds no comments.
-- **New and changed code next.** Each later run compares your files with the hashes from the last run, and comments the new and changed ones before anything else. Comments come before docs: the run keeps only the time it needs for the docs that your changes touch, and docs it doesn't reach are updated the next night. A night comments about 15 to 20 changed files of 200 lines each.
+- **New and changed code next.** Each later run compares your files with the hashes from the last run, and comments the new and changed ones before anything else. Comments come before docs: the run keeps only the time it needs for the docs that your changes touch, and docs it doesn't reach are updated the next night. A night comments about 40 changed files of 200 lines each, up to 8 comments each at `medium`.
 - **Existing code in batches.** After that, if time remains and no batch is waiting in an open pull request, the run comments one batch of existing files. It ranks them by importance: entry points, such as the files `package.json` names and route or handler files, then files many others import, complex files, and files that changed recently.
 - **Quiet nights stop early.** A short check runs first. If nothing changed and no batch is due, the run stops there, before Ollama or any model is installed, which usually takes under a minute.
 - **One run at a time.** A run that starts while another is going waits for it, and the nightly run is skipped if a Docturnal run is already queued or in progress.
 - **Only Docturnal's own work.** Docturnal runs only on your default branch. If someone adds a commit to the open Docturnal pull request, Docturnal stops adding to it until you merge or close it, so the pull request never mixes its changes with someone else's.
-- **Work is never lost to a timeout.** Each run stops starting new files when its time budget, 90 minutes by default, is close to running out, and commits what is finished. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night.
+- **One file never stops the night.** If something goes wrong with one file or one document, Docturnal skips it for that night, lists it in the pull request, and tries it again the next night. Everything else is committed as usual.
+- **Work is never lost to a timeout.** Each run stops starting new work when its time budget is close to running out, and commits what is finished. The budget is 90 minutes in a public repository, and the time limit from the settings, 30 minutes by default, in a private one. The job's timeout leaves at least 20 minutes after that budget. Files that are left over are listed in the pull request and go first on the next night; a file cut short keeps the comments it got, and a later batch adds the rest.
 
 ## Supported languages
 

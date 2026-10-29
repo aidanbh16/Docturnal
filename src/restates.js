@@ -63,7 +63,7 @@ function stem(word) {
 // A comment that narrates a declaration: "It initializes a pending variable to track any
 // pending operations." above `let pending = null;`. After the verb, its words name the line's
 // identifiers, or say nothing about the code (FILLER).
-const NARRATES = /^\s*(?:it|this)\s+(?:initiali[sz]es|sets|declares|creates|defines|assigns|stores|holds|instantiates|introduces)\b/i;
+const NARRATES = /^\s*(?:(?:it|this)\s+)?(?:initiali[sz]es|sets|declares|creates|defines|assigns|stores|holds|instantiates|introduces)\b/i;
 const FILLER = new Set(['variable', 'var', 'constant', 'track', 'tracking', 'keep', 'hold', 'store', 'operation', 'later', 'use', 'new', 'local', 'flag', 'state', 'data', 'information', 'instance', 'object', 'reference', 'placeholder', 'initial', 'default', 'up', 'some', 'possible', 'potential']
   .map((w) => stem(w)));
 
@@ -106,4 +106,43 @@ function restates(result) {
   return result.narrates === true || (result.coverage !== null && result.coverage >= RESTATES_AT);
 }
 
-module.exports = { RESTATES_AT, restatement, restates, stem, words };
+// The verbs a name implies, so "Returns the value." says no more than getValue. A Map, since
+// its keys are words of names from code, such as "constructor".
+const NAME_VERBS = new Map(Object.entries({
+  get: ['return', 'retrieve', 'fetch', 'obtain', 'read', 'give'],
+  set: ['update', 'assign', 'store', 'change', 'write'],
+  is: ['check', 'whether', 'return', 'true', 'false'],
+  has: ['check', 'whether', 'return', 'true', 'false', 'contain'],
+  can: ['check', 'whether', 'return'],
+  should: ['check', 'whether', 'return'],
+  create: ['make', 'build', 'construct', 'new', 'return'],
+  make: ['create', 'build', 'construct', 'new', 'return'],
+  build: ['create', 'make', 'construct', 'return'],
+  to: ['convert', 'return'],
+  on: ['handle', 'event'],
+  handle: ['event'],
+  add: ['append', 'insert'],
+  remove: ['delete'],
+  delete: ['remove'],
+  init: ['initialize', 'set'],
+  calc: ['calculate', 'compute', 'return'],
+  compute: ['calculate', 'return'],
+}));
+// Words that say only what kind of declaration it is.
+const KIND_WORDS = new Set(['function', 'method', 'class', 'component', 'helper', 'hook', 'type', 'interface', 'object', 'instance', 'specified', 'provided', 'new', 'data', 'thing', 'something', 'one', 'some', 'here', 'exported', 'export']
+  .map((w) => stem(w)));
+
+// True when a summary adds nothing beyond its declaration's own name: "Gets the value." for
+// getValue. names: the declaration's name, and its class's name for a method.
+function onlyItsName(comment, names) {
+  const own = new Set();
+  for (const w of names.filter(Boolean).flatMap((n) => words(String(n)))) {
+    own.add(stem(w));
+    for (const v of NAME_VERBS.get(w) || []) own.add(stem(v));
+  }
+  if (!own.size) return false;
+  const content = words(comment).filter((w) => !STOPWORDS.has(w)).map(stem);
+  return content.every((w) => own.has(w) || KIND_WORDS.has(w));
+}
+
+module.exports = { RESTATES_AT, onlyItsName, restatement, restates, stem, words };
