@@ -54,6 +54,7 @@ export class FakeKV {
     this.data.delete(key);
   }
 
+  // Returns a paginated list of keys from the FakeKV store, filtered by prefix and sorted.
   async list({ prefix = '', cursor }: { prefix?: string; cursor?: string } = {}) {
     this.reads.push(`${prefix}*`);
     const names = [...this.data.keys()].filter((k) => k.startsWith(prefix)).sort();

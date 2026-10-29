@@ -6,7 +6,7 @@ This layer is responsible for managing Ollama releases and models, including has
 
 ## Overview
 
-The Ollama Management layer includes scripts for handling Ollama releases and models.
+The Ollama Management layer includes scripts to handle various tasks related to Ollama releases and models. It ensures that all necessary files are correctly hashed, model pinning is updated, and checksums are computed.
 
 ## Key components
 
@@ -18,9 +18,15 @@ The Ollama Management layer includes scripts for handling Ollama releases and mo
 
 ## How it works
 
-- `scripts/archive-hashes.js` lists files in an Ollama release archive and hashes them using the `hashArchive` and `hashTar` functions.
-- `scripts/update-models.js` records model pinning digests by fetching them from a manifest URL and updating the pinning using the `fetchPin` and `pinFromManifest` functions.
-- `scripts/update-ollama.sh` computes release and model digests by running the hashing and model update scripts.
+- `scripts/archive-hashes.js`:
+  - Defines functions to hash archive files (`hashArchive`, `hashTar`).
+  - Lists files in an Ollama release archive (`wanted`, `field`).
+
+- `scripts/update-models.js`:
+  - Records model pinning digests (`fetchPin`, `manifestUrl`, `pinFromManifest`).
+
+- `scripts/update-ollama.sh`:
+  - Computes release and model digests.
 
 ## Configuration
 
@@ -29,9 +35,9 @@ The Ollama Management layer includes scripts for handling Ollama releases and mo
 ## Related layers
 
 - [Project README](../README.md): the overview of the whole project and every layer.
-- [GitHub Integration](github-integration.md): Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations.
+- [App Registration](app-registration.md): Handles app registration and GitHub API interactions.
 - [Model Verification](model-verification.md): Verifies models and their configurations.
-- [Python Helper](python-helper.md): Provides utilities and scripts for Python-related tasks.
-- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state, including links, reports, and safe paths.
-- [Documentation and Grounding](documentation-and-grounding.md): Handles documentation and grounding related tasks.
+- [Python Integration](python-integration.md): Handles Python-related tasks and structures.
+- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state.
+- [Documentation and Grounding](documentation-and-grounding.md): The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says.
 - [Tests](tests.md): This folder contains test files that define and verify various aspects of the project, including action steps, anchors, big layers, check runs, comments, configuration, coverage, documentation, end-to-end tests, edges, excalidraw-like project, first run, Git repository, heavy level, and test helpers.

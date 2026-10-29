@@ -368,6 +368,7 @@ function finalizeDoc(markdown) {
   return `${MARKER}\n\n${markdown.replace(/\n{3,}/g, '\n\n').trim()}\n`;
 }
 
+// Returns a cleaned document by first cleaning the Markdown content and then finalizing it.
 function cleanDoc(raw, options) {
   return finalizeDoc(cleanMarkdown(raw, options));
 }
@@ -861,6 +862,7 @@ function normalizeLayers(raw, files, { previous = [], fileInfo = new Map(), fold
   return layers.map(({ name, slug, part, description, files: layerFiles }) => ({ name, slug, ...(part ? { part } : {}), description, files: layerFiles }));
 }
 
+// Calculates the character budget based on the number of context tokens.
 function charBudget(contextTokens) {
   return Math.max(4000, (contextTokens - PROMPT_RESERVE_TOKENS - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
 }

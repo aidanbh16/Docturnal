@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-28T05:27:40.301Z",
+  "updatedAt": "2026-10-29T05:16:12.382Z",
   "commentLevel": "medium",
   "ignoreHash": "sha256-3280a6a8c4ce93e103ecf7433af067c1ca5b81af96155173da43e46d1bc2b9bd",
   "docsComplete": true,
-  "batchesDone": 1,
+  "batchesDone": 2,
   "pending": {
     "docs": false,
     "changed": [
@@ -12,9 +12,79 @@
       "app/src/index.ts",
       "app/src/setup.ts",
       "app/tests/setup.spec.ts",
-      "app/tests/webhook.spec.ts"
+      "app/tests/webhook.spec.ts",
+      "app/src/scheduler.ts",
+      "app/src/settings.ts",
+      "app/src/workflow.ts",
+      "app/tests/fake-kv.ts",
+      "src/analyze.js",
+      "src/apply.js",
+      "src/changes.js",
+      "src/comments.js",
+      "src/docs.js",
+      "src/git.js",
+      "src/importance.js",
+      "src/install-ollama.js",
+      "src/internal-error.js",
+      "src/layers.js",
+      "src/own.js",
+      "src/parts.js",
+      "src/process.js",
+      "src/python-helper.py",
+      "src/python.js",
+      "src/readme.js",
+      "src/report.js",
+      "src/restates.js",
+      "src/state.js",
+      "src/targets.js",
+      "test/check-run.test.js",
+      "test/comment-cost.test.js",
+      "test/comments.test.js",
+      "test/coverage.test.js",
+      "test/declarations.test.js",
+      "test/e2e.sh",
+      "test/excalidraw-files.js",
+      "test/heavy.test.js",
+      "test/helpers.js",
+      "test/internal-errors.test.js",
+      "test/mock-ollama.js",
+      "test/model-split.test.js",
+      "test/nightly.test.js",
+      "test/ownership.test.js",
+      "test/proposals.test.js",
+      "test/prototype-keys.test.js",
+      "test/replies.test.js",
+      "test/restates.test.js",
+      "test/round-robin.test.js",
+      "test/speed-model.js",
+      "test/targets.test.js",
+      "test/usefulness.test.js"
     ],
-    "batch": null
+    "batch": {
+      "number": 2,
+      "layers": [
+        "Documentation and Grounding",
+        "Model Verification",
+        "Tests"
+      ],
+      "files": [
+        "src/languages.js",
+        "src/grounding.js",
+        "src/configuration.js",
+        "src/clusters.js",
+        "src/split.js",
+        "src/ollama.js",
+        "src/models.js",
+        "src/verify-models.js",
+        "src/precheck.js",
+        "src/accuracy.js",
+        "src/verify.js",
+        "app/tests/mock-github.mjs",
+        "test/git-repo.js",
+        "test/edges.test.js",
+        "test/parts.test.js"
+      ]
+    }
   },
   "files": {
     "app/package.json": {
@@ -50,8 +120,8 @@
       "level": "medium"
     },
     "app/src/handlers.ts": {
-      "hash": "sha256-ac24624334deb4044f796859e51c735f222933684055d12c01e12b3438c3072c",
-      "summary": "This file contains handlers for webhooks and queue operations in a GitHub Actions workflow. It manages repository setup, dispatching runs, and updating the workflow file. This file contains various utility functions for interacting with GitHub repositories and managing Docturnal workflows. It includes functions for reading and writing files, creating branches, and managing pull requests. This code handles the workflow update process for repositories, including proposing updates, setting up repositories, and offering workflow updates from the settings page. It manages pull requests, checks repository versions, and handles errors gracefully. This function dispatches a workflow based on the message's reason and installation ID, handling retries and skipping conditions.",
+      "hash": "sha256-25e7fda02402d5531bff4e1b6135cd8e0591a6bafbac15923f397930ebabd912",
+      "summary": "Webhook and queue handlers.",
       "symbols": [
         "UPDATE_BRANCH",
         "SETUP_BRANCH",
@@ -63,46 +133,8 @@
         "WORKFLOW_UPDATE_PR_TITLE",
         "MAX_RETRIES",
         "DISPATCH_DELAY_SECONDS",
-        "NOT_REGISTERED_DELAY_SECONDS",
-        "QUEUE_BATCH_LIMIT",
-        "MAX_BODY",
         "SETUP_PR_BODY",
-        "ACTIVE_RUN_STATUSES",
-        "VERSION_CHANGES",
-        "changesSince",
-        "workflowUpdateBody",
-        "proposedVersion",
-        "FALLBACK_UPDATE_BODY",
-        "QueueMessage",
-        "Outcome",
-        "DONE",
-        "PathStyle",
-        "Deps",
-        "InfrastructureError",
-        "RepoRef",
-        "settingsUrl",
-        "withSettingsLink",
-        "errorStatus",
-        "errorMessage",
-        "retryAfterSeconds",
-        "retryDelay",
-        "failure",
-        "infrastructure",
-        "isProtectedBranchError",
-        "toBase64",
-        "fromBase64",
-        "realApiLogged",
-        "resetRealApiChecks",
-        "contentsRoute",
-        "logRealApiCheck",
-        "contentsRequest",
-        "readFile",
-        "writeWorkflowFile",
-        "createBranch",
-        "queueSetups",
-        "onRepositoriesRemoved",
-        "onInstallationDeleted",
-        "onSetupMerged"
+        "workflowUpdateBody"
       ],
       "level": "medium"
     },
@@ -182,7 +214,7 @@
       ]
     },
     "app/src/scheduler.ts": {
-      "hash": "sha256-5390627ab704a42756be0db42f28debfdf18ef229a35a02937dc4855c69f72dd",
+      "hash": "sha256-71eff1ec30e29d2b7d97577fac6835592ee8b4878114927daab11f87cf34e5f1",
       "summary": "The hourly cron.",
       "symbols": [
         "localHour",
@@ -208,67 +240,50 @@
       "level": "medium"
     },
     "app/src/settings.ts": {
-      "hash": "sha256-783fa080c720dbf26ef487711f3c80d4ea9d0925b8acb8b714cbc563d18cc0c1",
+      "hash": "sha256-cd05b6d44c70d1b777fbd0988c84e31bd1381974b8119bcaa5c4d7651f36333b",
       "summary": "Per-installation settings in Cloudflare KV.",
       "symbols": [
         "COMMENT_LEVELS",
         "CommentLevel",
         "EXISTING_CODE",
         "ExistingCode",
+        "PRIVATE_MINUTES",
+        "PrivateMinutes",
         "Settings",
         "Choices",
         "DEFAULT_SETTINGS",
         "ScheduleMetadata",
         "isValidTimeZone",
-        "isValidHour",
-        "isCommentLevel",
-        "isExistingCode"
+        "isValidHour"
       ],
-      "level": "medium"
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Validates if a given time zone is a valid string and within the allowed length.",
+          "anchor": "5611dce2cc66ade9"
+        },
+        {
+          "text": "// Validates if a given hour is an integer between 0 and 23.",
+          "anchor": "48af035f6c81e251"
+        }
+      ]
     },
     "app/src/setup.ts": {
-      "hash": "sha256-6fdc03f3b5d03297606d4577334eda62b36d676c91d841eb35e9ef731b82f226",
-      "summary": "This file contains setup functions and constants for the Docturnal app, including GitHub sign-in, installation management, and setup options. This file contains setup-related functions for a Docturnal application, including handling time zones, user sessions, and GitHub sign-in processes. This function handles the setup process for Docturnal installations. It checks for prefetch requests, validates user input, and manages sign-in and settings updates. Handles incoming requests for setup operations, routing them to appropriate handlers based on method.",
+      "hash": "sha256-4cd4c4534cfccded946094b3177286eba4fd992d4e8416d9ad12925c5b7fe207",
+      "summary": "The optional settings page at /setup.",
       "symbols": [
+        "SESSION_COOKIE",
         "SetupEnv",
         "SetupOptions",
-        "Session",
-        "EXISTING_CODE_CHOICES",
-        "LEVEL_DESCRIPTIONS",
-        "exchangeCode",
-        "revokeToken",
-        "findUserInstallation",
-        "mayManage",
-        "escape",
+        "MAX_VERSION_CHECKS",
         "formatHour",
-        "timeZones",
-        "describe",
-        "STYLE",
-        "nonce",
         "contentSecurityPolicy",
-        "page",
-        "errorPage",
-        "signInFailedPage",
-        "updateSection",
-        "formPage",
-        "cookieValue",
-        "sessionCookie",
         "readSession",
         "createSession",
-        "signInRedirect",
-        "handleGet",
-        "setup",
-        "sameOriginPost",
-        "handlePost",
-        "updateWorkflows",
-        "saveDetectedTimeZone",
-        "json",
+        "handleSetup",
         "olderWorkflows",
-        "SettingsStore",
-        "Choices",
-        "DEFAULT_SETTINGS",
-        "WORKFLOW_VERSION",
-        "handleSetup"
+        "exchangeCode",
+        "revokeToken"
       ],
       "level": "medium",
       "comments": [
@@ -295,11 +310,15 @@
         {
           "text": "// Handles POST requests to update settings or manage workflows.",
           "anchor": "d561956029b3d848"
+        },
+        {
+          "text": "// Handles setup requests, returning GET or POST responses, or 405 Method Not Allowed",
+          "anchor": "618aab8857aa36e6"
         }
       ]
     },
     "app/src/workflow.ts": {
-      "hash": "sha256-f5daf56e4fa6a679ebe7e12b9df1c45a1cb8ec6c1bd952e68c3c4b63dc2eae27",
+      "hash": "sha256-877f910fcccb9878520201937f8cec998ffcc766b17210ab4c0eadf982e7d50b",
       "summary": "The workflow file the app commits to each repository.",
       "symbols": [
         "WORKFLOW_PATH",
@@ -310,15 +329,27 @@
         "templateVersion",
         "usesDocturnal"
       ],
-      "level": "medium"
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns a YAML string for the Docturnal workflow, including settings and permissions.",
+          "anchor": "6e337e48af5bd8c9"
+        }
+      ]
     },
     "app/tests/fake-kv.ts": {
-      "hash": "sha256-0ac9ec9f376d5402e9f524e4ddb087aca35ff95d05c61247c2bdf6fec1874433",
+      "hash": "sha256-6e42269b589ee2e901e68e0991db3a3330b0d7e40fd67151d73538d81418cda3",
       "summary": "An in-memory Workers KV namespace for tests, with key metadata and paged listing.",
       "symbols": [
         "FakeKV"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns a paginated list of keys from the FakeKV store, filtered by prefix and sorted.",
+          "anchor": "15a4a072ecfdb13f"
+        }
+      ]
     },
     "app/tests/fake-queue.ts": {
       "hash": "sha256-2644616912942109b12438bd1cb346f59ac1617233f98511133c351824d91903",
@@ -335,7 +366,7 @@
         "createMockGitHub",
         "argValue"
       ],
-      "level": null
+      "level": "medium"
     },
     "app/tests/pkcs8.spec.ts": {
       "hash": "sha256-2865ca34fa8fcfd352a89f6a4985faf034da9c5f53ba668dc39104572103a4ab",
@@ -354,39 +385,11 @@
       "level": null
     },
     "app/tests/setup.spec.ts": {
-      "hash": "sha256-95553d970693b9c1b9275bc7681c8c94b721ceae13e6924668ecc7d95ad784d2",
-      "summary": "This file sets up a testing environment for the application, including mock data, handlers, and setup functions for testing various scenarios. This file contains tests for various security features and settings of the Docturnal application, including sign-in, time zone saving, and settings management. These tests cover various aspects of the setup process, including user authentication, session management, and error handling during the sign-in process. These tests cover various scenarios related to the setup process, including handling signed-in sessions, GitHub installation checks, and workflow updates.",
+      "hash": "sha256-1f39f36c078ee77b9b6eaf7a21cf96f9ce8404cf3541bf0e62d402b143a98ae4",
+      "summary": "Defines setup and runPageScript",
       "symbols": [
         "setup",
-        "createHandler",
-        "FakeKV",
-        "FakeQueue",
-        "createMockGitHub",
-        "ORIGIN",
-        "PEM",
-        "ACME",
-        "START",
-        "fetchWithFailures",
-        "sleep",
-        "handle",
-        "get",
-        "post",
-        "signIn",
-        "advance",
-        "authorizeState",
-        "workflowYaml",
-        "WORKFLOW_PATH",
-        "WORKFLOW_VERSION",
-        "MAX_VERSION_CHECKS",
-        "UPDATE",
-        "cookie",
-        "csrf",
-        "form",
-        "t",
-        "response",
-        "page",
-        "queue",
-        "logs"
+        "runPageScript"
       ],
       "level": "medium",
       "comments": [
@@ -405,59 +408,13 @@
       ]
     },
     "app/tests/webhook.spec.ts": {
-      "hash": "sha256-babcfcd5d7326cbc510cdcd268f71b6713c658f5adc5c176b629da7ed339526e",
-      "summary": "This file contains unit tests for the webhook handler in the Docturnal project, focusing on signature validation, installation setup, and cron job execution. These tests cover various scenarios related to webhook deliveries, settings management, and nightly runs in the Docturnal GitHub app. This file contains tests for the webhook functionality of the Docturnal project, covering various scenarios such as dispatching workflows, handling setup pull requests, and managing branch cleanup. This file contains tests for the Docturnal GitHub Actions workflow, including scenarios for handling long last-run.md files, ignoring pushes by non-bot users, logging failed pull request calls, and testing the workflow template and versions. This test suite covers various scenarios related to the nightly run process, including handling pull requests, managing declined updates, and ensuring the correct behavior of the GitHub API version. Tests that a pull request body includes a warning when the repository",
+      "hash": "sha256-650a197210681f020efdf9eba60c1b8380bef6a78eeca4898cb4a838004a6a7e",
+      "summary": "Defines sign, setup, installation, pushToUpdate",
       "symbols": [
-        "createHandler",
-        "createQueueHandler",
-        "createScheduledHandler",
-        "type Env",
-        "SettingsStore",
-        "createSession",
-        "SESSION_COOKIE",
-        "WORKFLOW_PATH",
-        "WORKFLOW_VERSION",
-        "isOldTemplate",
-        "templateVersion",
-        "workflowYaml",
-        "FakeKV",
-        "FakeQueue",
-        "createMockGitHub",
-        "SECRET",
-        "generateKeyPairSync",
-        "createHmac",
         "sign",
         "setup",
-        "mockOptions",
-        "envOverrides",
-        "gh",
-        "queue",
-        "kv",
-        "logs",
-        "env",
-        "deliver",
-        "drain",
-        "cron",
         "installation",
-        "repos",
-        "id",
-        "action",
-        "account",
-        "login",
-        "repositories",
-        "sender",
-        "ref",
-        "deleted",
-        "repository",
-        "medium",
-        "current",
-        "beforeEach",
-        "describe",
-        "it",
-        "expect",
-        "401",
-        "rejects a bad signature",
-        "rejects a missing signature"
+        "pushToUpdate"
       ],
       "level": "medium",
       "comments": [
@@ -557,17 +514,17 @@
         "codeUnder",
         "parseVerdicts"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/analyze.js": {
-      "hash": "sha256-9b62cf196533055d870514e9f8a611972b22559c9585494b023e735132763273",
-      "summary": "Analyzes lines of code to determine per-line facts.",
+      "hash": "sha256-967bda3f2ce4fc92c329d501493085daad2d663ec1272a27dc149ad7455dc3da",
+      "summary": "Analyzes lines and provides line indices and token matches.",
       "symbols": [
         "analyzeLines",
+        "lineIndexAt",
         "lineStarts",
         "matchToken",
         "splitLines",
-        "lineIndexAt",
         "baseInfo",
         "setSymbol",
         "genericSymbol",
@@ -576,19 +533,50 @@
         "isFunctionLike",
         "isRequireCall"
       ],
-      "level": null
+      "level": null,
+      "comments": [
+        {
+          "text": "// Calculates the starting positions of each line in a list of lines.",
+          "anchor": "add3c46cb08bb0bb"
+        },
+        {
+          "text": "// Returns an array of objects with information about each line in the input array.",
+          "anchor": "a09d07a1555650f8"
+        },
+        {
+          "text": "// Unwraps nested parentheses, as expressions, and type assertions from a given node.",
+          "anchor": "b1be0fd09c8f5a73"
+        },
+        {
+          "text": "// Determines if a node is a call to the 'require' function after unwrapping expressions.",
+          "anchor": "7f152d456565db80"
+        },
+        {
+          "text": "// Analyzes TypeScript code to identify import statements and function declarations.",
+          "anchor": "0fc8dc264f0574fa"
+        },
+        {
+          "text": "// Analyzes Python code lines, checks for bare CR line\n// endings, and processes syntax and structure information.",
+          "anchor": "d7ef658017a2dc93"
+        },
+        {
+          "text": "// Matches a token at the current position in the text, considering spaces before tokens.",
+          "anchor": "f02fd379d17e2df3"
+        }
+      ]
     },
     "src/apply.js": {
-      "hash": "sha256-02b240fbd2e492314854364ea193e0558b2f0d21127cdb3b753d7eb19a1c1d4c",
-      "summary": "Applies the results of a run and writes them to the state.",
+      "hash": "sha256-e3539e4f69a2a6b8540d27799a9a308aac93f2922726af9aa11a3b36ade8e69f",
+      "summary": "Applies changes and merges state, writing results.",
       "symbols": [
-        "applyRun"
+        "applyRun",
+        "docsLeft"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/changes.js": {
-      "hash": "sha256-71cee1ada10abc3c0741b98abf89f6e83e0371e475e496046679689cd2f4ee33",
-      "summary": "Manages changes and files to be covered.",
+      "hash": "sha256-6430e2805c8c3bcfa3ef8354488531d5953332b0534633292eb038f5f6903bef",
+      "summary": "Manages changes, docs, and git state.",
       "symbols": [
         "docExists",
         "docsDone",
@@ -609,26 +597,32 @@
         "clusterFiles",
         "nameWords"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/comments.js": {
-      "hash": "sha256-ff7965243d7c935c1a0f26eef08830a21ed27ba3dcda9c39ac6079c7c0d4d6da",
+      "hash": "sha256-c3bdb323bdc3859179c55d029ce30239c6bc2bde31eb119fce94f5e51a92a0c1",
       "summary": "The comment engine.",
       "symbols": [
-        "ANCHOR_FIXES",
-        "ANCHOR_MISSES",
         "CATEGORY",
         "LEVELS",
-        "MAX_PROPOSALS",
+        "MAX_EXCERPT_LINES",
+        "MAX_TARGETS_PER_REQUEST",
+        "PER_RUN",
         "REPLY_CAUSES",
-        "RESPONSE_SCHEMA",
-        "anchorSummary",
+        "TARGET_SCHEMA",
         "applyProposals",
-        "buildWindows",
+        "buildTargetRequests",
         "checkComments",
-        "checkRequests"
+        "checkRequests",
+        "chooseTargets"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns an object containing the rendered text and an array of inserted line numbers.",
+          "anchor": "1a3894b8479cd051"
+        }
+      ]
     },
     "src/config.js": {
       "hash": "sha256-92705ee30e83f4de9b19e1bf0286070d058a87159fb38b13c0c24f9cf1da889e",
@@ -659,10 +653,10 @@
         "scanScript",
         "scanOther"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/docs.js": {
-      "hash": "sha256-0d3178dafb6c466ecf57539af11c7b11556f3973036f1ac9bf9b22cabd6a7a2a",
+      "hash": "sha256-e7defc1ff23767feb77414ea8b99b9b28586622c0cc5a8859e62014be883ae7e",
       "summary": "The docs generator for the layer docs in docs/.",
       "symbols": [
         "DOC_PROMPT_CHARS",
@@ -678,7 +672,17 @@
         "completeReply",
         "cutToComplete"
       ],
-      "level": null
+      "level": null,
+      "comments": [
+        {
+          "text": "// Returns a cleaned document by first cleaning the Markdown content and then finalizing it.",
+          "anchor": "a97699183b0d271c"
+        },
+        {
+          "text": "// Calculates the character budget based on the number of context tokens.",
+          "anchor": "b37518d3fdbcfe2c"
+        }
+      ]
     },
     "src/folders.js": {
       "hash": "sha256-76f498fc6519a7065fe4699c3f52c64f49d598adc376b1d71a1de6035e43b59a",
@@ -700,7 +704,7 @@
       "level": null
     },
     "src/git.js": {
-      "hash": "sha256-f5380d1b26bf474eec30003d41ee231fdb0e09691c7479622e3435048b4d3109",
+      "hash": "sha256-9336b541f68b82eaa0bf434067cc78d41a56feeab6099474006e3e06035c9262",
       "summary": "Git operations for the Action.",
       "symbols": [
         "BaseBranchError",
@@ -710,13 +714,13 @@
         "IGNORE_FILE",
         "UPDATE_BRANCH",
         "commitAndPush",
+        "isPrivateRepository",
         "listFiles",
         "mergedSince",
         "prepareBranch",
-        "recentActivity",
-        "git"
+        "recentActivity"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/grounding.js": {
       "hash": "sha256-8072f566fc11fa0cd4734cabe9543bbe132094545baba8b39275b8f3399f7cb0",
@@ -735,25 +739,27 @@
         "wordCount",
         "sentences"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/importance.js": {
-      "hash": "sha256-4b604170dcaf5c01924fcd86e8b122df5ee3e5a87323809bf5401dd585a7e33a",
-      "summary": "Orders existing code by importance.",
+      "hash": "sha256-404da23d4bcc253f47bff3952a2a055fe404de990f04fde36aff74ea5f036f7c",
+      "summary": "Orders files based on complexity and import specifiers.",
       "symbols": [
         "complexity",
         "importSpecifiers",
+        "importersOf",
         "isEntryPoint",
+        "nameUsage",
         "packageEntries",
         "rankFiles",
         "resolveImport",
         "selectBatch"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/install-ollama.js": {
-      "hash": "sha256-7ba978a8b2fed6e7050177317d2271ac627aa48dfd2a67d47eed11fcc325ca6c",
-      "summary": "Installs the Ollama release for the project.",
+      "hash": "sha256-6e5a56b680d9f40eca6e698f8ae42b10e7336def2bd8615575e4a52c9f177523",
+      "summary": "Installs the Ollama release.",
       "symbols": [
         "InstallError",
         "checkInstall",
@@ -765,10 +771,26 @@
         "extractArchive",
         "main"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Checks if the symbolic link points to the correct file in the archive.",
+          "anchor": "6fafe6d10c7c341b"
+        }
+      ]
+    },
+    "src/internal-error.js": {
+      "hash": "sha256-14189e965fd32a8f893511e1745ad3bc1047cdabf2ebe63d7066054b7f0ae328",
+      "summary": "An unexpected error while working on one file or one document skips only that file or document for this run.",
+      "symbols": [
+        "INTERNAL_ERROR",
+        "describeInternal",
+        "internalErrorLine"
+      ],
+      "level": "medium"
     },
     "src/languages.js": {
-      "hash": "sha256-8c991d7311efea6aecfe1328efc42d33d4d7907461793569f4e546c54064b810",
+      "hash": "sha256-bf620ce00a8aaf825021bb9c0418e8183b3972d3e72b34d4b62e2399770a3634",
       "summary": "The language table, plus the rules that decide whether a file is commented, only read for docs, or skipped.",
       "symbols": [
         "LANGUAGES",
@@ -784,10 +806,16 @@
         "globToRegExp",
         "isBinary"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns the language object by its ID, or null if not found.",
+          "anchor": "e002b6c6cf65a784"
+        }
+      ]
     },
     "src/layers.js": {
-      "hash": "sha256-4eace565fad9b65955eb702bf1f5dd5c59b21f66ff744dc516028082ad9e149d",
+      "hash": "sha256-c76c88eac898cabe75609a71dc682b7fa075a19d86836a27c4555329557407be",
       "summary": "Architecture layers grounded in the project's real folders.",
       "symbols": [
         "GENERIC_NAMES",
@@ -803,7 +831,7 @@
         "partDescription",
         "planGroundedLayers"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/links.js": {
       "hash": "sha256-542b756aa5616c410f948fd3464b3c0621021906b824fee27bdf2b88b7e4ef3a",
@@ -835,7 +863,7 @@
       "level": "medium"
     },
     "src/models.js": {
-      "hash": "sha256-a30749e3f2c1d2f1523ddf546b34cdb5d4768520cdf40a8cd164c96abe8aa539",
+      "hash": "sha256-508e1ef4829025f29602c5a9f8fa7ebf879aeaca628cd58475f95981902b3a10",
       "summary": "Picks the Ollama models for this run.",
       "symbols": [
         "COMMENT_MODEL",
@@ -850,7 +878,21 @@
         "isAuto",
         "main"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Formats a summary string for the selected models.",
+          "anchor": "b30fce7b4f8be012"
+        },
+        {
+          "text": "// Writes model selection details to a specified GitHub output file.",
+          "anchor": "d75ca0dd7c96737c"
+        },
+        {
+          "text": "// Runs the main logic to select and format models\n// based on environment variables and writes outputs.",
+          "anchor": "265d41ded63e9d0c"
+        }
+      ]
     },
     "src/ollama.js": {
       "hash": "sha256-ac4cb96d67ab68563002ac6480d06208e82bb0b5078ace7e8ae049fe925b32c4",
@@ -863,7 +905,15 @@
         "loggedChat",
         "request"
       ],
-      "level": null
+      "level": "medium"
+    },
+    "src/own.js": {
+      "hash": "sha256-cff01543585adf614b6317c541c52286839d729d5feecbd9e3850b31dc8334ed",
+      "summary": "Lookups keyed by words from code, file and folder names, README text, or model output.",
+      "symbols": [
+        "own"
+      ],
+      "level": "medium"
     },
     "src/owned.js": {
       "hash": "sha256-37e7b7a40878bdba40af1cc539cfa61b8e7d5bfa58e80e501601baa6c454b30e",
@@ -878,7 +928,7 @@
       "level": null
     },
     "src/parts.js": {
-      "hash": "sha256-6f511637d2bb33c788d298ffddb1021ea4bfe9dd1cd2c0965c5908745b211eea",
+      "hash": "sha256-c69f4455d1f8c5b14a4e4800f1ba66060767b2c2f3daf21ee9d06f04c719bd8f",
       "summary": "The top-level parts of a large project, and the documents each part gets.",
       "symbols": [
         "FOLDER_WORDS",
@@ -894,7 +944,7 @@
         "isTestFile",
         "packageTitle"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/precheck.js": {
       "hash": "sha256-ab3ef3f07ea7120ca25fb242fcff9c8b044f86ed7c1cb3f56899d6c663d88e3e",
@@ -904,11 +954,11 @@
         "plural",
         "writeOutputs"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/process.js": {
-      "hash": "sha256-578552b3bba8124ab380fb645632fbdd4b7f1170e05afd9fad70dfbb7b666292",
-      "summary": "Exports and uses constants and functions related to document processing.",
+      "hash": "sha256-885e26935953c607d1d2bc3c4dd6d644445f033cf385ecd744294ef4fd528780",
+      "summary": "Manages comment processing and deadlines.",
       "symbols": [
         "DOCS_PASS_RESERVE_MINUTES",
         "DOCS_RESERVE_MINUTES",
@@ -917,38 +967,56 @@
         "docsReserveMinutes",
         "docsToRewrite",
         "processItems",
-        "fileTokens",
         "timing"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/python-helper.py": {
-      "hash": "sha256-f0cf70e1d32f5edf1683b5126176196ef4847497a603a4b9d4d89c2d4ba2c4b9",
+      "hash": "sha256-387342245b9aca10b3c626cdf77730e10446c809a0fcc55a9be9779c249c2496",
       "summary": "Analyzes and verifies Python source for Docturnal.",
       "symbols": [
         "analyze",
         "dump",
         "env_names",
+        "targets",
         "verify",
         "main",
-        "_dotted"
+        "_dotted",
+        "_head",
+        "_features",
+        "starts_line",
+        "visit"
       ],
-      "level": null
+      "level": null,
+      "comments": [
+        {
+          "text": "# Dumps the AST of the given Python source code.",
+          "anchor": "79fbf01b579c9300"
+        },
+        {
+          "text": "# Verifies if the candidates match the expected AST of the original source code.",
+          "anchor": "34bc30085c1a4919"
+        },
+        {
+          "text": "# Processes JSON input from stdin, determines mode, and returns response.",
+          "anchor": "2c4c5b0ebed3de9b"
+        }
+      ]
     },
     "src/python.js": {
-      "hash": "sha256-1900d7095369103fd637939f182e83c85196dc2c54277c4273cd2452e391c713",
+      "hash": "sha256-0f2164eaf5708cece525b03d4d8e1d24c45084b98908482d9afd640f2caaaac8",
       "summary": "Runs src/python-helper.py with python3 to analyze and verify Python source.",
       "symbols": [
         "analyzePython",
         "findPython",
         "pythonEnvNames",
-        "verifyPython",
-        "runHelper"
+        "runHelper",
+        "verifyPython"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/readme.js": {
-      "hash": "sha256-17b21518484fd6b6df9f4f8b7c6198f27f4172c0e93d7d07c0788148157d39e0",
+      "hash": "sha256-0f6350e37802c41957457e903961fa8ab4b4022db4b6eab22f8ffe95e3859f57",
       "summary": "The repository's README.md, the main document.",
       "symbols": [
         "readmeIsPlain",
@@ -964,16 +1032,10 @@
         "renderBlock",
         "sectionHash"
       ],
-      "level": "medium",
-      "comments": [
-        {
-          "text": "// It initializes a pending variable to track any pending operations.",
-          "anchor": "c9d44fda42540c9d"
-        }
-      ]
+      "level": "medium"
     },
     "src/report.js": {
-      "hash": "sha256-87b1cefa84a1d4922d8c68e0ad4d37cf98da85bcc01b488db7a5b27a15cde4f4",
+      "hash": "sha256-9d31f16beae821618429bf3234c1a2ebd78cd6150c18dd151814479f72f78dbf",
       "summary": "Builds .docturnal/last-run.md, which the GitHub App uses as the pull request description.",
       "symbols": [
         "DOCS_TITLE",
@@ -989,19 +1051,27 @@
         "shortReason",
         "listOf"
       ],
-      "level": "medium"
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns a plain text version of the input, replacing special characters and URLs.",
+          "anchor": "e5fea090f715eabd"
+        }
+      ]
     },
     "src/restates.js": {
-      "hash": "sha256-cbbc325f53c7082452d3232875198167a6827913316404232bb252d024f89af3",
+      "hash": "sha256-052320cedbbcc080ea26daabbaf4741f42298e9285b3cf17aad1366003f3b3c4",
       "summary": "A deterministic check for comments that only restate the code under them.",
       "symbols": [
         "RESTATES_AT",
+        "onlyItsName",
         "restatement",
         "restates",
         "stem",
-        "words"
+        "words",
+        "narratesDeclaration"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/safe-path.js": {
       "hash": "sha256-75cb0c314d5334a3585ba6d612eda40b7d870da32a4eb32ebb275ddd488e1681",
@@ -1027,11 +1097,11 @@
         "splitTokens",
         "quoted"
       ],
-      "level": null
+      "level": "medium"
     },
     "src/state.js": {
-      "hash": "sha256-a06337606c891f25e60f021125cf80852e527cc86f40160d394d6235fcfe5319",
-      "summary": "Reads and writes state information for the project.",
+      "hash": "sha256-7d7062b40bf5a1c87289e555e5ae8240f8a6d53d2d568bd89d3ab864feb50c19",
+      "summary": "Reads and writes state files.",
       "symbols": [
         "LAST_RUN_PATH",
         "STATE_PATH",
@@ -1064,8 +1134,27 @@
       ],
       "level": null
     },
+    "src/targets.js": {
+      "hash": "sha256-5c915bf1e26112c9eaa3e67bddbbc6d41ffe2feb6e77782e65bf9b3179b3bdf0",
+      "summary": "Where comments go, chosen by code before any model is asked.",
+      "symbols": [
+        "FEATURE_SCORES",
+        "LOW_LINES",
+        "MEDIUM_BLOCK_SCORE",
+        "MEDIUM_LINES",
+        "describeFeatures",
+        "parsedTargets",
+        "emptyFeatures",
+        "isNumberLiteral",
+        "namesANumber",
+        "scriptFeatures",
+        "scriptTargets",
+        "pythonTargets"
+      ],
+      "level": "medium"
+    },
     "src/verify-models.js": {
-      "hash": "sha256-361259721253ccdfb852bcd5abf5c6debe17406e65e6b21ca30b1098a77a67ec",
+      "hash": "sha256-75ad085395dfa144f9b1ae83dd136dea0b96157adb47a472ebbbcbf18f1a1713",
       "summary": "Checks each pulled model against pins/models.json before any code reaches it.",
       "symbols": [
         "ModelDigestError",
@@ -1079,7 +1168,13 @@
         "manifestPath",
         "describe"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Reads pins data from a file, returning parsed JSON.",
+          "anchor": "2860af99dd1febb2"
+        }
+      ]
     },
     "src/verify.js": {
       "hash": "sha256-0551a023ff3f8d7f898adb955da721d0d941fa3c5c79f13c465d2a90b1e71034",
@@ -1093,7 +1188,7 @@
         "shape",
         "makeTypeScriptChecker"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/action-steps.test.js": {
       "hash": "sha256-6a0b956fa9f4865a196d4cf3640b7c4e86f4bc3d4a11cee95f7a288d4edddcbd",
@@ -1103,14 +1198,6 @@
         "evaluate",
         "running",
         "names"
-      ],
-      "level": null
-    },
-    "test/anchors.test.js": {
-      "hash": "sha256-40ca1ecf66a06f045a9e3d1c199bef98bdfd0f06accf579184e5d700cd02c127",
-      "summary": "Anchors as a small model",
-      "symbols": [
-        "lineOf"
       ],
       "level": null
     },
@@ -1129,21 +1216,31 @@
       "level": null
     },
     "test/check-run.test.js": {
-      "hash": "sha256-bf8bf54d04b2bf871ec4b4e0de57d32d7578c68860111d4694875da2835c08db",
-      "summary": "Defines onCheck, adds comments, git, drop connection, run main, edit payroll",
+      "hash": "sha256-839c5b223df1376fa185b25f5ce4f8b96eed1cad1abf6c9e6ed0d6ca650bb6da",
+      "summary": "Defines functions for checking, rewriting, and running code.",
       "symbols": [
         "onCheck",
-        "addComments",
+        "rewrite",
         "git",
         "dropConnection",
         "runMain",
         "editPayroll"
       ],
-      "level": null
+      "level": "medium"
+    },
+    "test/comment-cost.test.js": {
+      "hash": "sha256-0ad554505c49f7e0d2dfa3d2d9ec208ccc62e8c20416cd64a4274b685e2974af",
+      "summary": "Tests the cost of comments in the codebase.",
+      "symbols": [
+        "night",
+        "batchNight",
+        "added"
+      ],
+      "level": "medium"
     },
     "test/comments.test.js": {
-      "hash": "sha256-41d18d860ecddd919e828116666669cb53a930fc94f58575074e835db1ffc931",
-      "summary": "Const test = require('node:test');",
+      "hash": "sha256-d498734a893c470e392893c8b2d9be29fc5838e0e0983067206d00d1dcd5622f",
+      "summary": "Defines and tests comment-related functions.",
       "symbols": [
         "lang",
         "source",
@@ -1159,8 +1256,8 @@
       "level": null
     },
     "test/coverage.test.js": {
-      "hash": "sha256-a21704aa0a64aca11d053dec0494e8f7c840681ee0c7dd75acb4e5a57f2d6a91",
-      "summary": "How Does Docturna handle changes for a specific rank name",
+      "hash": "sha256-afc33c0caa6f7b95dfc9f4c8fd86ad586f0db7f26e58c869b94b76ddc120f480",
+      "summary": "Tests the code coverage of the project.",
       "symbols": [
         "changesFor",
         "rankByName",
@@ -1169,7 +1266,16 @@
         "runMain",
         "fn"
       ],
-      "level": null
+      "level": "medium"
+    },
+    "test/declarations.test.js": {
+      "hash": "sha256-c218b4098611395999a508ebdbb6a2b9fe4c8edbae5f0747b7b5ba04720d24a6",
+      "summary": "Tests the declaration-related functions.",
+      "symbols": [
+        "useless",
+        "run"
+      ],
+      "level": "medium"
     },
     "test/docs.test.js": {
       "hash": "sha256-a3a8d3943e1afb1d1d1a7843ff6493bdb05d1a6a2b15126194d2ee80097286f7",
@@ -1182,7 +1288,7 @@
       "level": null
     },
     "test/e2e.sh": {
-      "hash": "sha256-f52a531474971d0e95cc5735cabe29b1c75ff071915b821f573354456484dd04",
+      "hash": "sha256-c54c0fc99f3442422090e90711596a73cd5f71b1b55f51921fa6fe815e1dfb26",
       "summary": "End-to-end test for the Action.",
       "symbols": [
         "getUser",
@@ -1191,9 +1297,10 @@
         "connect",
         "disconnect",
         "deleteUser",
+        "LassoTrail",
         "slugify"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/edges.test.js": {
       "hash": "sha256-c5ce20bcc50e6dec0bb4318f95c42d4d5bbfb7a26a0629845dfbf073033204e2",
@@ -1204,6 +1311,18 @@
         "commentRequests"
       ],
       "level": null
+    },
+    "test/excalidraw-files.js": {
+      "hash": "sha256-7e21479cce9442c3fabb3ec32578868b4f40c7c1756172bcc108b1cdd97ee6c5",
+      "summary": "Exports files related to the excalidraw fork.",
+      "symbols": [
+        "FILES",
+        "excalidrawFiles",
+        "pascal",
+        "COMPONENT",
+        "fileText"
+      ],
+      "level": "medium"
     },
     "test/excalidraw-like.js": {
       "hash": "sha256-ba8b49fc566e3eedf7eab426c6e3676980c93271ad3d7e346ba8808db2859c6f",
@@ -1231,27 +1350,28 @@
         "gitRepo",
         "runAction"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/heavy.test.js": {
-      "hash": "sha256-62f239e21193dd26d188b46beff5737b5717d72f2ecce91000623fe099fdd680",
-      "summary": "Heavy level: a block comment above",
+      "hash": "sha256-6bde84ed953107d85eb4da7f401dea9f27392035c91d07f49a267f84d66db2ba",
+      "summary": "Tests heavy-level functions.",
       "symbols": [
         "lineOf",
         "hasBlockAbove",
-        "firstPassHandler"
+        "describe",
+        "without"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/helpers.js": {
-      "hash": "sha256-81ec07e4428a3d5f84565c676fe3d0c5dc93cd0762bf38f058227d2b957a6c06",
+      "hash": "sha256-111c0c2564e5760142bb3d700eabcf3c85b56aecbc06845994aa3990412a93d2",
       "summary": "Shared test helpers.",
       "symbols": [
-        "applyAnchored",
         "withAccuracy",
-        "withAnchor"
+        "writing",
+        "writingByCode"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/ignore.test.js": {
       "hash": "sha256-6d1cdb310d17b544a0749fba37edf799d47f6e72a2ac0f70d8f7dcf174cbcc9b",
@@ -1261,28 +1381,45 @@
       ],
       "level": null
     },
+    "test/internal-errors.test.js": {
+      "hash": "sha256-367d06df4a3e975f16c27800082ff2990d54811e8bc6dbcb853d6443142ffefb",
+      "summary": "Tests internal error handling.",
+      "symbols": [
+        "moduleText",
+        "project",
+        "night",
+        "throwingFor"
+      ],
+      "level": "medium"
+    },
     "test/mock-ollama.js": {
-      "hash": "sha256-1e55f70b47e497a3010ec58a83cc1cb60498b99ed83eae254bd297e51a6baa07",
+      "hash": "sha256-cf5fff74b30a8cfc62b855f60f87720c226bccd7d165b138f63add1f38f7df46",
       "summary": "A stand-in for the Ollama HTTP API.",
       "symbols": [
         "OOM_MESSAGE",
         "accuracyReply",
-        "blocksReply",
+        "commentsReply",
         "cutOff",
         "defaultHandler",
         "kindOf",
         "startMockOllama",
+        "targetsOf",
         "MockError",
         "promptOf",
         "folderReply",
-        "commentsReply",
-        "layersReply"
+        "defaultText"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Returns the kind of Ollama model based on its properties and prompt.",
+          "anchor": "417314d6afdb6377"
+        }
+      ]
     },
     "test/model-split.test.js": {
-      "hash": "sha256-71a43248f5c6340488b0b4f3cac2ff6b4e78ed1f95f366fe25c6ab25b7bf089e",
-      "summary": "Tests splitting models and reading repositories",
+      "hash": "sha256-0b3f1ae9d4c2dab79fa691ffb109c58a5db1c342cedfdb535400cf4517779da6",
+      "summary": "Tests the model splitting process.",
       "symbols": [
         "readRepo",
         "leadingPurpose",
@@ -1296,7 +1433,7 @@
         "broken",
         "move"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/models.test.js": {
       "hash": "sha256-8eb0d0bfa16daaf9ef2ac5ed6a9e88a59e7e35ae13176f9594a24999d2785677",
@@ -1307,14 +1444,14 @@
       "level": null
     },
     "test/nightly.test.js": {
-      "hash": "sha256-c59badd011636eed8519413a147ba734b2b40fb3b5420f46dcf9d22138960a5e",
+      "hash": "sha256-e250581f9cc49569eacb7bfde119f73729902d1d3b27b98d89fa97926d450ac9",
       "summary": "Nightly runs after the documentation pass, with model time simulated at the speeds calibrated from a real runner (see speed-model.js).",
       "symbols": [
         "moduleText",
         "project",
         "night"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/ollama.test.js": {
       "hash": "sha256-ef23d697b3575f6a2d400aa90e83fadb585657ddd6ad97461d54e826628dc3a9",
@@ -1325,16 +1462,15 @@
       "level": null
     },
     "test/ownership.test.js": {
-      "hash": "sha256-0b88251782e1eef95341245f34c8fc9a29d189009ce9048bcf233197ef045501",
-      "summary": "Tests the ownership of comments",
+      "hash": "sha256-1fc83df8a270c4b0badc732ba534e6c4d5101c10fc730960798c06317a746699",
+      "summary": "Tests the ownership-related functions.",
       "symbols": [
-        "firstPass",
         "handler",
         "run",
         "codeOnly",
         "above"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/parts.test.js": {
       "hash": "sha256-b265cf4d1fda67a7ba10bb5ab582f0abd982cb73254c2067b55d35a2136aa3c4",
@@ -1343,7 +1479,7 @@
         "ownerOf",
         "runOnce"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/precheck.test.js": {
       "hash": "sha256-80172bf8986202722c06681ad32ae7d21ce48a35bc8f7cbc3bee9d6404a7bf8c",
@@ -1358,13 +1494,20 @@
       "level": null
     },
     "test/proposals.test.js": {
-      "hash": "sha256-0bc14e315276699f2160852c6fc67263cd9a15501eeb1b43ba404c3173dad55f",
-      "summary": "Tests handling proposed comments",
+      "hash": "sha256-b5e485a713b70816f83c6d22bdcccff9ed4a26efade68d81f7234f97d3794111",
+      "summary": "Tests the parsing of invoice files into records.",
       "symbols": [
-        "line",
-        "at"
+        "line"
       ],
-      "level": null
+      "level": "medium"
+    },
+    "test/prototype-keys.test.js": {
+      "hash": "sha256-8a536e64742be1adc2772a765e1a3e82aa90adf5c1810e0f0db0c2197e9db70c",
+      "summary": "Tests the generation of words from code, file, and folder names.",
+      "symbols": [
+        "tmp"
+      ],
+      "level": "medium"
     },
     "test/quality.test.js": {
       "hash": "sha256-139709e5ede8cfc1b4db53d7ee5ff262583094d3ac1c49164976df22c6dbd0c1",
@@ -1389,23 +1532,33 @@
       "level": null
     },
     "test/replies.test.js": {
-      "hash": "sha256-421594b76e09a92219cd21b555aa857fb885ad19e27406f8759753bfc58030fc",
-      "summary": "Tests functions and recorder for request-reply pairs.",
+      "hash": "sha256-58a68811eec22a0e0a58d0de45b49474599c6bf505bcbedbf23c56763982205a",
+      "summary": "Tests the handling of comment requests and their replies.",
       "symbols": [
         "functions",
+        "names",
         "recorder",
-        "proposalsFor"
+        "answer"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/restates.test.js": {
-      "hash": "sha256-7ce59887c9d141ede4d9ec1098520f6358efc22787512722b37c1d83ac294473",
-      "summary": "Tests word-match filter for restate comments.",
+      "hash": "sha256-e58b3a42aae72ea6992c76cf0f0c4d9ebcbfeab7d33f0524632c14f757d65b31",
+      "summary": "Tests the word-match filter for new line comments.",
       "symbols": [
         "codeUnder",
         "proposal"
       ],
-      "level": null
+      "level": "medium"
+    },
+    "test/round-robin.test.js": {
+      "hash": "sha256-1f127f5e65b030c20445b74b2ab8b13d7740792a34ee04bf37d1821e30af2152",
+      "summary": "Tests the round-robin comment distribution.",
+      "symbols": [
+        "moduleText",
+        "run"
+      ],
+      "level": "medium"
     },
     "test/scale.test.js": {
       "hash": "sha256-5739c729242a67e3eb1646c371a9f2a5549ef81507f8362754f0aa3da24d3839",
@@ -1420,15 +1573,15 @@
       "level": null
     },
     "test/speed-model.js": {
-      "hash": "sha256-be031cd437fc4a8af5dabaa758e36f312fbc6a3884df786906b7ae9aa7bc2446",
-      "summary": "Exports simulated model time and chat.",
+      "hash": "sha256-c8af310163d0fdccba1016fb11091d0b4c1301036a27d7dfd7e01957b5481b1e",
+      "summary": "Tests the simulated model time.",
       "symbols": [
         "SPEEDS",
         "simulatedChat",
         "promptOf",
         "answerTokens"
       ],
-      "level": null
+      "level": "medium"
     },
     "test/supply-chain.test.js": {
       "hash": "sha256-173ef0fa695eb4cd7716a02d8678b543c0318e5f256b10ab9a98f4851eca0bb1",
@@ -1439,23 +1592,42 @@
       ],
       "level": null
     },
-    "test/usefulness.test.js": {
-      "hash": "sha256-fbb26fd098fe6a2a1ea921bec4d598db1d1e88512c65ff82086bdf92e4fe2d50",
-      "summary": "Tests proposal, judge, and usefulness check.",
+    "test/targets.test.js": {
+      "hash": "sha256-bc61cd2e3e60b6b08a886d21f74110ba7a20e522ab04350ff01fd45e5ccf74eb",
+      "summary": "Tests the comment targeting logic.",
       "symbols": [
-        "proposal",
+        "plan",
+        "linesOf",
+        "commentAbove"
+      ],
+      "level": "medium"
+    },
+    "test/usefulness.test.js": {
+      "hash": "sha256-8056840c9dc5f6c909665d6e12da9aa7f273c889da6ddd046bea41ad14c62098",
+      "summary": "Tests the usefulness check for new line comments.",
+      "symbols": [
         "judge",
         "run",
         "greedy"
       ],
-      "level": null
+      "level": "medium",
+      "comments": [
+        {
+          "text": "// Checks that the initial comment is dropped and the why comment is kept.",
+          "anchor": "f528257a9c120e16"
+        },
+        {
+          "text": "// Asserts that the report includes the correct file path, dropped count, and restates count.",
+          "anchor": "d2ddfd3e6de4293b"
+        }
+      ]
     }
   },
   "layers": [
     {
-      "name": "GitHub Integration",
-      "slug": "github-integration",
-      "description": "Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations.",
+      "name": "App Registration",
+      "slug": "app-registration",
+      "description": "Handles app registration and GitHub API interactions.",
       "files": [
         "app/scripts/pkcs8.mjs",
         "app/scripts/register.mjs",
@@ -1472,7 +1644,7 @@
     {
       "name": "Ollama Management",
       "slug": "ollama-management",
-      "description": "Manages Ollama releases and models, including hashing, updating model pinning, and computing checksums.",
+      "description": "Manages Ollama releases and models.",
       "files": [
         "scripts/archive-hashes.js",
         "scripts/update-models.js",
@@ -1491,14 +1663,15 @@
         "src/ollama.js",
         "src/precheck.js",
         "src/restates.js",
+        "src/targets.js",
         "src/verify-models.js",
         "src/verify.js"
       ]
     },
     {
-      "name": "Python Helper",
-      "slug": "python-helper",
-      "description": "Provides utilities and scripts for Python-related tasks.",
+      "name": "Python Integration",
+      "slug": "python-integration",
+      "description": "Handles Python-related tasks and structures.",
       "files": [
         "src/analyze.js",
         "src/folders.js",
@@ -1512,14 +1685,16 @@
     {
       "name": "Configuration and State Management",
       "slug": "configuration-and-state-management",
-      "description": "Manages application configuration and state, including links, reports, and safe paths.",
+      "description": "Manages application configuration and state.",
       "files": [
         "src/apply.js",
         "src/changes.js",
         "src/config.js",
         "src/git.js",
+        "src/languages.js",
         "src/links.js",
         "src/main.js",
+        "src/own.js",
         "src/owned.js",
         "src/readme.js",
         "src/report.js",
@@ -1530,13 +1705,13 @@
     {
       "name": "Documentation and Grounding",
       "slug": "documentation-and-grounding",
-      "description": "Handles documentation and grounding related tasks.",
+      "description": "The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says.",
       "files": [
         "src/clusters.js",
         "src/configuration.js",
         "src/docs.js",
         "src/grounding.js",
-        "src/languages.js",
+        "src/internal-error.js",
         "src/layers.js",
         "src/parts.js",
         "src/split.js"
@@ -1555,21 +1730,24 @@
         "app/tests/setup.spec.ts",
         "app/tests/webhook.spec.ts",
         "test/action-steps.test.js",
-        "test/anchors.test.js",
         "test/big-layers.test.js",
         "test/check-run.test.js",
+        "test/comment-cost.test.js",
         "test/comments.test.js",
         "test/config.test.js",
         "test/coverage.test.js",
+        "test/declarations.test.js",
         "test/docs.test.js",
         "test/e2e.sh",
         "test/edges.test.js",
+        "test/excalidraw-files.js",
         "test/excalidraw-like.js",
         "test/first-run.test.js",
         "test/git-repo.js",
         "test/heavy.test.js",
         "test/helpers.js",
         "test/ignore.test.js",
+        "test/internal-errors.test.js",
         "test/mock-ollama.js",
         "test/model-split.test.js",
         "test/models.test.js",
@@ -1579,22 +1757,25 @@
         "test/parts.test.js",
         "test/precheck.test.js",
         "test/proposals.test.js",
+        "test/prototype-keys.test.js",
         "test/quality.test.js",
         "test/readme.test.js",
         "test/replies.test.js",
         "test/restates.test.js",
+        "test/round-robin.test.js",
         "test/scale.test.js",
         "test/speed-model.js",
         "test/supply-chain.test.js",
+        "test/targets.test.js",
         "test/usefulness.test.js"
       ]
     }
   ],
   "docs": [
-    "github-integration",
+    "app-registration",
     "ollama-management",
     "model-verification",
-    "python-helper",
+    "python-integration",
     "configuration-and-state-management",
     "documentation-and-grounding",
     "tests"

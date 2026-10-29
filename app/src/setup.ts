@@ -663,6 +663,7 @@ async function saveDetectedTimeZone(store: SettingsStore, session: Session, time
   return json({ saved: true, timeZone, schedule: describe(saved) });
 }
 
+// Handles setup requests, returning GET or POST responses, or 405 Method Not Allowed
 export async function handleSetup(request: Request, env: SetupEnv, options: SetupOptions): Promise<Response> {
   if (request.method === 'GET') return handleGet(request, env, options);
   if (request.method === 'POST') return handlePost(request, env, options);

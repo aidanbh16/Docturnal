@@ -31,6 +31,7 @@ function code(text, { table = false } = {}) {
   return `${fence}${pad}${value}${pad}${fence}`;
 }
 
+// Returns a plain text version of the input, replacing special characters and URLs.
 function plainText(text) {
   return String(text)
     .replace(CONTROL, ' ')

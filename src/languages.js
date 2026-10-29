@@ -237,6 +237,7 @@ function languageForPath(filePath) {
   return BY_EXTENSION.get(extensionOf(filePath)) || null;
 }
 
+// Returns the language object by its ID, or null if not found.
 function languageById(id) {
   return BY_ID.get(id) || null;
 }

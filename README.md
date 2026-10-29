@@ -12,17 +12,17 @@ The models that write the comments and documents run on GitHub's own runner, ins
 
 ## Architecture
 
-The layers below work together to ensure that Docturnal functions correctly:
+Docturnal is built with a layered architecture to ensure modularity and scalability. Each layer handles specific tasks, making the system easier to manage and extend.
 
 <!-- docturnal:layers -->
 | Layer | Description |
 | --- | --- |
-| [GitHub Integration](docs/github-integration.md) | Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations. |
-| [Ollama Management](docs/ollama-management.md) | Manages Ollama releases and models, including hashing, updating model pinning, and computing checksums. |
+| [App Registration](docs/app-registration.md) | Handles app registration and GitHub API interactions. |
+| [Ollama Management](docs/ollama-management.md) | Manages Ollama releases and models. |
 | [Model Verification](docs/model-verification.md) | Verifies models and their configurations. |
-| [Python Helper](docs/python-helper.md) | Provides utilities and scripts for Python-related tasks. |
-| [Configuration and State Management](docs/configuration-and-state-management.md) | Manages application configuration and state, including links, reports, and safe paths. |
-| [Documentation and Grounding](docs/documentation-and-grounding.md) | Handles documentation and grounding related tasks. |
+| [Python Integration](docs/python-integration.md) | Handles Python-related tasks and structures. |
+| [Configuration and State Management](docs/configuration-and-state-management.md) | Manages application configuration and state. |
+| [Documentation and Grounding](docs/documentation-and-grounding.md) | The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says. |
 | [Tests](docs/tests.md) | This folder contains test files that define and verify various aspects of the project, including action steps, anchors, big layers, check runs, comments, configuration, coverage, documentation, end-to-end tests, edges, excalidraw-like project, first run, Git repository, heavy level, and test helpers. |
 <!-- /docturnal:layers -->
 

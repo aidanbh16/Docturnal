@@ -2,18 +2,14 @@
 
 # Documentation and Grounding
 
-Handles documentation and grounding related tasks.
-
-## Overview
-
-The Documentation and Grounding layer focuses on generating, managing, and maintaining documentation for the project.
+The docs generator for the layer docs in docs/, Architecture layers grounded in the project's real folders, and keeps a layer doc's prose to what its material says.
 
 ## Responsibilities
 
-- **Generating Documentation**: `docs.js` is responsible for generating the documentation for the project, using prompts and markers to ensure consistency.
-- **Grounding Layer Documentation**: `grounding.js` ensures that the documentation for each layer is grounded in the actual material, filtering out unnecessary sections.
-- **Managing Layers**: `layers.js` and `parts.js` manage the architecture layers and parts of the project, ensuring that documentation is generated for each relevant section.
-- **Splitting Files**: `split.js` divides files into smaller groups to make documentation more manageable.
+- **Documentation Generation**: Generates layer-specific documentation using the `docs.js` file.
+- **Layer Grounding**: Defines and manages the architecture layers grounded in the project's real folders using the `grounding.js` file.
+- **File Splitting**: Divides large files into smaller groups for better documentation with the `split.js` file.
+- **Cluster Management**: Splits files into clusters for documentation purposes with the `clusters.js` file.
 
 ## Key components
 
@@ -23,14 +19,16 @@ The Documentation and Grounding layer focuses on generating, managing, and maint
 | [`src/configuration.js`](../src/configuration.js) | A layer definition for configuration. | `actionInputs`, `configurationSection`, `layerConfiguration`, `scanFile`, `withoutComments`, `scanScript` |
 | [`src/docs.js`](../src/docs.js) | The docs generator for the layer docs in docs/. | `DOC_PROMPT_CHARS`, `MARKER`, `README_GENERATED`, `README_SECTIONS`, `STYLE_RULES`, `arrangeSections` |
 | [`src/grounding.js`](../src/grounding.js) | Keeps a layer doc's prose to what its material says. | `TERMS_PER_MISSING`, `MIN_OVERVIEW_WORDS`, `filterSection`, `folderOverview`, `groundSection`, `grounded` |
-| [`src/languages.js`](../src/languages.js) | The language table, plus the rules that decide whether a file is commented, only read for docs, or skipped. | `LANGUAGES`, `LEXER_TOKENS`, `LOCKFILES`, `MAX_FILE_BYTES`, `SKIP_DIRS`, `classifyFile` |
+| [`src/internal-error.js`](../src/internal-error.js) | An unexpected error while working on one file or one document skips only that file or document for this run. | `INTERNAL_ERROR`, `describeInternal`, `internalErrorLine` |
 | [`src/layers.js`](../src/layers.js) | Architecture layers grounded in the project's real folders. | `GENERIC_NAMES`, `LAYERS_SCHEMA`, `MAX_LAYERS`, `SPLIT_ABOVE`, `copiesPurpose`, `folderName` |
 | [`src/parts.js`](../src/parts.js) | The top-level parts of a large project, and the documents each part gets. | `FOLDER_WORDS`, `LARGE_PROJECT_FILES`, `MAX_DEPTH`, `MAX_SUBS`, `MAX_TOP_PARTS`, `MIN_SUB_FILES` |
 | [`src/split.js`](../src/split.js) | Divides files into smaller groups. | `MAX_MISSING_SHARE`, `SPLIT_SCHEMA`, `checkSplit`, `placeMissing`, `splitPrompt`, `splitWithModel` |
 
 ## How it works
 
-`grounding.js` filters out unnecessary sections from the generated documentation to keep it grounded in the actual material.
+- **`docs.js`**: This file is responsible for generating the documentation for each layer. It uses the `grounding.js` file to understand the project's architecture and the `clusters.js` file to split files into clusters.
+- **`grounding.js`**: This file defines and manages the architecture layers grounded in the project's real folders. It uses the `layers.js` file to define the layers and the `parts.js` file to determine the top-level parts of the project.
+- **`configuration.js`**: This file manages the configuration for the documentation process. It defines the action inputs, configuration sections, and layer configurations.
 
 ## Configuration
 
@@ -40,9 +38,9 @@ The Documentation and Grounding layer focuses on generating, managing, and maint
 ## Related layers
 
 - [Project README](../README.md): the overview of the whole project and every layer.
-- [GitHub Integration](github-integration.md): Handles GitHub API version, requests, tasks, sessions, and workflows for GitHub installations.
-- [Ollama Management](ollama-management.md): Manages Ollama releases and models, including hashing, updating model pinning, and computing checksums.
+- [App Registration](app-registration.md): Handles app registration and GitHub API interactions.
+- [Ollama Management](ollama-management.md): Manages Ollama releases and models.
 - [Model Verification](model-verification.md): Verifies models and their configurations.
-- [Python Helper](python-helper.md): Provides utilities and scripts for Python-related tasks.
-- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state, including links, reports, and safe paths.
+- [Python Integration](python-integration.md): Handles Python-related tasks and structures.
+- [Configuration and State Management](configuration-and-state-management.md): Manages application configuration and state.
 - [Tests](tests.md): This folder contains test files that define and verify various aspects of the project, including action steps, anchors, big layers, check runs, comments, configuration, coverage, documentation, end-to-end tests, edges, excalidraw-like project, first run, Git repository, heavy level, and test helpers.

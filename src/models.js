@@ -51,6 +51,7 @@ function selectModels({ totalMemoryBytes, model, docsModel }) {
   };
 }
 
+// Formats a summary string for the selected models.
 function formatSummary(selection) {
   const fallback = selection.docsMayFallback
     ? ` (may fall back to ${selection.fallbackDocsModel})`
@@ -59,6 +60,7 @@ function formatSummary(selection) {
     `comment model ${selection.commentModel}, docs model ${selection.docsModel}${fallback}`;
 }
 
+// Writes model selection details to a specified GitHub output file.
 function writeOutputs(selection, outputPath) {
   const lines = [
     `comment-model=${selection.commentModel}`,
@@ -70,6 +72,8 @@ function writeOutputs(selection, outputPath) {
   fs.appendFileSync(outputPath, lines.join('\n') + '\n');
 }
 
+// Runs the main logic to select and format models
+// based on environment variables and writes outputs.
 function main() {
   const selection = selectModels({
     totalMemoryBytes: readTotalMemory(),

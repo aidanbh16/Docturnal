@@ -50,6 +50,7 @@ export interface ScheduleMetadata {
 const PREFIX = 'install:';
 const KEY = /^install:(\d+):(?:settings|repo:(.+))$/;
 
+// Validates if a given time zone is a valid string and within the allowed length.
 export function isValidTimeZone(timeZone: unknown): timeZone is string {
   if (typeof timeZone !== 'string' || !timeZone || timeZone.length > 64) return false;
   try {
@@ -60,6 +61,7 @@ export function isValidTimeZone(timeZone: unknown): timeZone is string {
   }
 }
 
+// Validates if a given hour is an integer between 0 and 23.
 export function isValidHour(hour: unknown): hour is number {
   return Number.isInteger(hour) && (hour as number) >= 0 && (hour as number) <= 23;
 }

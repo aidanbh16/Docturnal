@@ -21,6 +21,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 class ModelDigestError extends Error {}
 
+// Reads pins data from a file, returning parsed JSON.
 function readPins(file = PINS_PATH) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
